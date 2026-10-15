@@ -6,9 +6,15 @@ An unofficial personal snapshot of Harbor 0.9.132 with custom playback, subtitle
 
 Download the Windows x64 ZIP and `SHA256SUMS.txt` from [Releases](https://github.com/Quantumishard/harbor-custom/releases). Fully quit Harbor, extract the complete ZIP into a new folder, and run `harbor.exe`. Keep all accompanying runtime files together. Windows WebView2 is required. Back up existing Harbor data before using any build.
 
-Latest packaged build: `custom-aiometadata-idfix-20261014`.
+Latest packaged build: `custom-local-catalogs-imdb-detail-20261015`.
 
 AIOMetadata catalogs with manifest IDs `aio-metadata` or `com.aio.metadata` can supply up to 100 results per catalog to main search. Movie and series rows containing those results retain up to 100 items through both merge passes. The addon must supply those results; this does not add pagination. Other addon limits remain as before.
+
+## Local catalogs and detail IMDb ratings
+
+Catalogs and Discover now offer **Account + device**, **Stremio account**, and **Local / no login** sources. While signed in, choose **Save account catalogs locally** before signing out. Local mode combines the remembered collection with device addons; use **Catalogs → Customize** to move or hide catalogs. The remembered addon definitions, genre filters, source choice, and local order are preserved per Harbor profile and included in addon backups. Catalog requests still depend on the addon provider. Successful empty account collections replace stale snapshots; network failures preserve the last usable snapshot.
+
+The title detail IMDb badge now recognizes Cinemeta ratings as IMDb, uses matching full metadata, and can fetch a Cinemeta score independently of the title/description provider toggle. A TMDB score is never relabeled as IMDb. Existing rating visibility preferences are retained.
 
 ## Source and build information
 

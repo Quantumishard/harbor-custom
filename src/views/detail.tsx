@@ -178,6 +178,7 @@ import { useAnimeCharacters } from "./detail/use-anime-characters";
 import { TraktComments } from "./detail/trakt-comments";
 import { LetterboxdPanel } from "./detail/letterboxd-panel";
 import { RateButton } from "@/components/ratings/rate-button";
+import { detailImdbRating, fetchDetailImdbRating } from "@/lib/detail-imdb-rating";
 import { ratingTarget } from "@/lib/ratings/types";
 import { LetterboxdReviews } from "./detail/letterboxd-reviews";
 import { AnilistComments } from "./detail/anilist-comments";
@@ -983,19 +984,42 @@ export function DetailView({
 
   useEffect(() => {
     setCinemetaRating(null);
-    if (meta.id.startsWith("tt")) return;
-    const imdb = detail?.imdbId;
+    if (isAnime || !settings.showImdbDetail) return;
+    const imdb = meta.id.startsWith("tt") ? meta.id : detail?.imdbId;
     if (!imdb || !imdb.startsWith("tt")) return;
+    if (
+      detailImdbRating({
+        id: meta.id,
+        inline: meta.imdbRating,
+        fullId: cinemetaFull?.id,
+        full: cinemetaFull?.imdbRating,
+        detailId: detail?.imdbId,
+        detail: detail?.rating,
+        detailSource: detail?.ratingSource,
+      })
+    )
+      return;
     let cancelled = false;
-    fetchCinemetaMeta(narrowMediaType(meta.type), imdb)
-      .then((full) => {
-        if (!cancelled && full?.imdbRating) setCinemetaRating(full.imdbRating);
+    fetchDetailImdbRating(imdb, narrowMediaType(meta.type), fetchCinemetaMeta)
+      .then((value) => {
+        if (!cancelled && value) setCinemetaRating(value);
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [meta.id, meta.type, detail?.imdbId]);
+  }, [
+    meta.id,
+    meta.type,
+    meta.imdbRating,
+    detail?.imdbId,
+    detail?.rating,
+    detail?.ratingSource,
+    cinemetaFull?.id,
+    cinemetaFull?.imdbRating,
+    isAnime,
+    settings.showImdbDetail,
+  ]);
 
   useEffect(() => {
     if (!settings.omdbKey || !detail) return;
@@ -1086,11 +1110,18 @@ export function DetailView({
     pinnedLogo || seasonArt?.logo || stableLogo || (isAnime && !loading ? meta.logo : undefined);
   const year = detail?.year ?? meta.releaseInfo ?? cinemetaFull?.releaseInfo;
   const releaseYearNum = parseAwardYear(year);
-  const imdbRatingValue =
-    harborImdbRating ??
-    scores?.imdbRating ??
-    cinemetaRating ??
-    (meta.id.startsWith("tt") ? meta.imdbRating : undefined);
+  const imdbRatingValue = detailImdbRating({
+    id: meta.id,
+    inline: meta.imdbRating,
+    fullId: cinemetaFull?.id,
+    full: cinemetaFull?.imdbRating,
+    detailId: detail?.imdbId,
+    detail: detail?.rating,
+    detailSource: detail?.ratingSource,
+    cinemeta: cinemetaRating,
+    omdb: scores?.imdbRating,
+    harbor: harborImdbRating,
+  });
   const malRating = useMalRating(
     isAnime
       ? { ...meta, id: animeCanonicalId ?? meta.id, imdbRating: detail?.rating ?? meta.imdbRating }

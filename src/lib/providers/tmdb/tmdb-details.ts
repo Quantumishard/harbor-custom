@@ -74,6 +74,7 @@ export type TmdbDetail = {
   logo?: string;
   year?: string;
   rating?: string;
+  ratingSource?: "imdb" | "tmdb";
   voteCount: number;
   runtime?: string;
   status: string;
@@ -160,11 +161,7 @@ function rememberFind(key: string, value: string): void {
 
 type RawImageEntry = { file_path?: string; vote_average?: number };
 
-function urlsFromImages(
-  entries: RawImageEntry[] | undefined,
-  size: string,
-  max: number,
-): string[] {
+function urlsFromImages(entries: RawImageEntry[] | undefined, size: string, max: number): string[] {
   if (!entries?.length) return [];
   const seen = new Set<string>();
   const out: string[] = [];
@@ -197,7 +194,11 @@ const uniqByName = (entries: Array<{ id: number; name: string }>): PersonRef[] =
   return out;
 };
 
-export async function tmdbDetails(key: string, meta: Meta, lang?: string): Promise<TmdbDetail | null> {
+export async function tmdbDetails(
+  key: string,
+  meta: Meta,
+  lang?: string,
+): Promise<TmdbDetail | null> {
   if (!key) return null;
   let kind: "movie" | "tv";
   let id: string;
@@ -235,7 +236,8 @@ export async function tmdbDetails(key: string, meta: Meta, lang?: string): Promi
   const settings = loadStoredSettings();
   const metaLang = lang ?? (effectiveTmdbLanguage() || "en");
   const raw = await get<any>(key, `${kind}/${id}`, {
-    append_to_response: "credits,aggregate_credits,recommendations,similar,videos,external_ids,images,keywords,translations",
+    append_to_response:
+      "credits,aggregate_credits,recommendations,similar,videos,external_ids,images,keywords,translations",
     language: metaLang,
     include_image_language: imageLangParam(),
   });
@@ -299,7 +301,12 @@ export async function tmdbDetails(key: string, meta: Meta, lang?: string): Promi
     name: displayName(c),
     character:
       c.character ??
-      (c.roles?.length ? c.roles.map((r: any) => r.character).filter(Boolean).join(", ") : ""),
+      (c.roles?.length
+        ? c.roles
+            .map((r: any) => r.character)
+            .filter(Boolean)
+            .join(", ")
+        : ""),
     profilePath: c.profile_path ?? null,
     order: c.order ?? 999,
   }));
@@ -364,15 +371,16 @@ export async function tmdbDetails(key: string, meta: Meta, lang?: string): Promi
       airDate: s.air_date ?? null,
     }));
 
-  const runtime = kind === "movie"
-    ? raw.runtime
-      ? `${raw.runtime} min`
-      : undefined
-    : raw.episode_run_time?.[0]
-      ? `${raw.episode_run_time[0]} min episodes`
-      : seasons.length > 0
-        ? `${seasons.length} season${seasons.length === 1 ? "" : "s"}`
-        : undefined;
+  const runtime =
+    kind === "movie"
+      ? raw.runtime
+        ? `${raw.runtime} min`
+        : undefined
+      : raw.episode_run_time?.[0]
+        ? `${raw.episode_run_time[0]} min episodes`
+        : seasons.length > 0
+          ? `${seasons.length} season${seasons.length === 1 ? "" : "s"}`
+          : undefined;
 
   const anime = isAnimeItem(raw);
   const requestedTitle = raw.title || raw.name;
@@ -405,7 +413,7 @@ export async function tmdbDetails(key: string, meta: Meta, lang?: string): Promi
     id: raw.id,
     imdbId: raw.external_ids?.imdb_id ?? null,
     title: useEnglishForAnime
-      ? (enTitle || requestedTitle)
+      ? enTitle || requestedTitle
       : settings.translateTitles
         ? requestedTitle
         : originalTitle,
@@ -506,7 +514,8 @@ export async function tmdbSeasonEpisodes(
   const base = requested.split("-")[0]?.toLowerCase() ?? "";
   const wantsEnglishFallback = base !== "" && base !== "en" && base !== "ja";
   const japanese = /[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF]/;
-  const fellBackToJapanese = wantsEnglishFallback &&
+  const fellBackToJapanese =
+    wantsEnglishFallback &&
     episodes.some((e) => japanese.test(e.name) || japanese.test(e.overview));
   if (fellBackToJapanese) {
     const en = await get<any>(key, `tv/${tvId}/season/${seasonNumber}`, { language: "en-US" });
