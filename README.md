@@ -6,9 +6,13 @@ An unofficial personal snapshot of Harbor 0.9.132 with custom playback, subtitle
 
 Download the Windows x64 ZIP and `SHA256SUMS.txt` from [Releases](https://github.com/Quantumishard/harbor-custom/releases). Fully quit Harbor, extract the complete ZIP into a new folder, and run `harbor.exe`. Keep all accompanying runtime files together. Windows WebView2 is required. Back up existing Harbor data before using any build.
 
-Latest packaged build: `custom-local-catalogs-imdb-detail-20261015`.
+Latest packaged build: `custom-search-scroll-memory-20261016`.
 
 AIOMetadata catalogs with manifest IDs `aio-metadata` or `com.aio.metadata` can supply up to 100 results per catalog to main search. Movie and series rows containing those results retain up to 100 items through both merge passes. The addon must supply those results; this does not add pagination. Other addon limits remain as before.
+
+## Remembered search position
+
+Search returns to the same scroll position when reopened or when using Back from a title. A different query, profile, mode, or filter starts at the top. Position memory lasts for the current Harbor session.
 
 ## Local catalogs and detail IMDb ratings
 
@@ -20,7 +24,7 @@ The title detail IMDb badge now recognizes Cinemeta ratings as IMDb, uses matchi
 
 This repository is a fresh snapshot of the existing customized working tree, including its source changes and local source tests. It is based on local commit `45f30a4e016ba0f161b1c45aa40107cf64a5d7fb` from October 7, 2026. Historical Git metadata, private app data, login sessions, provider keys, dependency caches, and build outputs are not part of this repository.
 
-See [the preserved upstream README](README-UPSTREAM.md) for architecture and setup details, and [AGENTS.md](AGENTS.md) for contributor instructions. The upstream instructions may refer to services or downloads that are no longer available. The existing Windows release is preserved without rebuilding it during publication. An entirely offline rebuild is not yet verified.
+See [the preserved upstream README](README-UPSTREAM.md) for architecture and setup details, and [AGENTS.md](AGENTS.md) for contributor instructions. The upstream instructions may refer to services or downloads that are no longer available. The custom Windows builds are rebuilt and packaged with the preserved runtime files. An entirely offline rebuild is not yet verified.
 
 Upstream GitHub workflows are preserved under `docs/upstream-workflows` as inactive reference files. Review and adapt them before enabling automation for this repository.
 
