@@ -8,11 +8,15 @@ import {
   preferredVideoOverview,
   type PreferredVideo,
 } from "@/lib/meta-resource";
-import { harborImdbEpisodes } from "@/lib/providers/harbor-imdb";
-import { omdbSeasonRatings } from "@/lib/providers/omdb";
+import { useEpisodeImdbRatings } from "../use-episode-imdb-ratings";
 import type { Episode } from "@/lib/providers/tmdb";
 import { tmdbLanguageIso } from "@/lib/providers/tmdb/tmdb-client";
-import { tvdbEpisodes, tvdbLangFromIso1, tvdbSeriesByImdb, type TvdbEpisode } from "@/lib/providers/tvdb";
+import {
+  tvdbEpisodes,
+  tvdbLangFromIso1,
+  tvdbSeriesByImdb,
+  type TvdbEpisode,
+} from "@/lib/providers/tvdb";
 
 export function useEpisodeEnrich({
   episodes,
@@ -35,9 +39,10 @@ export function useEpisodeEnrich({
   imdbRatings: Map<string, number>;
   preferredVideos: Map<string, PreferredVideo>;
 } {
-  const [tvdbBySeason, setTvdbBySeason] = useState<Map<number, Map<number, TvdbEpisode>>>(new Map());
-  const [omdbBySeason, setOmdbBySeason] = useState<Map<number, Map<number, number>>>(new Map());
-  const [harborImdb, setHarborImdb] = useState<Map<string, number>>(new Map());
+  const [tvdbBySeason, setTvdbBySeason] = useState<Map<number, Map<number, TvdbEpisode>>>(
+    new Map(),
+  );
+  const imdbRatings = useEpisodeImdbRatings(imdbId, active, omdbKey);
   const [preferredVideos, setPreferredVideos] = useState<Map<string, PreferredVideo>>(new Map());
 
   useEffect(() => {
@@ -61,7 +66,12 @@ export function useEpisodeEnrich({
     void (async () => {
       const seriesId = await tvdbSeriesByImdb(tvdbKey, imdbId);
       if (!seriesId || cancelled) return;
-      const eps = await tvdbEpisodes(tvdbKey, seriesId, active, tvdbLangFromIso1(tmdbLanguageIso()));
+      const eps = await tvdbEpisodes(
+        tvdbKey,
+        seriesId,
+        active,
+        tvdbLangFromIso1(tmdbLanguageIso()),
+      );
       if (cancelled) return;
       const map = new Map<number, TvdbEpisode>();
       for (const e of eps) map.set(e.number, e);
@@ -72,36 +82,9 @@ export function useEpisodeEnrich({
     };
   }, [imdbId, active, tvdbKey, tvdbBySeason]);
 
-  useEffect(() => {
-    if (!omdbKey || !imdbId) return;
-    if (omdbBySeason.has(active)) return;
-    let cancelled = false;
-    void (async () => {
-      const map = await omdbSeasonRatings(omdbKey, imdbId, active);
-      if (cancelled || map.size === 0) return;
-      setOmdbBySeason((prev) => new Map(prev).set(active, map));
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [imdbId, active, omdbKey, omdbBySeason]);
-
-  useEffect(() => {
-    if (!imdbId) return;
-    let cancelled = false;
-    void harborImdbEpisodes(imdbId).then((map) => {
-      if (!cancelled && map.size > 0) setHarborImdb(map);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [imdbId]);
-
   const tvdbForSeason = tvdbBySeason.get(active);
-  const omdbForSeason = omdbBySeason.get(active);
   const enriched = useMemo<Episode[]>(() => {
-    if (!tvdbForSeason && !omdbForSeason && harborImdb.size === 0 && preferredVideos.size === 0)
-      return episodes;
+    if (!tvdbForSeason && imdbRatings.size === 0 && preferredVideos.size === 0) return episodes;
     return episodes.map((ep): Episode => {
       let next: Episode = ep;
       const tv = tvdbForSeason?.get(ep.episodeNumber);
@@ -135,13 +118,12 @@ export function useEpisodeEnrich({
           airDate: next.airDate ?? tv?.aired ?? null,
         };
       }
-      const imdbRating =
-        harborImdb.get(`${active}:${ep.episodeNumber}`) ?? omdbForSeason?.get(ep.episodeNumber);
+      const imdbRating = imdbRatings.get(`${ep.seasonNumber}:${ep.episodeNumber}`);
       if (imdbRating != null && imdbRating > 0) {
         next = { ...next, imdbRating };
       }
       return next;
     });
-  }, [episodes, tvdbForSeason, omdbForSeason, harborImdb, active, preferredVideos]);
-  return { episodes: enriched, imdbRatings: harborImdb, preferredVideos };
+  }, [episodes, tvdbForSeason, imdbRatings, active, preferredVideos]);
+  return { episodes: enriched, imdbRatings, preferredVideos };
 }
