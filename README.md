@@ -14,6 +14,10 @@ AIOMetadata catalogs with manifest IDs `aio-metadata` or `com.aio.metadata` can 
 
 Episode IMDb ratings are now saved locally, shown immediately when returning to a season, and retained if a provider fails. Empty responses can recover after a short backoff; requests have timeouts and missing badges retry automatically. The configured OMDb key remains private, and the existing API-limit handling is preserved. This source update is newer than the linked October 16 release.
 
+TVDB ordering and story arcs now request IMDb ratings for the seasons actually displayed, independently of the main season selector. Cards and rows use matching season/episode coordinates, and multi-season lists fetch at most four seasons concurrently.
+
+Badges still depend on provider coverage. OMDb may omit individual episode ratings even with a premium key; Harbor preserves available IMDb scores and does not invent missing ones or label TMDB scores as IMDb.
+
 ## Episode ratings and season return
 
 Cinemeta episode cards and rows now use the configured OMDb key for episode IMDb ratings independently of the retired Harbor service. Desktop episode lists restore the last selected valid season when returning from episode selection, including after the detail view is recreated.
