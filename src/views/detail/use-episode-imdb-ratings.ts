@@ -2,20 +2,35 @@ import { useEffect, useMemo, useState } from "react";
 import { harborImdbEpisodes, harborImdbEpisodesCached } from "@/lib/providers/harbor-imdb";
 import { omdbSeasonRatings, omdbSeasonRatingsCached } from "@/lib/providers/omdb";
 
-function cachedRatings(imdbId: string | null, season: number): Map<string, number> {
+function cachedRatings(imdbId: string | null, seasons: readonly number[]): Map<string, number> {
   const ratings = new Map<string, number>();
   if (!imdbId || !/^tt\d+$/.test(imdbId)) return ratings;
   for (const [coordinate, rating] of harborImdbEpisodesCached(imdbId) ?? [])
     if (Number.isFinite(rating) && rating > 0 && rating <= 10) ratings.set(coordinate, rating);
-  for (const [episode, rating] of omdbSeasonRatingsCached(imdbId, season) ?? [])
-    if (Number.isFinite(rating) && rating > 0 && rating <= 10)
-      ratings.set(`${season}:${episode}`, rating);
+  for (const season of seasons)
+    for (const [episode, rating] of omdbSeasonRatingsCached(imdbId, season) ?? [])
+      if (Number.isFinite(rating) && rating > 0 && rating <= 10)
+        ratings.set(`${season}:${episode}`, rating);
   return ratings;
 }
 
-export function useEpisodeImdbRatings(imdbId: string | null, season: number, omdbKey: string) {
-  const key = JSON.stringify([imdbId, season, omdbKey]);
-  const cached = useMemo(() => cachedRatings(imdbId, season), [imdbId, season]);
+export function useEpisodeImdbRatings(
+  imdbId: string | null,
+  season: number | readonly number[],
+  omdbKey: string,
+) {
+  const seasonKey = JSON.stringify(
+    [
+      ...new Set(
+        (typeof season === "number" ? [season] : season).filter(
+          (value) => Number.isInteger(value) && value >= 1,
+        ),
+      ),
+    ].sort((a, b) => a - b),
+  );
+  const seasons = useMemo<number[]>(() => JSON.parse(seasonKey), [seasonKey]);
+  const key = JSON.stringify([imdbId, seasonKey, omdbKey]);
+  const cached = useMemo(() => cachedRatings(imdbId, seasons), [imdbId, seasons]);
   const [result, setResult] = useState({ key, ratings: cached });
   useEffect(() => {
     let cancelled = false;
@@ -44,36 +59,43 @@ export function useEpisodeImdbRatings(imdbId: string | null, season: number, omd
           return ratings;
         })
         .catch(() => new Map<string, number>());
-      const omdb =
-        omdbKey && season >= 1
-          ? omdbSeasonRatings(omdbKey, imdbId, season)
-              .then((ratings) => {
-                const coordinates = new Map(
-                  [...ratings].map(([episode, rating]) => [`${season}:${episode}`, rating]),
-                );
-                publish(coordinates);
-                return coordinates;
-              })
-              .catch(() => new Map<string, number>())
-          : Promise.resolve(new Map<string, number>());
+      const omdb = (async () => {
+        const combined = new Map<string, number>();
+        if (!omdbKey) return combined;
+        let next = 0;
+        const worker = async () => {
+          while (!cancelled && next < seasons.length) {
+            const selectedSeason = seasons[next++];
+            const ratings = await omdbSeasonRatings(omdbKey, imdbId, selectedSeason).catch(
+              () => new Map<number, number>(),
+            );
+            if (cancelled) return;
+            const coordinates = new Map(
+              [...ratings].map(([episode, rating]) => [`${selectedSeason}:${episode}`, rating]),
+            );
+            publish(coordinates);
+            for (const [coordinate, rating] of coordinates) combined.set(coordinate, rating);
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(4, seasons.length) }, worker));
+        return combined;
+      })();
       void Promise.all([harbor, omdb]).then((sources) => {
         loading = false;
-        const hasRatings = sources.some((ratings) =>
+        const hasSeason = (ratings: Map<string, number>, selectedSeason: number) =>
           [...ratings].some(
             ([coordinate, rating]) =>
-              coordinate.startsWith(`${season}:`) &&
+              coordinate.startsWith(`${selectedSeason}:`) &&
               Number.isFinite(rating) &&
               rating > 0 &&
               rating <= 10,
-          ),
+          );
+        const missingSeason = seasons.some(
+          (selectedSeason) =>
+            !hasSeason(cached, selectedSeason) &&
+            !sources.some((ratings) => hasSeason(ratings, selectedSeason)),
         );
-        if (
-          !cancelled &&
-          !hasRatings &&
-          ![...cached.keys()].some((coordinate) => coordinate.startsWith(`${season}:`)) &&
-          attempts < 3
-        )
-          retry = setTimeout(refresh, 60_000);
+        if (!cancelled && missingSeason && attempts < 3) retry = setTimeout(refresh, 60_000);
       });
     };
     refresh();
@@ -89,6 +111,6 @@ export function useEpisodeImdbRatings(imdbId: string | null, season: number, omd
         window.removeEventListener("focus", refresh);
       }
     };
-  }, [key, imdbId, season, omdbKey, cached]);
+  }, [key, imdbId, seasons, omdbKey, cached]);
   return useMemo(() => (result.key === key ? result.ratings : cached), [result, key, cached]);
 }

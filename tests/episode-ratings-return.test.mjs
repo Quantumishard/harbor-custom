@@ -258,3 +258,19 @@ test("missing episode badges recover automatically and cleanup cancels retry wor
     else globalThis.window = originalWindow;
   }
 });
+
+test("multi-season episode ratings publish each season without waiting for the others", async () => {
+  const h = ratingsHarness();
+  h.render("tt5071412", [3, 4, 3]);
+  assert.deepEqual(
+    h.requests.map((request) => request.season),
+    [3, 4],
+  );
+  h.requests[0].resolve(new Map([[1, 8.3]]));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.render("tt5071412", [3, 4]).get("3:1"), 8.3);
+  h.requests[1].resolve(new Map([[1, 8.8]]));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.render("tt5071412", [4, 3]).get("4:1"), 8.8);
+  h.unmount();
+});

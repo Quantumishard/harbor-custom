@@ -8,6 +8,7 @@ import { spoilerMaskFor } from "@/lib/spoilers";
 import { EpisodeGridSkeleton } from "../episode-grid-skeleton";
 import { EpisodeRow } from "../series-episode-row";
 import { EpisodeStrip } from "../episode-strip";
+import { useEpisodeImdbRatings } from "../use-episode-imdb-ratings";
 
 export function OrderedEpisodes({
   meta,
@@ -34,6 +35,26 @@ export function OrderedEpisodes({
 }) {
   const { settings } = useSettings();
   const mwVersion = useSyncExternalStore(subscribeManualWatched, manualWatchedVersion);
+  // TVDB ordering and story arcs can show seasons other than the main TMDB selector.
+  const ratingSeasons = useMemo(
+    () => [...new Set(episodes.map((ep) => ep.seasonNumber))].filter((season) => season >= 1),
+    [episodes],
+  );
+  const ratings = useEpisodeImdbRatings(
+    settings.showEpisodeRating && ratingSeasons.length
+      ? (seriesImdbId ?? (/^tt\d+$/.test(meta.id) ? meta.id : null))
+      : null,
+    ratingSeasons,
+    settings.omdbKey,
+  );
+  const ratedEpisodes = useMemo(
+    () =>
+      episodes.map((ep) => {
+        const rating = ratings.get(`${ep.seasonNumber}:${ep.episodeNumber}`);
+        return ep.imdbRating == null && rating != null ? { ...ep, imdbRating: rating } : ep;
+      }),
+    [episodes, ratings],
+  );
 
   const progressByKey = useMemo(() => {
     const m = new Map<string, { ratio: number; watched: boolean; startedAt: number }>();
@@ -71,7 +92,7 @@ export function OrderedEpisodes({
     return (
       <EpisodeStrip
         meta={meta}
-        episodes={episodes}
+        episodes={ratedEpisodes}
         layout={settings.episodeLayout === "grid" ? "grid" : "strip"}
         progressFor={(ep) => progressByKey.get(`${ep.seasonNumber}:${ep.episodeNumber}`)!}
         thumbnailFor={(ep) =>
@@ -95,7 +116,7 @@ export function OrderedEpisodes({
 
   return (
     <div className="flex flex-col gap-1">
-      {episodes.map((ep) => {
+      {ratedEpisodes.map((ep) => {
         const key = `${ep.seasonNumber}:${ep.episodeNumber}`;
         const progress = progressByKey.get(key)!;
         return (
