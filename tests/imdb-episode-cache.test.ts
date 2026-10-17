@@ -19,7 +19,7 @@ function fixture() {
     "@/lib/cache": { lruSet },
     "@/lib/maintenance": { registerEvictable: (name: string, evict: (aggressive: boolean) => void) => evictors.set(name, evict) },
     "@/lib/config/endpoints": { HARBOR_API_BASE: "https://fixture.invalid" },
-    "@/lib/safe-fetch": {},
+    "@/lib/safe-fetch": { safeFetch: () => { requests++; return response(); } },
     "@/lib/providers/csm": {},
   };
   const source = readFileSync(new URL("../src/lib/providers/harbor-imdb.ts", import.meta.url), "utf8");

@@ -10,6 +10,10 @@ Latest packaged build: `custom-episode-ratings-season-return-20261016`.
 
 AIOMetadata catalogs with manifest IDs `aio-metadata` or `com.aio.metadata` can supply up to 100 results per catalog to main search. Movie and series rows containing those results retain up to 100 items through both merge passes. The addon must supply those results; this does not add pagination. Other addon limits remain as before.
 
+## Episode-rating recovery (source update, 2026-10-17)
+
+Episode IMDb ratings are now saved locally, shown immediately when returning to a season, and retained if a provider fails. Empty responses can recover after a short backoff; requests have timeouts and missing badges retry automatically. The configured OMDb key remains private, and the existing API-limit handling is preserved. This source update is newer than the linked October 16 release.
+
 ## Episode ratings and season return
 
 Cinemeta episode cards and rows now use the configured OMDb key for episode IMDb ratings independently of the retired Harbor service. Desktop episode lists restore the last selected valid season when returning from episode selection, including after the detail view is recreated.
