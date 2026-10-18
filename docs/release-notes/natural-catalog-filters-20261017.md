@@ -58,3 +58,10 @@ No new Harbor build is needed. Existing Stop-backend installations can apply `pa
 Filters now support alternatives across different fields. For example, **southeast asian language or theme** accepts either a regional original language or a relevant regional theme; an English-language film can qualify through its theme. Shared year, rating and genre limits still apply to every branch, and sorting applies to the combined deduplicated results. Thematic branches retain AI relevance review. Up to six alternatives are supported; nested alternatives are not supported.
 
 This is an AIOMetadata update; no new Harbor download is required. Existing semantic-review installations can apply `packaging/aiometadata/alternative-filters.patch`, then rebuild/restart AIOMetadata. New installations use the full companion patch. The planner and validator allow up to 64 clues per group to accommodate regional names and demonyms.
+
+
+## Foreign-language filters (backend update, 2026-10-18)
+
+**Foreign language** now means a non-English original language, without specifying a language or region. Combine it with other limits, such as **foreign language horror since 2010**. English originals are excluded even if a foreign dub is available; missing language metadata remains unknown. An explicitly named reference language can be excluded instead. These are factual checks and need no thematic AI review.
+
+No new Harbor download is required. Installations with the alternatives update can apply `packaging/aiometadata/foreign-language-filters.patch`, then rebuild/restart AIOMetadata. First installations use the full companion patch.

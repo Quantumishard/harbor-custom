@@ -28,6 +28,12 @@ Filters now support alternatives across different fields. For example, **southea
 
 This is an AIOMetadata update; no new Harbor download is required. Existing semantic-review installations can apply `packaging/aiometadata/alternative-filters.patch`, then rebuild/restart AIOMetadata. New installations use the full companion patch. The planner and validator allow up to 64 clues per group to accommodate regional names and demonyms.
 
+## Foreign-language filters (backend update, 2026-10-18)
+
+**Foreign language** now means a non-English original language, without specifying a language or region. Combine it with other limits, such as **foreign language horror since 2010**. English originals are excluded even if a foreign dub is available; missing language metadata remains unknown. An explicitly named reference language can be excluded instead. These are factual checks and need no thematic AI review.
+
+No new Harbor download is required. Installations with the alternatives update can apply `packaging/aiometadata/foreign-language-filters.patch`, then rebuild/restart AIOMetadata. First installations use the full companion patch.
+
 ## Episode-rating recovery (source update, 2026-10-17)
 
 Episode IMDb ratings are now saved locally, shown immediately when returning to a season, and retained if a provider fails. Empty responses can recover after a short backoff; requests have timeouts and missing badges retry automatically. The configured OMDb key remains private, and the existing API-limit handling is preserved. This repair is included in the October 17 packaged build.

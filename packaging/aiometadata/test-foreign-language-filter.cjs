@@ -1,0 +1,13 @@
+const assert=require('node:assert/strict');
+const {validatePlan,matchMeta,reviewNaturalFilterCandidates}=require('/app/dist/server/lib/naturalCatalogFilter');
+const p=validatePlan({summary:'Non-English original language',excludeLanguages:['en']});
+assert.equal(matchMeta({originalLanguage:'fr'},p),true);
+assert.equal(matchMeta({originalLanguage:'th'},p),true);
+assert.equal(matchMeta({originalLanguage:'en'},p),false);
+assert.equal(matchMeta({description:'A French movie'},p),null);
+assert.equal(matchMeta({originalLanguage:'en',language:'fr'},p),false);
+assert.equal(matchMeta({originalLanguage:['en','fr']},p),false);
+assert.equal(matchMeta({originalLanguage:'fr',releaseInfo:'2000'},{...p,minYear:2010}),false);
+assert.equal(matchMeta({originalLanguage:'de'},validatePlan({summary:'French only',languages:['fr'],excludeLanguages:['en']})),false);
+assert.throws(()=>validatePlan({summary:'Bad',excludeLanguages:'en'}));
+(async()=>{const rows=[{originalLanguage:'fr'}];assert.deepEqual(await reviewNaturalFilterCandidates(rows,p,{},()=>{throw Error('Factual rule must not call AI')}),rows);console.log('PASS: non-English original language, unknown metadata, dub precedence, shared limits, strict validation and factual fast path')})().catch(e=>{console.error(e);process.exit(1)});
