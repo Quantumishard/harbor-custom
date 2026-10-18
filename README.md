@@ -16,6 +16,12 @@ AIOMetadata catalogs now offer **Filter this catalog** in the full catalog grid.
 
 Styled text subtitles use the selected text color and opacity by default while retaining file fonts and layout. A switch restores authored colors. Native HDR subtitle reference brightness is 300 nits. See [usage, verification and limitations](docs/release-notes/natural-catalog-filters-20261017.md).
 
+## Semantic relevance correction (backend update, 2026-10-18)
+
+Thematic filters now preserve the requested word sense and use the configured Gemini model to review lexical candidates. For example, **subterranean** refers to physical below-ground settings: American Mary's underground body-modification no longer qualifies, while The Descent and As Above, So Below pass the real-model regression test. This is a backend update compatible with the current Harbor download.
+
+Purely factual filters keep their deterministic checks. Thematic candidates incur extra batched AI calls; positive and negative review decisions are cached for 30 minutes and scoped to account, model, intent and metadata. Stop snapshots stay fixed during in-flight reviews. Installations with the previous Stop backend can apply `packaging/aiometadata/semantic-relevance.patch`, then rebuild/restart AIOMetadata. First installations use the updated full companion patch. This improves candidate precision; broad lexical candidate retrieval can still miss titles whose metadata lacks relevant clues.
+
 ## Episode-rating recovery (source update, 2026-10-17)
 
 Episode IMDb ratings are now saved locally, shown immediately when returning to a season, and retained if a provider fails. Empty responses can recover after a short backoff; requests have timeouts and missing badges retry automatically. The configured OMDb key remains private, and the existing API-limit handling is preserved. This repair is included in the October 17 packaged build.

@@ -43,3 +43,9 @@ The backend update is deployed. Personal account data and API keys are not inclu
 Existing installations of the first natural-filter backend can apply `packaging/aiometadata/stop-partial-results.patch` in the AIOMetadata source checkout, then rebuild/restart the service. New installations use the full `natural-catalog-filter.patch` instead. The updated Harbor client requires the updated backend for Stop. Requests already in flight may finish, but cannot change a stopped snapshot.
 
 Stop verification: deterministic tests covered in-flight pages, planning, sorting, pagination, repeated stops, late errors and expiry. A live B Horror scan stopped at 300 checked titles with 244 matches, and its partial snapshot remained stable.
+
+## Backend thematic-relevance update — October 18, 2026
+
+The model now states the intended meaning explicitly and reviews matching candidates in batches of up to 24. Shared words alone no longer qualify a title. The real-model regression rejects American Mary for subterranean settings while accepting The Descent and As Above, So Below. Metadata bounds remain deterministic. Candidate decisions, including rejections, are cached by account, selected Gemini model, intent and metadata for 30 minutes. This adds AI calls for thematic filters and can increase scan time. Candidate retrieval still depends on plot/keyword clues, so semantic recall is not exhaustive.
+
+No new Harbor build is needed. Existing Stop-backend installations can apply `packaging/aiometadata/semantic-relevance.patch` and rebuild/restart AIOMetadata; the full companion patch includes this update for first installations. Stop discards in-flight review results before committing counters or matches.
