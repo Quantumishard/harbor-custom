@@ -44,6 +44,12 @@ General ranking requests use globally sorted numeric values (or AI relevance sco
 
 Broader review can increase scan time, token use and grounding costs. Review decisions remain cached for 30 minutes and are scoped to provider, model, web-search setting, account, date, intent and evidence. Stop remains available and freezes checked results. No new Harbor download is required. Installations with the foreign-language update can apply `packaging/aiometadata/general-search-filters.patch`, then rebuild/restart AIOMetadata. New installations use the full companion patch. Earlier lexical-gating and Gemini-only limitations described in prior update notes are superseded here.
 
+## Filter review reliability (2026-10-18)
+
+Fixes a reproduced PBS filter failure on Drama Shows (2023-): the model returned prose instead of JSON after a successful first page. Reviews now enforce JSON instructions, bound each batch by both title count and evidence size, retry malformed responses, split repeatedly malformed batches, and retry temporary provider failures once. Candidate indexes and numeric ranking values remain strictly validated; no unreviewed rows are accepted. Exhausted retries report a specific error instead of blaming supported filter wording. Safe diagnostics record failure category/counts without raw responses, credentials or private addon URLs. General ranking-only requests also receive full metadata evidence.
+
+Existing general-search-filter installations can apply `packaging/aiometadata/filter-review-reliability.patch`, rebuild and restart AIOMetadata. New installations use the full companion patch. Restart clears previous failed scan caches. No new Harbor build is required.
+
 ## Episode-rating recovery (source update, 2026-10-17)
 
 Episode IMDb ratings are now saved locally, shown immediately when returning to a season, and retained if a provider fails. Empty responses can recover after a short backoff; requests have timeouts and missing badges retry automatically. The configured OMDb key remains private, and the existing API-limit handling is preserved. This repair is included in the October 17 packaged build.
