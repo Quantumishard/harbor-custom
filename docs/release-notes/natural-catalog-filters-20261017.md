@@ -7,7 +7,8 @@ Extract the entire portable ZIP into a new folder, close other Harbor copies, an
 1. Open **Catalogs** and choose **View all** on an AIOMetadata catalog, or browse a catalog through Discover.
 2. Enter a request in **Filter this catalog** and select **Apply**.
 3. Wait for the scan to complete. The explanation shows the interpreted rules, total matches, and titles excluded because required metadata was unavailable.
-4. Use **Clear** to return to ordinary browsing. The existing genre selector can narrow the selected catalog before applying a natural-language filter.
+4. For a large catalog, choose **Stop and show results** to keep matches already checked. These are explicitly labeled **Partial results**, sorted only within the checked portion. Titles not yet checked may contain better matches. Partial results stay cached for 30 minutes after their last use; applying the same wording reuses that partial snapshot until it expires or the server restarts.
+5. Use **Clear** to return to ordinary browsing. The existing genre selector can narrow the selected catalog before applying a natural-language filter.
 
 Examples:
 
@@ -38,3 +39,7 @@ The subtitle property tests passed, including color-channel and transparency con
 - Windows package verification details are recorded separately after building. Linux was not built on this Windows host.
 
 The backend update is deployed. Personal account data and API keys are not included in this package or the accompanying change patches.
+
+Existing installations of the first natural-filter backend can apply `packaging/aiometadata/stop-partial-results.patch` in the AIOMetadata source checkout, then rebuild/restart the service. New installations use the full `natural-catalog-filter.patch` instead. The updated Harbor client requires the updated backend for Stop. Requests already in flight may finish, but cannot change a stopped snapshot.
+
+Stop verification: deterministic tests covered in-flight pages, planning, sorting, pagination, repeated stops, late errors and expiry. A live B Horror scan stopped at 300 checked titles with 244 matches, and its partial snapshot remained stable.

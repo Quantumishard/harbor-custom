@@ -8,7 +8,7 @@ type Fetcher = (page: number, loaded?: number) => Promise<Meta[]>;
 type Result = {
   metas: Meta[];
   naturalFilter?: {
-    status: "planning" | "scanning" | "complete" | "error";
+    status: "planning" | "scanning" | "complete" | "partial" | "error";
     scanned: number;
     unknown: number;
     total: number;
@@ -29,6 +29,8 @@ export function NaturalCatalogFilter({
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [stopping, setStopping] = useState(false);
+  const stopRequested = useRef(false);
   const [applied, setApplied] = useState(false);
   const revision = useRef(0);
   const abort = useRef<AbortController | null>(null);
@@ -40,8 +42,14 @@ export function NaturalCatalogFilter({
     [],
   );
 
-  const read = async (text: string, skip: number, signal?: AbortSignal): Promise<Result> => {
+  const read = async (
+    text: string,
+    skip: number,
+    signal?: AbortSignal,
+    stop = false,
+  ): Promise<Result> => {
     const params = new URLSearchParams({ nlFilter: text, skip: String(skip) });
+    if (stop) params.set("nlAction", "stop");
     if (genre && catalog.genreExtra) params.set(catalog.genreExtra, genre);
     const url = `${catalog.base}/catalog/${encodeURIComponent(catalog.type)}/${encodeURIComponent(catalog.id)}/${params.toString()}.json`;
     allowDirectHost(url);
@@ -59,6 +67,8 @@ export function NaturalCatalogFilter({
     revision.current++;
     abort.current?.abort();
     setBusy(false);
+    setStopping(false);
+    stopRequested.current = false;
     setApplied(false);
     setQuery("");
     setMessage("");
@@ -71,21 +81,26 @@ export function NaturalCatalogFilter({
     abort.current?.abort();
     const controller = new AbortController();
     abort.current = controller;
+    stopRequested.current = false;
+    setStopping(false);
     setBusy(true);
     setMessage("Interpreting filter…");
     try {
       for (;;) {
-        const data = await read(text, 0, controller.signal);
+        const data = await read(text, 0, controller.signal, stopRequested.current);
         if (revision.current !== current) return;
         const state = data.naturalFilter!;
-        if (state.status === "complete") {
+        if (state.status === "complete" || state.status === "partial") {
           setMessage(
-            `${state.summary} · ${state.total} matches from ${state.scanned} titles${state.unknown ? ` · ${state.unknown} excluded because required metadata was missing` : ""}`,
+            `${state.status === "partial" ? "Partial results — " : ""}${state.summary || "Scan stopped"} · ${state.total} matches from ${state.scanned} checked titles${state.status === "partial" ? ". Sorting covers only checked titles; unscanned titles may contain better matches." : ""}${state.unknown ? ` · ${state.unknown} excluded because required metadata was missing` : ""}`,
           );
           setApplied(true);
           onApply(async (page, loaded) => {
             const result = await read(text, loaded ?? (page - 1) * 100);
-            if (result.naturalFilter?.status !== "complete")
+            if (
+              result.naturalFilter?.status !== "complete" &&
+              result.naturalFilter?.status !== "partial"
+            )
               throw Error("Filter cache expired. Apply the filter again.");
             return result.metas;
           });
@@ -110,7 +125,10 @@ export function NaturalCatalogFilter({
       if (revision.current === current)
         setMessage(e instanceof Error ? e.message : "Filtering failed.");
     } finally {
-      if (revision.current === current) setBusy(false);
+      if (revision.current === current) {
+        setBusy(false);
+        setStopping(false);
+      }
     }
   };
   return (
@@ -141,6 +159,20 @@ export function NaturalCatalogFilter({
         >
           {busy ? "Filtering…" : "Apply"}
         </button>
+        {busy && (
+          <button
+            type="button"
+            disabled={stopping}
+            onClick={() => {
+              stopRequested.current = true;
+              setStopping(true);
+              setMessage("Stopping and preparing partial results…");
+            }}
+            className="rounded-lg bg-elevated px-3 py-2 text-sm text-ink disabled:opacity-50"
+          >
+            {stopping ? "Stopping…" : "Stop and show results"}
+          </button>
+        )}
         {(busy || applied || message) && (
           <button type="button" onClick={clear} className="rounded-lg px-3 py-2 text-sm text-ink">
             {busy ? "Cancel" : "Clear"}
