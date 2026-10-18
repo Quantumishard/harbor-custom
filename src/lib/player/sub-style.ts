@@ -78,11 +78,7 @@ export async function applySubStyle(
   const override = s.subAssOverride;
   const normScale =
     typeof context.assScale === "number" && Number.isFinite(context.assScale) ? context.assScale : null;
-  const useTextColor = s.subUseTextColor !== false;
-  const effOverride = normScale != null ? "scale" : useTextColor && override === "no" ? "yes" : override;
-  const rgb = /^#[0-9a-f]{6}$/i.test(s.subFontColor) ? s.subFontColor.slice(1) : "FFFFFF";
-  const alpha = Math.round((1 - clamp(Number(s.subOpacity ?? 1), 0.1, 1)) * 255).toString(16).padStart(2, "0");
-  const assColor = `&H${alpha}${rgb.slice(4,6)}${rgb.slice(2,4)}${rgb.slice(0,2)}`;
+  const effOverride = normScale != null ? "scale" : override;
   const assMargins = context.assNativeActive && override !== "no" ? "yes" : "no";
   const marginY = clamp(Number(s.subMarginY) || 0, 0, 100);
   const opacity = clamp(Number(s.subOpacity ?? 1), 0.1, 1);
@@ -92,9 +88,6 @@ export async function applySubStyle(
   const reposition = !context.assNativeActive || override !== "no";
   const hideSdh = s.subHideSdh === true && context.sdhFilterAllowed !== false;
   const props: Array<[string, unknown]> = [
-    // Override only the ASS fill color, retaining fonts, positioning and borders.
-    ["sub-ass-style-overrides", useTextColor ? [`PrimaryColour=${assColor}`] : []],
-    ["sub-hdr-peak", 300],
     ["sub-filter-sdh", hideSdh],
     ["sub-filter-sdh-harder", false],
     ["sub-font-size", 32],

@@ -1,5 +1,7 @@
 # Harbor: natural-language catalog filters and subtitle color
 
+**October 18 update:** the subtitle changes described below were reverted after a PGS placement regression. Original subtitle override behavior is restored, the added text-color switch is removed, and the 300-nit HDR subtitle override is no longer applied. Catalog filtering, Stop and semantic relevance improvements remain.
+
 Extract the entire portable ZIP into a new folder, close other Harbor copies, and run **harbor.exe**. Keep its bundled files together. It uses your existing Harbor settings and profiles.
 
 ## Catalog filters

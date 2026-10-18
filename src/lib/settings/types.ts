@@ -337,7 +337,6 @@ export type Settings = {
   preferOriginalAudioLanguage: boolean;
   subFontSize: number;
   subFontColor: string;
-  subUseTextColor: boolean;
   subBorderColor: string;
   subBorderSize: number;
   subMarginY: number;

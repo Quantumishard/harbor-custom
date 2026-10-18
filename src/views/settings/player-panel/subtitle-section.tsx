@@ -371,12 +371,6 @@ export function SubtitleStylePanel() {
       <FontPicker />
 
       <SettingGroup label={t("Styled (ASS) subtitles")}>
-        <ToggleRow
-          label="Use text color for styled subtitles"
-          sub="Apply your selected text color and opacity while keeping the subtitle file's fonts and layout."
-          value={settings.subUseTextColor !== false}
-          onChange={(subUseTextColor) => update({ subUseTextColor })}
-        />
         {assModes.map((m) => (
           <ChoiceBlock
             key={m.id}
