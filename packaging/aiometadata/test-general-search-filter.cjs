@@ -2,7 +2,7 @@ const assert=require('node:assert/strict');
 const {validatePlan,matchMeta,reviewNaturalFilterCandidates,enrichNaturalFilterEvidence,naturalFilterProvider,planNaturalFilter,sortMatches,naturalFilterPage}=require('/app/dist/server/lib/naturalCatalogFilter');
 const config={userUUID:'general-test',apiKeys:{gemini:'fixture'},search:{ai_model:'fixture'}};
 const film={id:'tt123',type:'movie',name:'Fixture',description:'A family drama',releaseInfo:'2020',_tmdbId:123};
-const plan=validatePlan({summary:'Studio and director',subject:'Produced by A24 and directed by Jane Doe',terms:[['A24','Jane Doe']]});
+const plan=validatePlan({summary:'Studio and director',subject:'Produced by A24 and directed by Jane Doe'});
 assert.equal(matchMeta(film,plan),true); // No lexical gate on production or other semantic facts.
 assert.equal(matchMeta({...film,releaseInfo:'2000'},{...plan,minYear:2010}),false);
 (async()=>{

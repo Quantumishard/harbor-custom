@@ -50,6 +50,16 @@ Fixes a reproduced PBS filter failure on Drama Shows (2023-): the model returned
 
 Existing general-search-filter installations can apply `packaging/aiometadata/filter-review-reliability.patch`, rebuild and restart AIOMetadata. New installations use the full companion patch. Restart clears previous failed scan caches. No new Harbor build is required.
 
+## Cost-controlled filters (2026-10-18; supersedes broad AI review defaults)
+
+Factual filters now use deterministic metadata rules for original networks, production studios, cast, directors, writers, creators, countries, collections, regional providers, certifications and status, alongside existing language/year/genre/rating/runtime checks. The bare PBS query uses a local alias rule and makes zero AI calls. Other factual requests use a short planning call, then scan catalog metadata without per-title AI review. Missing facts remain unknown; exact name matching depends on aliases included in the plan.
+
+Every scan has a hard shared cap of **two AI requests and 8,000 UTF-8 prompt bytes total**, including planning and retries. Each response is limited to **512 output tokens**. Filter web grounding is disabled for Gemini and OpenRouter; main-search settings and output defaults are unchanged. These are request/input/output limits, not a fixed dollar quote for every model. Compact thematic prompts include a short plot and a few clues instead of full credits and worldwide provider listings. Supplied keyword clues narrow thematic candidates; this reduces recall when clues are absent. Factual metadata stays local.
+
+When the AI cap is reached, the scan returns a sorted partial snapshot with an explicit budget notice. Checked chunks are committed within a source page, so early results can survive a cap during the first page. Thematic scans may return only a small partial set. Factual-only scans can cover the entire catalog without consuming review budget. Stop also prevents subsequent budgeted requests. Cached jobs are reused for 30 minutes after last use. The previous recursive retry splitting and unbounded full-catalog semantic review are removed. Verification used mocked AI only; no paid test scans were run.
+
+Existing reliability-patch installations can apply `packaging/aiometadata/cost-controlled-filters.patch`, then rebuild/restart AIOMetadata. First installations use the updated full patch. No new Harbor download is required.
+
 ## Episode-rating recovery (source update, 2026-10-17)
 
 Episode IMDb ratings are now saved locally, shown immediately when returning to a season, and retained if a provider fails. Empty responses can recover after a short backoff; requests have timeouts and missing badges retry automatically. The configured OMDb key remains private, and the existing API-limit handling is preserved. This repair is included in the October 17 packaged build.
