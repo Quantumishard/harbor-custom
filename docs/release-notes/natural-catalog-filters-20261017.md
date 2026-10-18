@@ -51,3 +51,10 @@ Stop verification: deterministic tests covered in-flight pages, planning, sortin
 The model now states the intended meaning explicitly and reviews matching candidates in batches of up to 24. Shared words alone no longer qualify a title. The real-model regression rejects American Mary for subterranean settings while accepting The Descent and As Above, So Below. Metadata bounds remain deterministic. Candidate decisions, including rejections, are cached by account, selected Gemini model, intent and metadata for 30 minutes. This adds AI calls for thematic filters and can increase scan time. Candidate retrieval still depends on plot/keyword clues, so semantic recall is not exhaustive.
 
 No new Harbor build is needed. Existing Stop-backend installations can apply `packaging/aiometadata/semantic-relevance.patch` and rebuild/restart AIOMetadata; the full companion patch includes this update for first installations. Stop discards in-flight review results before committing counters or matches.
+
+
+## Alternative filters (backend update, 2026-10-18)
+
+Filters now support alternatives across different fields. For example, **southeast asian language or theme** accepts either a regional original language or a relevant regional theme; an English-language film can qualify through its theme. Shared year, rating and genre limits still apply to every branch, and sorting applies to the combined deduplicated results. Thematic branches retain AI relevance review. Up to six alternatives are supported; nested alternatives are not supported.
+
+This is an AIOMetadata update; no new Harbor download is required. Existing semantic-review installations can apply `packaging/aiometadata/alternative-filters.patch`, then rebuild/restart AIOMetadata. New installations use the full companion patch. The planner and validator allow up to 64 clues per group to accommodate regional names and demonyms.

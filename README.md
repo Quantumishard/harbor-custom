@@ -22,6 +22,12 @@ Thematic filters now preserve the requested word sense and use the configured Ge
 
 Purely factual filters keep their deterministic checks. Thematic candidates incur extra batched AI calls; positive and negative review decisions are cached for 30 minutes and scoped to account, model, intent and metadata. Stop snapshots stay fixed during in-flight reviews. Installations with the previous Stop backend can apply `packaging/aiometadata/semantic-relevance.patch`, then rebuild/restart AIOMetadata. First installations use the updated full companion patch. This improves candidate precision; broad lexical candidate retrieval can still miss titles whose metadata lacks relevant clues.
 
+## Alternative filters (backend update, 2026-10-18)
+
+Filters now support alternatives across different fields. For example, **southeast asian language or theme** accepts either a regional original language or a relevant regional theme; an English-language film can qualify through its theme. Shared year, rating and genre limits still apply to every branch, and sorting applies to the combined deduplicated results. Thematic branches retain AI relevance review. Up to six alternatives are supported; nested alternatives are not supported.
+
+This is an AIOMetadata update; no new Harbor download is required. Existing semantic-review installations can apply `packaging/aiometadata/alternative-filters.patch`, then rebuild/restart AIOMetadata. New installations use the full companion patch. The planner and validator allow up to 64 clues per group to accommodate regional names and demonyms.
+
 ## Episode-rating recovery (source update, 2026-10-17)
 
 Episode IMDb ratings are now saved locally, shown immediately when returning to a season, and retained if a provider fails. Empty responses can recover after a short backoff; requests have timeouts and missing badges retry automatically. The configured OMDb key remains private, and the existing API-limit handling is preserved. This repair is included in the October 17 packaged build.
