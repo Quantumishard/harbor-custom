@@ -9,11 +9,11 @@ const unrelated={...thai,id:'unrelated',originalLanguage:'en'};
 assert.equal(matchMeta(thai,plan),true);assert.equal(matchMeta(theme,plan),true);
 assert.equal(matchMeta({...theme,originalLanguage:undefined},plan),true);
 assert.equal(matchMeta({...thai,releaseInfo:'2000'},plan),false);
-assert.equal(matchMeta(unrelated,plan),false);
-assert.equal(matchMeta({...unrelated,originalLanguage:undefined},plan),null);
+assert.equal(matchMeta(unrelated,plan),true); // Semantic review decides relevance.
+assert.equal(matchMeta({...unrelated,originalLanguage:undefined},plan),true); // Theme can qualify independently.
 for(const invalid of [{anyOf:[]},{anyOf:[{summary:'empty'},{summary:'x',languages:['th']}]},{anyOf:[{...plan},{summary:'x',languages:['th']}]},{anyOf:[{summary:'x',languages:['th'],sort:'newest'},{summary:'y',languages:['en']}]}])assert.throws(()=>validatePlan({summary:'Invalid',...invalid}));
 const config={userUUID:'or-test',apiKeys:{gemini:'fixture'},search:{ai_model:'fixture'}};
-let calls=0;const generate=async()=>{calls++;return{text:'{"matches":[0,1]}'}};
+let calls=0;const generate=async args=>{calls++;const rows=JSON.parse(args.prompt.split('Candidates: ')[1]);return{text:JSON.stringify({matches:rows.flatMap((r,i)=>r.plot.includes('Thai folklore')?[i]:[])})}};
 const tick=()=>new Promise(r=>setTimeout(r,2));
 (async()=>{
 assert.deepEqual(await reviewNaturalFilterCandidates([thai],plan,config,()=>{throw Error('Language match should not need semantic review')}),[thai]);
