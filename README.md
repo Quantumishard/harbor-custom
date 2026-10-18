@@ -6,13 +6,19 @@ An unofficial personal snapshot of Harbor 0.9.132 with custom playback, subtitle
 
 Download the Windows x64 ZIP and `SHA256SUMS.txt` from [Releases](https://github.com/Quantumishard/harbor-custom/releases). Fully quit Harbor, extract the complete ZIP into a new folder, and run `harbor.exe`. Keep all accompanying runtime files together. Windows WebView2 is required. Back up existing Harbor data before using any build.
 
-Latest packaged build: `custom-episode-ratings-season-return-20261016`.
+Latest packaged build: `custom-natural-catalog-filter-subtitle-white-20261017`.
 
 AIOMetadata catalogs with manifest IDs `aio-metadata` or `com.aio.metadata` can supply up to 100 results per catalog to main search. Movie and series rows containing those results retain up to 100 items through both merge passes. The addon must supply those results; this does not add pagination. Other addon limits remain as before.
 
+## Natural-language catalog filters and subtitle color (2026-10-17)
+
+AIOMetadata catalogs now offer **Filter this catalog** in the full catalog grid. Requests are interpreted once, then the backend scans catalog membership, applies metadata rules, sorts all matches and returns paginated results. Progress, missing-metadata counts and Clear are available in Harbor. Requires the companion backend patch in `packaging/aiometadata/natural-catalog-filter.patch`; the user's server is already updated.
+
+Styled text subtitles use the selected text color and opacity by default while retaining file fonts and layout. A switch restores authored colors. Native HDR subtitle reference brightness is 300 nits. See [usage, verification and limitations](docs/release-notes/natural-catalog-filters-20261017.md).
+
 ## Episode-rating recovery (source update, 2026-10-17)
 
-Episode IMDb ratings are now saved locally, shown immediately when returning to a season, and retained if a provider fails. Empty responses can recover after a short backoff; requests have timeouts and missing badges retry automatically. The configured OMDb key remains private, and the existing API-limit handling is preserved. This source update is newer than the linked October 16 release.
+Episode IMDb ratings are now saved locally, shown immediately when returning to a season, and retained if a provider fails. Empty responses can recover after a short backoff; requests have timeouts and missing badges retry automatically. The configured OMDb key remains private, and the existing API-limit handling is preserved. This repair is included in the October 17 packaged build.
 
 TVDB ordering and story arcs now request IMDb ratings for the seasons actually displayed, independently of the main season selector. Cards and rows use matching season/episode coordinates, and multi-season lists fetch at most four seasons concurrently.
 

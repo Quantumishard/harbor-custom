@@ -1,0 +1,23 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const root=require('node:path').resolve(__dirname,'..');
+const ts=require(root+'/node_modules/typescript');
+const source=fs.readFileSync(root+'/src/lib/player/sub-style.ts','utf8');
+const code=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
+const props=new Map();const context={exports:{},require:()=>({invoke:(_command,args)=>{props.set(args.name,args.value);return Promise.resolve()}})};
+vm.runInNewContext(code,context);
+const settings={subAssOverride:'no',subUseTextColor:true,subFontColor:'#FFFFFF',subOpacity:1,subFontFamily:'system',subFontSize:32,subStyle:'shadow',subBorderColor:'#000000',subBorderSize:2,subBoxColor:'#000000',subBoxOpacity:.6,subMarginY:5,subAlignX:'center',subLineSpacing:0};
+(async()=>{
+await context.exports.applySubStyle(settings,{assNativeActive:true,imageNativeActive:false});
+assert.equal(props.get('sub-color'),'#FFFFFFFF');
+assert.equal(props.get('sub-ass-style-overrides')[0],'PrimaryColour=&H00FFFFFF');
+assert.equal(props.get('sub-ass-override'),'yes');
+assert.equal(props.get('sub-ass-force-margins'),'no');assert.equal(props.get('sub-pos'),100);
+assert.equal(props.get('sub-hdr-peak'),300);
+await context.exports.applySubStyle({...settings,subUseTextColor:false});
+assert.equal(props.get('sub-ass-override'),'no');assert.equal(props.get('sub-ass-style-overrides').length,0);
+await context.exports.applySubStyle({...settings,subFontColor:'#123456',subOpacity:.5},{assNativeActive:true,imageNativeActive:false,assScale:1.2});
+assert.equal(props.get('sub-color'),'#80123456');assert.equal(props.get('sub-ass-style-overrides')[0],'PrimaryColour=&H80563412');
+assert.equal(props.get('sub-ass-override'),'scale');assert.equal(props.get('sub-scale'),1.2);
+assert.ok(fs.readFileSync(root+'/src/views/player/hooks/use-sub-style-apply.ts','utf8').includes('settings.subUseTextColor,'));
+console.log('PASS: opaque white, ASS alpha/channel conversion, preserved placement and scale, opt-out, HDR brightness and live reapplication dependency');
+})().catch(e=>{console.error(e);process.exit(1)});

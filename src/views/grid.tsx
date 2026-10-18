@@ -1,3 +1,4 @@
+import { NaturalCatalogFilter } from "@/components/natural-catalog-filter";
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, ListFilter } from "lucide-react";
 import { Dropdown } from "@/components/dropdown";
@@ -22,7 +23,8 @@ export function GridView({ grid, active = true }: { grid: GridSpec; active?: boo
   const [filterValue, setFilterValue] = useState(grid.filter?.initialValue ?? "");
 
   const filterOption = grid.filter?.options.find((option) => option.value === filterValue);
-  const fetcher = filterOption?.fetcher ?? grid.fetcher;
+  const [naturalFetcher, setNaturalFetcher] = useState<GridSpec["fetcher"] | null>(null);
+  const fetcher = naturalFetcher ?? filterOption?.fetcher ?? grid.fetcher;
 
   const initialPage =
     filterOption?.initialPage ??
@@ -30,7 +32,7 @@ export function GridView({ grid, active = true }: { grid: GridSpec; active?: boo
     ((filterOption?.initial ?? grid.initial)?.length ? 1 : 0);
 
   const [page, setPage] = useState(initialPage);
-  const [done, setDone] = useState(initialPage >= PAGE_CAP);
+  const [done, setDone] = useState(initialPage >= (naturalFetcher ? 1000 : PAGE_CAP));
 
   // Preview seeds are not complete pages. Provider offsets count raw results,
   // including duplicates, rather than the number of visible cards.
@@ -49,6 +51,7 @@ export function GridView({ grid, active = true }: { grid: GridSpec; active?: boo
     loadingRef.current = false;
     loadedRef.current = nextInitialPage === 0 ? 0 : initial.length;
 
+    setNaturalFetcher(null);
     setFilterValue(value);
     setMetas(initial);
     setPage(nextInitialPage);
@@ -86,7 +89,7 @@ export function GridView({ grid, active = true }: { grid: GridSpec; active?: boo
             if (cancelled) return;
             setPage(next);
             loadedRef.current += batch.length;
-            if (batch.length === 0 || next >= PAGE_CAP) setDone(true);
+            if (batch.length === 0 || next >= (naturalFetcher ? 1000 : PAGE_CAP)) setDone(true);
             const seen = new Set(metas.map((m) => m.id));
             const fresh = batch.filter((m) => {
               if (seen.has(m.id)) return false;
@@ -232,6 +235,22 @@ export function GridView({ grid, active = true }: { grid: GridSpec; active?: boo
               />
             )}
           </div>
+          {grid.naturalCatalog && (
+            <NaturalCatalogFilter
+              key={filterValue}
+              catalog={grid.naturalCatalog}
+              genre={filterValue || null}
+              onApply={(nextFetcher) => {
+                setNaturalFetcher(() => nextFetcher);
+                loadingRef.current = false;
+                loadedRef.current = 0;
+                setMetas([]);
+                setPage(0);
+                setDone(false);
+                setLoadError(false);
+              }}
+            />
+          )}
           {body}
         </div>
       )}

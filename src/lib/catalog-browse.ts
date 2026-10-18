@@ -38,6 +38,7 @@ export type BrowseCatalog = {
   type: string;
   id: string;
   name: string;
+  naturalFilterSupported?: boolean;
   genreExtra: string | null;
   genres: string[];
 };
@@ -105,6 +106,7 @@ export async function listBrowseCatalogs(
       out.push({
         key: `${addon.manifest.id}-${cat.type}-${cat.id}`,
         addonName: addon.manifest.name,
+        naturalFilterSupported: ["aio-metadata", "com.aio.metadata"].includes(addon.manifest.id),
         addonLogo: addon.manifest.logo,
         base,
         type: cat.type,

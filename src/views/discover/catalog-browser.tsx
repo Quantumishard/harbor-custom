@@ -212,6 +212,7 @@ export function CatalogBrowser() {
     if (!selected) return;
     openGrid({
       title: selected.name,
+      naturalCatalog: selected.naturalFilterSupported ? selected : undefined,
       fetcher: browseFetcher(selected, genre),
       filter:
         selected.genres.length > 0

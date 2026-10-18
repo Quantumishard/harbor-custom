@@ -58,6 +58,7 @@ export function useSubStyleApply(params: {
     settings.subAssNormalizeSize,
     settings.subFontSize,
     settings.subFontColor,
+    settings.subUseTextColor,
     settings.subBorderColor,
     settings.subBorderSize,
     settings.subMarginY,

@@ -155,6 +155,7 @@ export type PlayerStreamRef = {
 };
 
 export type GridSpec = {
+  naturalCatalog?: import("./catalog-browse").BrowseCatalog;
   title: string;
   fetcher: (page: number, loaded?: number) => Promise<Meta[]>;
   initial?: Meta[];

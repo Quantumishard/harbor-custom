@@ -272,6 +272,7 @@ export const DEFAULT: Settings = {
   preferOriginalAudioLanguage: false,
   subFontSize: 32,
   subFontColor: "#FFFFFF",
+  subUseTextColor: true,
   subBorderColor: "#000000",
   subBorderSize: 0,
   subMarginY: 12,

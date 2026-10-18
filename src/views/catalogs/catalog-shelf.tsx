@@ -80,6 +80,7 @@ export function CatalogShelf({ catalog }: { catalog: BrowseCatalog }) {
         onViewAll={() =>
           openGrid({
             title: catalog.name,
+            naturalCatalog: catalog.naturalFilterSupported ? catalog : undefined,
             fetcher: browseFetcher(catalog, null),
             initial: items ?? undefined,
             filter:
