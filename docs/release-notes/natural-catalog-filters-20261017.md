@@ -65,32 +65,3 @@ This is an AIOMetadata update; no new Harbor download is required. Existing sema
 **Foreign language** now means a non-English original language, without specifying a language or region. Combine it with other limits, such as **foreign language horror since 2010**. English originals are excluded even if a foreign dub is available; missing language metadata remains unknown. An explicitly named reference language can be excluded instead. These are factual checks and need no thematic AI review.
 
 No new Harbor download is required. Installations with the alternatives update can apply `packaging/aiometadata/foreign-language-filters.patch`, then rebuild/restart AIOMetadata. First installations use the full companion patch.
-
-
-## General AI search criteria in catalog filters (backend update, 2026-10-18)
-
-Catalog filters now accept general natural-language search criteria instead of rejecting requests outside a fixed metadata schema. Production studios, original networks, cast/crew, countries, historical topics, awards, adaptations, similarities, moods, complex boolean expressions and combinations are evaluated against the selected catalog. Semantic queries review every member passing shared factual rules; plot keywords no longer gate eligibility. Simple factual filters retain deterministic checks.
-
-AI review receives cached TMDB production, credit, country, original-release, certification, collection, financial and regional availability evidence when available. Original network/studio and current streaming availability are distinct. Missing facts are not proof of a match; uncertain facts can still cause omissions. The same selected Gemini/OpenRouter model and web-search setting as main AI search are used. Grounding can verify uncertain/current facts when enabled; there is no guarantee of exhaustive recall or live availability without adequate evidence.
-
-General ranking requests use globally sorted numeric values (or AI relevance scores for subjective ranking); explicit counts apply after scanning/sorting, including partial Stop snapshots. Subjective scores are approximate. Recent/newest requests preserve the main search's rolling three-year/six-month date semantics. Unsupported or out-of-schema planner responses fall back to reviewing the complete original request, rather than dropping criteria. AI may still misinterpret a request; inspect its displayed summary.
-
-Broader review can increase scan time, token use and grounding costs. Review decisions remain cached for 30 minutes and are scoped to provider, model, web-search setting, account, date, intent and evidence. Stop remains available and freezes checked results. No new Harbor download is required. Installations with the foreign-language update can apply `packaging/aiometadata/general-search-filters.patch`, then rebuild/restart AIOMetadata. New installations use the full companion patch. Earlier lexical-gating and Gemini-only limitations described in prior update notes are superseded here.
-
-
-## Filter review reliability (2026-10-18)
-
-Fixes a reproduced PBS filter failure on Drama Shows (2023-): the model returned prose instead of JSON after a successful first page. Reviews now enforce JSON instructions, bound each batch by both title count and evidence size, retry malformed responses, split repeatedly malformed batches, and retry temporary provider failures once. Candidate indexes and numeric ranking values remain strictly validated; no unreviewed rows are accepted. Exhausted retries report a specific error instead of blaming supported filter wording. Safe diagnostics record failure category/counts without raw responses, credentials or private addon URLs. General ranking-only requests also receive full metadata evidence.
-
-Existing general-search-filter installations can apply `packaging/aiometadata/filter-review-reliability.patch`, rebuild and restart AIOMetadata. New installations use the full companion patch. Restart clears previous failed scan caches. No new Harbor build is required.
-
-
-## Cost-controlled filters (2026-10-18; supersedes broad AI review defaults)
-
-Factual filters now use deterministic metadata rules for original networks, production studios, cast, directors, writers, creators, countries, collections, regional providers, certifications and status, alongside existing language/year/genre/rating/runtime checks. The bare PBS query uses a local alias rule and makes zero AI calls. Other factual requests use a short planning call, then scan catalog metadata without per-title AI review. Missing facts remain unknown; exact name matching depends on aliases included in the plan.
-
-Every scan has a hard shared cap of **two AI requests and 8,000 UTF-8 prompt bytes total**, including planning and retries. Each response is limited to **512 output tokens**. Filter web grounding is disabled for Gemini and OpenRouter; main-search settings and output defaults are unchanged. These are request/input/output limits, not a fixed dollar quote for every model. Compact thematic prompts include a short plot and a few clues instead of full credits and worldwide provider listings. Supplied keyword clues narrow thematic candidates; this reduces recall when clues are absent. Factual metadata stays local.
-
-When the AI cap is reached, the scan returns a sorted partial snapshot with an explicit budget notice. Checked chunks are committed within a source page, so early results can survive a cap during the first page. Thematic scans may return only a small partial set. Factual-only scans can cover the entire catalog without consuming review budget. Stop also prevents subsequent budgeted requests. Cached jobs are reused for 30 minutes after last use. The previous recursive retry splitting and unbounded full-catalog semantic review are removed. Verification used mocked AI only; no paid test scans were run.
-
-Existing reliability-patch installations can apply `packaging/aiometadata/cost-controlled-filters.patch`, then rebuild/restart AIOMetadata. First installations use the updated full patch. No new Harbor download is required.
