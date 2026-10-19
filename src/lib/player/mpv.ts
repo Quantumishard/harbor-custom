@@ -845,6 +845,7 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
     (name, value) => invoke("mpv_set_property", { name, value }),
   );
   let harborShadersActive = false;
+  let harborShadersTouched = false;
   return {
     moveEmbeddedSurface: (rect, commit) => moveEmbeddedSurface?.(rect, commit) ?? false,
     attach(h) {
@@ -1177,6 +1178,7 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
       const hasShaders = shaders.some(Boolean);
       if (!hasShaders && !harborShadersActive) return;
       harborShadersActive = hasShaders;
+      harborShadersTouched ||= hasShaders;
       const sep = isWindowsDesktop() ? ";" : ":";
       const value = shaders
         .filter(Boolean)
@@ -1478,6 +1480,7 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
       };
     },
     destroy() {
+      shaderProperties.cancel();
       stopGeometryTracking?.();
       stopGeometryTracking = null;
       mediaRevision += 1;
@@ -1486,7 +1489,11 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
       finishPlaybackTrace(activeTraceId, "aborted");
       activeTraceId = null;
       const keepNativeSession =
-        mpvStarted && currentIsLive != null && isWindowsDesktop() && mpvOptions?.embed === true;
+        // Shader settings belong to this view, but the native player can outlive it.
+        // Recreate shader-used sessions so a new view cannot inherit PQ output
+        // without the old view's restoration state.
+        mpvStarted && currentIsLive != null && isWindowsDesktop() && mpvOptions?.embed === true &&
+        !harborShadersTouched;
       if (keepNativeSession) {
         invalidateMpvSubtitleFpsContext();
         const retained: RetainedMpv = {

@@ -9,6 +9,10 @@ export class ShaderProperties {
     private write: (name: string, value: unknown) => Promise<unknown>,
   ) {}
 
+  cancel(): void {
+    this.revision++;
+  }
+
   apply(props: Record<string, string>): Promise<void> {
     const revision = ++this.revision;
     const wanted = { ...props };
