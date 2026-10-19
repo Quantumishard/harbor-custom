@@ -30,6 +30,10 @@ No Harbor download is required. The user's backend is updated. Existing installa
 
 The earlier subtitle color/brightness overrides remain reverted after the PGS placement regression; this backend change does not alter playback or subtitle behavior.
 
+## Community backend (source update, 2026-10-19)
+
+Harbor API requests now use `https://harborcommunity.site`, matching the official community source. The episode-rating response format remains compatible; live checks returned all 20 Making a Murderer ratings and all 44 Ozark ratings. Existing custom features and the OMDb fallback are retained. This source update is newer than the linked October 16 release.
+
 ## Episode-rating recovery (source update, 2026-10-17)
 
 Episode IMDb ratings are now saved locally, shown immediately when returning to a season, and retained if a provider fails. Empty responses can recover after a short backoff; requests have timeouts and missing badges retry automatically. The configured OMDb key remains private, and the existing API-limit handling is preserved. This repair is included in the October 17 packaged build.
