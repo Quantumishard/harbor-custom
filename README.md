@@ -10,29 +10,17 @@ Latest packaged build: `custom-subtitle-style-revert-20261018`.
 
 AIOMetadata catalogs with manifest IDs `aio-metadata` or `com.aio.metadata` can supply up to 100 results per catalog to main search. Movie and series rows containing those results retain up to 100 items through both merge passes. The addon must supply those results; this does not add pagination. Other addon limits remain as before.
 
-## Natural-language catalog filters (2026-10-17)
+## Catalog filters: TMDB title and year (2026-10-18)
 
-AIOMetadata catalogs now offer **Filter this catalog** in the full catalog grid. Requests are interpreted once, then the backend scans catalog membership, applies metadata rules, sorts all matches and returns paginated results. Progress, missing-metadata counts and Clear are available in Harbor. **Stop and show results** stops a large scan and returns the sorted matches already checked, explicitly labeled as partial. Partial snapshots are cached for 30 minutes after their last use; ranking covers only the scanned portion. Requires the companion backend patch in `packaging/aiometadata/natural-catalog-filter.patch`; the user's server is already updated.
+Catalog filters on the AIOMetadata backend now use **TMDB metadata only, with no AI interpretation, semantic review, grounding, or token spending**. The main search bar is unchanged. Ordinary filter text is a literal title substring, matched against TMDB's localized and original titles with case/accent/punctuation normalization. A year constrains the original movie release or first series premiere.
 
-The added subtitle color and brightness overrides were reverted on October 18 after a PGS placement regression. Original subtitle styling/override behavior is restored. See [usage, verification and limitations](docs/release-notes/natural-catalog-filters-20261017.md).
+Examples: `The Bear`, `The Bear 2023`, `2023`, `2023-`, `2020-2024`, `Bear since 2023`, `before 2020`, or `between 2020 and 2024`. Quote numeric titles (`"1917"`) or use `title:1917` to distinguish them from years. Append `sort:newest` or `sort:oldest` for global year ordering; default order follows the catalog. These are explicit title/year filters, not general natural-language thematic searches.
 
-## Semantic relevance correction (backend update, 2026-10-18)
+The backend scans only members of the selected catalog, uses cached TMDB details, and excludes unverified mappings from matches. Missing TMDB title/year evidence is counted as unknown. Stop returns a frozen sorted partial snapshot; results remain cached for 30 minutes after last use. Catalog-page and metadata failures still report errors without invoking AI fallback.
 
-Thematic filters now preserve the requested word sense and use the configured Gemini model to review lexical candidates. For example, **subterranean** refers to physical below-ground settings: American Mary's underground body-modification no longer qualifies, while The Descent and As Above, So Below pass the real-model regression test. This is a backend update compatible with the current Harbor download.
+No Harbor download is required. The user's backend is updated. Existing installations at the October 18 11:44 version can apply `packaging/aiometadata/tmdb-title-year-filters.patch`, rebuild and restart AIOMetadata; new installations use `packaging/aiometadata/natural-catalog-filter.patch`. Older incremental patches in this directory are historical and should not be applied on top of this version. Tests reject AI module imports and cover parsing, metadata mapping, a 1,200-title scan, sorting, pagination, cache and Stop. No paid AI tests were run.
 
-Purely factual filters keep their deterministic checks. Thematic candidates incur extra batched AI calls; positive and negative review decisions are cached for 30 minutes and scoped to account, model, intent and metadata. Stop snapshots stay fixed during in-flight reviews. Installations with the previous Stop backend can apply `packaging/aiometadata/semantic-relevance.patch`, then rebuild/restart AIOMetadata. First installations use the updated full companion patch. This improves candidate precision; broad lexical candidate retrieval can still miss titles whose metadata lacks relevant clues.
-
-## Alternative filters (backend update, 2026-10-18)
-
-Filters now support alternatives across different fields. For example, **southeast asian language or theme** accepts either a regional original language or a relevant regional theme; an English-language film can qualify through its theme. Shared year, rating and genre limits still apply to every branch, and sorting applies to the combined deduplicated results. Thematic branches retain AI relevance review. Up to six alternatives are supported; nested alternatives are not supported.
-
-This is an AIOMetadata update; no new Harbor download is required. Existing semantic-review installations can apply `packaging/aiometadata/alternative-filters.patch`, then rebuild/restart AIOMetadata. New installations use the full companion patch. The planner and validator allow up to 64 clues per group to accommodate regional names and demonyms.
-
-## Foreign-language filters (backend update, 2026-10-18)
-
-**Foreign language** now means a non-English original language, without specifying a language or region. Combine it with other limits, such as **foreign language horror since 2010**. English originals are excluded even if a foreign dub is available; missing language metadata remains unknown. An explicitly named reference language can be excluded instead. These are factual checks and need no thematic AI review.
-
-No new Harbor download is required. Installations with the alternatives update can apply `packaging/aiometadata/foreign-language-filters.patch`, then rebuild/restart AIOMetadata. First installations use the full companion patch.
+The earlier subtitle color/brightness overrides remain reverted after the PGS placement regression; this backend change does not alter playback or subtitle behavior.
 
 ## Episode-rating recovery (source update, 2026-10-17)
 

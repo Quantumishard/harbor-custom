@@ -1,46 +1,20 @@
-const assert = require('node:assert/strict');
-const { validatePlan, matchMeta, sortMatches, naturalFilterPage } = require('/app/dist/server/lib/naturalCatalogFilter');
-const plan = validatePlan({summary:'Documentaries 2020+, at least 7, votes',minYear:2020,minRating:7,genres:['Documentary'],sort:'votes'});
-assert.equal(matchMeta({releaseInfo:'2022',imdbRating:'8',genres:['Documentary']},plan),true);
-assert.equal(matchMeta({releaseInfo:'2019',imdbRating:'8',genres:['Documentary']},plan),false);
-assert.equal(matchMeta({releaseInfo:'2022',genres:['Documentary']},plan),null);
-assert.equal(matchMeta({name:'Crime',description:'A crime drama'}, {summary:'true crime',terms:[['true crime','real crimes']]}),false);
-assert.equal(matchMeta({description:'A TRUE CRIME investigation'}, {summary:'true crime',terms:[['true crime']]}),true);
-assert.equal(matchMeta({description:'untrue crimes'}, {summary:'true crime',terms:[['true crime']]}),false);
-assert.equal(matchMeta({originalLanguage:'en'}, {summary:'English',languages:['en']}),true);
-assert.equal(matchMeta({}, {summary:'English',languages:['en']}),null);
-assert.equal(matchMeta({runtime:'2h10min'}, {summary:'under two hours',maxRuntime:120}),false);
-assert.equal(matchMeta({runtime:'1h35min'}, {summary:'under two hours',maxRuntime:120}),true);
-assert.equal(matchMeta({runtime:'2h'}, {summary:'at least two hours',minRuntime:120}),true);
-assert.equal(matchMeta({runtime:'95min'}, {summary:'at least 90 minutes',minRuntime:90}),true);
-assert.equal(matchMeta({type:'movie'}, {summary:'series',types:['series']}),false);
-assert.equal(matchMeta({type:'series'}, {summary:'series',types:['series']}),true);
-assert.throws(()=>validatePlan({summary:'bad',sql:'DROP TABLE'}));
-assert.throws(()=>validatePlan({summary:'bad',minRating:11}));
-assert.throws(()=>validatePlan({summary:'bad',minYear:2025,maxYear:2020}));
-assert.throws(()=>validatePlan({unsupported:'Only metadata filters are supported'}));
-const rows=[{_nlVotes:5},{_nlVotes:100},{_nlVotes:12}];sortMatches(rows,{summary:'votes',sort:'votes'});assert.equal(rows[0]._nlVotes,100);
-async function finish(args) {
-  for(let i=0;i<1000;i++) {
-    const r=naturalFilterPage(args);
-    if(r.naturalFilter.status==='complete'||r.naturalFilter.status==='error') return r;
-    await new Promise(resolve=>setTimeout(resolve,2));
-  }
-  throw Error('Test timeout');
-}
+const assert=require('node:assert/strict');
+const Module=require('node:module');const original=Module._load;
+Module._load=function(name,...args){if(/gemini|openrouter|aiSearch/i.test(name))throw Error('AI dependency forbidden');return original.call(this,name,...args)};
+const {planNaturalFilter,matchMeta,enrichTmdbCatalogMeta,naturalFilterPage}=require('/app/dist/server/lib/naturalCatalogFilter');
+const row=(id,title,year)=>({id,type:'series',name:title,_nlTmdb:{titles:[title],year}});
+const finish=async args=>{for(let i=0;i<1000;i++){const r=naturalFilterPage(args);if(['complete','partial','error'].includes(r.naturalFilter.status))return r;await new Promise(r=>setTimeout(r,2))}throw Error('Timeout')};
 (async()=>{
-  let calls=0, plans=0;
-  const args={identity:['userA','catalogA'],query:'documentary',skip:0,
-    plan:async()=>{plans++;return {summary:'documentary',genres:['documentary'],sort:'votes'}},
-    load:async page=>{calls++;return page<=60?Array.from({length:20},(_,i)=>({id:`tt${(page-1)*20+i}`,type:'movie',genres:['Documentary'],_nlVotes:page})):[]},
-    enrich:async m=>m};
-  const first=naturalFilterPage(args);assert.equal(first.naturalFilter.status,'planning');assert.equal(first.metas.length,0);
-  const r=await finish(args);assert.equal(r.naturalFilter.status,'complete');assert.equal(r.naturalFilter.total,1200);assert.equal(r.naturalFilter.scanned,1200);
-  assert.equal(r.metas.length,100);assert.equal(r.metas[0]._nlVotes,60);assert.equal(calls,61);assert.equal(plans,1);
-  assert.equal(naturalFilterPage({...args,skip:100}).metas[0]._nlVotes,55);assert.equal(calls,61);
-  const isolated=await finish({...args,identity:['userB','catalogB'],load:async()=>[]});assert.equal(isolated.naturalFilter.total,0);
-  const failed=await finish({...args,identity:'failure',load:async()=>{throw Error('https://secret.example/key')}});
-  assert.equal(failed.naturalFilter.status,'error');assert.equal(failed.metas.length,0);assert.ok(!failed.naturalFilter.error.includes('secret'));
-  const repeated=await finish({...args,identity:'repeated',load:async()=>[{id:'tt1',type:'movie'}]});assert.equal(repeated.naturalFilter.status,'error');
-  console.log('PASS: strict plans, metadata rules, subject boundaries, full 60-page scan, global sorting, pagination, reuse, user/catalog isolation, failures and repeated-page detection');
+for(const [q,min,max,title] of [['2023',2023,2023,undefined],['2023-',2023,undefined,undefined],['2020-2024',2020,2024,undefined],['Bear 2023',2023,2023,'Bear'],['The Bear (2023)',2023,2023,'The Bear'],['Bear since 2023',2023,undefined,'Bear'],['after 2023',2024,undefined,undefined],['before 2023',undefined,2022,undefined],['between 2020 and 2023',2020,2023,undefined],['"1917"',undefined,undefined,'1917'],['title:1984',undefined,undefined,'1984']]){const p=await planNaturalFilter(q,{});assert.equal(p.minYear,min,q);assert.equal(p.maxYear,max,q);assert.equal(p.title,title,q)}
+const p=await planNaturalFilter('bear 2023-');assert.equal(matchMeta(row('1','The Bear',2024),p),true);assert.equal(matchMeta(row('1','The Bear',2022),p),false);assert.equal(matchMeta(row('1','Another Title',2024),p),false);assert.equal(matchMeta({name:'The Bear',releaseInfo:'2024'},p),null);
+assert.equal(matchMeta({_nlTmdb:{titles:['Amélie'],year:2001}},await planNaturalFilter('amelie')),true);
+await assert.rejects(()=>planNaturalFilter('2024-2020'));await assert.rejects(()=>planNaturalFilter(''));
+let calls=0;const enriched=await enrichTmdbCatalogMeta({id:'tt123',type:'movie',name:'Wrong catalog title'}, {}, {find:async()=>({movie_results:[{id:10}]}),movieInfo:async()=>{calls++;return{id:10,title:'TMDB Title',original_title:'Original Title',release_date:'2023-02-01'}}});assert.equal(enriched.id,'tt123');assert.equal(enriched.name,'TMDB Title');assert.equal(matchMeta(enriched,await planNaturalFilter('original 2023')),true);assert.equal(calls,1);
+assert.equal((await enrichTmdbCatalogMeta({id:'unsupported',type:'movie'}, {}, {}))._nlTmdb,null);
+assert.equal((await enrichTmdbCatalogMeta({id:'tmdb:10',type:'movie'}, {}, {movieInfo:async()=>({id:11,title:'Wrong mapping'})}))._nlTmdb,null);
+const tv=await enrichTmdbCatalogMeta({id:'tmdb:20',type:'series'}, {}, {tvInfo:async()=>({id:20,name:'Series',original_name:'Original',first_air_date:'2019-01-01',last_air_date:'2024-01-01'})});assert.equal(tv._nlTmdb.year,2019);
+const args={identity:'tmdb-only',query:'Show 2023- sort:newest',skip:0,plan:()=>planNaturalFilter('Show 2023- sort:newest'),load:async page=>page<=60?Array.from({length:20},(_,i)=>row(page+'-'+i,'Show '+i,2022+page%3)):[],enrich:async x=>x};
+const result=await finish(args);assert.equal(result.naturalFilter.status,'complete');assert.equal(result.naturalFilter.scanned,1200);assert.equal(result.naturalFilter.total,800);assert.equal(result.metas.length,100);assert.equal(result.metas[0]._nlTmdb.year,2024);assert.equal(naturalFilterPage({...args,skip:100}).metas.length,100);assert.deepEqual(naturalFilterPage(args),result);
+let release,loads=0;const partial={...args,identity:'tmdb-stop',load:async page=>{loads++;return page===1?[row('1','Show',2024)]:new Promise(r=>release=r)}};naturalFilterPage(partial);for(let i=0;i<200&&loads<2;i++)await new Promise(r=>setTimeout(r,2));const stopped=naturalFilterPage({...partial,action:'stop'});assert.equal(stopped.naturalFilter.status,'partial');assert.equal(stopped.metas.length,1);release([]);await new Promise(r=>setTimeout(r,2));assert.deepEqual(naturalFilterPage(partial),stopped);
+console.log('PASS: no AI dependencies, title/year parser, TMDB-only evidence, original titles, first premiere dates, unavailable/mismatched IDs, full 1200-title scan, global sorting/pagination/cache and frozen Stop snapshots');
 })().catch(e=>{console.error(e);process.exit(1)});
