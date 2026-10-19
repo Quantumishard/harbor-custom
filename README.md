@@ -6,7 +6,7 @@ An unofficial personal snapshot of Harbor 0.9.132 with custom playback, subtitle
 
 Download the Windows x64 ZIP and `SHA256SUMS.txt` from [Releases](https://github.com/Quantumishard/harbor-custom/releases). Fully quit Harbor, extract the complete ZIP into a new folder, and run `harbor.exe`. Keep all accompanying runtime files together. Windows WebView2 is required. Back up existing Harbor data before using any build.
 
-Latest packaged build: `custom-hdr-toys-sdr-handoff-20261019`.
+Latest packaged build: `custom-community-backend-20261019`.
 
 AIOMetadata catalogs with manifest IDs `aio-metadata` or `com.aio.metadata` can supply up to 100 results per catalog to main search. Movie and series rows containing those results retain up to 100 items through both merge passes. The addon must supply those results; this does not add pagination. Other addon limits remain as before.
 
@@ -32,7 +32,7 @@ The earlier subtitle color/brightness overrides remain reverted after the PGS pl
 
 ## Community backend (source update, 2026-10-19)
 
-Harbor API requests now use `https://harborcommunity.site`, matching the official community source. The episode-rating response format remains compatible; live checks returned all 20 Making a Murderer ratings and all 44 Ozark ratings. Existing custom features and the OMDb fallback are retained. This source update is newer than the linked October 16 release.
+Harbor API requests now use `https://harborcommunity.site`, matching the official community source. The episode-rating response format remains compatible; live checks returned all 20 Making a Murderer ratings and all 44 Ozark ratings. Existing custom features and the OMDb fallback are retained. The Windows package includes this backend update and the preceding HDR Toys fixes.
 
 ## Episode-rating recovery (source update, 2026-10-17)
 
