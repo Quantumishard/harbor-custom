@@ -5,7 +5,7 @@ function resolveBase(raw: string | undefined, fallback: string): string {
 
 export const HARBOR_API_BASE = resolveBase(
   import.meta.env.VITE_HARBOR_API_BASE,
-  "https://harbor.site",
+  "https://harborcommunity.site",
 );
 
 export const HARBOR_TRAKT_BASE = resolveBase(
