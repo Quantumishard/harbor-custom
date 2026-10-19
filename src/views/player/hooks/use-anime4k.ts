@@ -67,6 +67,7 @@ export function useAnime4k(
   src: PlayerSrc,
   videoWidth = 0,
   bridgeReady = true,
+  sourceGamma?: string,
 ) {
   const { settings, update } = useSettings();
   const choice = (settings.playerAnime4kOverride as Anime4kChoice) || "auto";
@@ -75,8 +76,8 @@ export function useAnime4k(
   // Depend on the resulting configuration so clock ticks and unrelated settings
   // don't recompile shaders, while folder, quality and override changes do.
   const shaderConfig = JSON.stringify({
-    chain: [...anime4kShadersFor(settings, src, choice, dims), ...generalShaderChain(settings)],
-    props: shaderCompanionProps(settings),
+    chain: [...anime4kShadersFor(settings, src, choice, dims), ...generalShaderChain(settings, sourceGamma)],
+    props: shaderCompanionProps(settings, sourceGamma),
   });
 
   useEffect(() => {

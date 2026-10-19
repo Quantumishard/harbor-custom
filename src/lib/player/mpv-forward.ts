@@ -1,3 +1,4 @@
+import { ShaderProperties } from "./shader-properties";
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
@@ -64,6 +65,10 @@ export function createForwardingMpvBridge(): ForwardingBridge {
   };
   const set = (name: string, value: unknown) =>
     invoke("mpv_set_property", { name, value }).catch(() => {});
+  const shaderProperties = new ShaderProperties(
+    (name) => invoke("mpv_get_property", { name }),
+    (name, value) => invoke("mpv_set_property", { name, value }),
+  );
   const cmd = (c: Array<string | number>) => invoke("mpv_command", { cmd: c }).catch(() => {});
 
   return {
@@ -144,7 +149,7 @@ export function createForwardingMpvBridge(): ForwardingBridge {
       );
     },
     setShaderProps(props) {
-      for (const [name, value] of Object.entries(props)) void set(name, value);
+      void shaderProperties.apply(props);
     },
     async addSubtitle(url, lang, title, select, metadata) {
       return forwardSubtitleAdd({ url, lang, title, select, metadata, mediaKey });

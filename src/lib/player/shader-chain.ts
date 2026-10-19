@@ -20,12 +20,14 @@ function conflictBlocked(entry: ShaderCatalogEntry, settings: Settings): boolean
   });
 }
 
-export function generalShaderChain(settings: Settings): string[] {
+export function generalShaderChain(settings: Settings, sourceGamma?: string): string[] {
   const stages: Array<{ order: number; paths: string[] }> = [];
   for (const entry of SHADER_CATALOG) {
     const st = settings.playerShaders?.[entry.id];
     if (!st?.enabled || !st.dir) continue;
     if (conflictBlocked(entry, settings)) continue;
+    // This pack uses pq_inv; do not send SDR/HLG or unprobed sources through PQ.
+    if (entry.id === "hdr-toys" && sourceGamma !== "pq" && sourceGamma !== "smpte2084") continue;
     const dir = normDir(st.dir);
     const paths = selectedFiles(entry, st.variant).map((f) => `${dir}/${f}`);
     stages.push({ order: STAGE_ORDER[entry.stage], paths });
@@ -34,12 +36,14 @@ export function generalShaderChain(settings: Settings): string[] {
   return stages.flatMap((s) => s.paths);
 }
 
-export function shaderCompanionProps(settings: Settings): Record<string, string> {
+export function shaderCompanionProps(settings: Settings, sourceGamma?: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const entry of SHADER_CATALOG) {
     const st = settings.playerShaders?.[entry.id];
     if (!st?.enabled || !st.dir || !entry.companionProps) continue;
     if (conflictBlocked(entry, settings)) continue;
+    // This pack uses pq_inv; do not send SDR/HLG or unprobed sources through PQ.
+    if (entry.id === "hdr-toys" && sourceGamma !== "pq" && sourceGamma !== "smpte2084") continue;
     Object.assign(out, entry.companionProps);
   }
   return out;

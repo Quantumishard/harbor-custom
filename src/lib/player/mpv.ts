@@ -1,3 +1,4 @@
+import { ShaderProperties } from "./shader-properties";
 import { invoke } from "@tauri-apps/api/core";
 import { SubtitlePreparationError, prepareSubtitle } from "@/lib/subtitles/prepare";
 import { subtitleTrackDownloadHeaders } from "@/lib/subtitles/provider-auth";
@@ -839,6 +840,10 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
     }
   };
 
+  const shaderProperties = new ShaderProperties(
+    (name) => invoke("mpv_get_property", { name }),
+    (name, value) => invoke("mpv_set_property", { name, value }),
+  );
   let harborShadersActive = false;
   return {
     moveEmbeddedSurface: (rect, commit) => moveEmbeddedSurface?.(rect, commit) ?? false,
@@ -1182,11 +1187,7 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
       );
     },
     setShaderProps(props) {
-      for (const [name, value] of Object.entries(props)) {
-        invoke("mpv_set_property", { name, value }).catch((e) =>
-          console.warn("[shaders] companion prop failed", name, e),
-        );
-      }
+      void shaderProperties.apply(props);
     },
     async addSubtitle(url, lang, title, select, metadata, origin = "manual"): Promise<boolean> {
       const requestMediaRevision = mediaRevision;

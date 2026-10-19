@@ -253,6 +253,9 @@ export const SHADER_CATALOG: ShaderCatalogEntry[] = [
       "target-colorspace-hint": "no",
       "target-prim": "bt.2020",
       "target-trc": "pq",
+      // The OUTPUT shaders emit SDR, but mpv still encodes native subtitles as PQ.
+      // PQ code white is 10,000 nits; this is not the SDR display brightness.
+      "sub-hdr-peak": "10000",
     },
     conflictsWith: ["hdrToSdr", "rtxHdr"],
     verify: true,
