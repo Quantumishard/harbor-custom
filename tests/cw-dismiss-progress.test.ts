@@ -32,7 +32,7 @@ const simklIds = (() => {
 function harness(
   seed?: string,
   onChange = () => {},
-  cloud?: { fresh: LibraryItem; writes: LibraryItem[] },
+  cloud?: { fresh: LibraryItem; writes: LibraryItem[]; readError?: boolean },
 ) {
   let privateProfile: string | null = null;
   const data = new Map<string, string>();
@@ -56,7 +56,10 @@ function harness(
       setItemWithRecovery: (k: string, v: string) => data.set(k, v),
     },
     "./stremio": {
-      libraryGetOneStrict: async () => cloud?.fresh ?? null,
+      libraryGetOneStrict: async () => {
+        if (cloud?.readError) throw new Error("offline");
+        return cloud?.fresh ?? null;
+      },
       episodeFromVideoId: (id?: string) => {
         const parts = id?.split(":") ?? [];
         if (parts.length < 3) return null;
@@ -494,4 +497,20 @@ test("legacy Simkl-only dismissals migrate before the shared store consumes them
   assert.equal(h.api.isCwDismissed(item("simkl")), true);
   h.setPrivateProfile("alice");
   assert.equal(h.api.isCwDismissed(item("simkl")), true);
+});
+
+test("unreadable bookmark state never writes a stale membership during dismissal", async () => {
+  const writes: LibraryItem[] = [];
+  const h = harness(undefined, undefined, { fresh: item(), writes, readError: true });
+  h.api.dismissCw(item(), "test");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(writes.length, 0);
+  assert.equal(h.api.isCwDismissed(item()), true);
+});
+
+test("acknowledged dismissal reports failed synchronization when bookmark state cannot be read", async () => {
+  const writes: LibraryItem[] = [];
+  const h = harness(undefined, undefined, { fresh: item(), writes, readError: true });
+  await assert.rejects(h.api.dismissCw(item(), "test", { acknowledged: true }), /synchronization/);
+  assert.equal(writes.length, 0);
 });
