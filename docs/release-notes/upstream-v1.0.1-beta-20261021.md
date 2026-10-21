@@ -17,4 +17,6 @@ Verification:
 - The broad test run is not clean. All 11 failures in the ContinueCard dismissal/interaction fixtures also reproduce in the untouched upstream tag: missing fixture dependencies and existing persistence assertions. They are not reported as passing.
 - Linux packaging is not verified on this Windows host.
 
-The Windows package and its checksums will be published as a separate custom prerelease after the native build and package verification. Existing app data and the October 19 release are preserved.
+Windows verification completed: the native release build passed, the rebuilt extension runtime answered its protocol ping, all 571 bundled JavaScript/CSS/HTML assets match the executable, and all 395 archived runtime files passed SHA-256 verification. The package is published as [custom-v1.0.1-beta-20261021](https://github.com/Quantumishard/harbor-custom/releases/tag/custom-v1.0.1-beta-20261021), with checksums and verification reports. Existing app data and the October 19 release are preserved.
+
+Compiled application source: `ce297b118f2188f808ec8c56f1f31b046299de0e`. The release tag also includes the documentation and regression-fixture follow-up; application source is unchanged from that build commit. Repository-wide formatting is not clean (the untouched upstream tag also reports 4,794 formatting issues); unrelated files were not reformatted.

@@ -4,13 +4,13 @@ An unofficial personal fork synchronized with Harbor v1.0.1-beta on October 21, 
 
 ## Source synchronized with v1.0.1-beta (2026-10-21)
 
-The source includes the exact [upstream v1.0.1-beta release](https://github.com/Harborofficial/Harbor/releases/tag/v1.0.1-beta), commit `d862943d`, together with the current personal customizations. See [merge and verification notes](docs/release-notes/upstream-v1.0.1-beta-20261021.md). This is a source-only update; the Windows download below remains the October 19 build.
+The source includes the exact [upstream v1.0.1-beta release](https://github.com/Harborofficial/Harbor/releases/tag/v1.0.1-beta), commit `d862943d`, together with the current personal customizations. See [merge and verification notes](docs/release-notes/upstream-v1.0.1-beta-20261021.md). The Windows x64 portable build is available as `custom-v1.0.1-beta-20261021`; the October 19 release remains available as a fallback.
 
 ## Windows download
 
 Download the Windows x64 ZIP and `SHA256SUMS.txt` from [Releases](https://github.com/Quantumishard/harbor-custom/releases). Fully quit Harbor, extract the complete ZIP into a new folder, and run `harbor.exe`. Keep all accompanying runtime files together. Windows WebView2 is required. Back up existing Harbor data before using any build.
 
-Latest packaged build: `custom-community-backend-20261019`.
+Latest packaged build: [`custom-v1.0.1-beta-20261021`](https://github.com/Quantumishard/harbor-custom/releases/tag/custom-v1.0.1-beta-20261021).
 
 AIOMetadata catalogs with manifest IDs `aio-metadata` or `com.aio.metadata` can supply up to 100 results per catalog to main search. Movie and series rows containing those results retain up to 100 items through both merge passes. The addon must supply those results; this does not add pagination. Other addon limits remain as before.
 
