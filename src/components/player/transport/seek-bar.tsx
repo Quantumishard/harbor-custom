@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSettings } from "@/lib/settings";
 import {
   usePlaybackPositionGated,
@@ -10,6 +10,7 @@ import { useTrickplayState } from "@/lib/trickplay";
 import { useSkipSegmentsView } from "@/lib/skip-intro/segment-store";
 import { ThumbPreview } from "@/components/player/thumb-preview";
 import { SeekBarVisual } from "./seek-bar-visual";
+import { useHoverExitGuard } from "./use-hover-exit-guard";
 import { fmtTime } from "./transport-utils";
 import type { Chapter } from "@/lib/player/bridge";
 
@@ -131,10 +132,13 @@ export function SeekBar({
       setOverDot(Math.abs(pointerX - dotX) <= baseDot / 2 + 8);
     }
   };
-  const onLeave = () => {
+  const onLeave = useCallback(() => {
     setHover(null);
     setOverDot(false);
-  };
+  }, []);
+  const hoverGuardRef = useRef(false);
+  hoverGuardRef.current = hover != null && scrub == null;
+  useHoverExitGuard(ref, hoverGuardRef, onLeave);
   const onCancel = () => clearInteraction();
   const onDown = (e: React.PointerEvent) => {
     try {
@@ -183,7 +187,8 @@ export function SeekBar({
           hovered={hover != null}
           segments={segmentSpans}
         />
-        {durationSec > 0 &&
+        {settings.seekBarChapters !== false &&
+          durationSec > 0 &&
           chapters
             .filter((chapter) => chapter.startSec > 0 && chapter.startSec < durationSec)
             .map((chapter, index) => (

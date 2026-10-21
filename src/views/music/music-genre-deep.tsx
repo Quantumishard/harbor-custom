@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { MusicCollectionGrid } from "@/components/music/music-collection-grid";
 import { MusicSectionHead } from "@/components/music/music-track-grid";
 import { MusicTrackGrid } from "@/components/music/music-track-grid";
+import { useMusicItemMenu } from "@/components/music/music-item-menu";
+import { useMusicCatalogPlayback } from "@/components/music/use-music-catalog-playback";
 import { useT } from "@/lib/i18n";
 import {
   loadMusicGenreArtistsPage,
@@ -133,6 +135,11 @@ export function MusicGenreDeep({
     () => new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }),
     [],
   );
+  const catalogPlayback = useMusicCatalogPlayback();
+  const itemMenu = useMusicItemMenu({
+    onPlay: (item) => { void catalogPlayback.play(item, [item]); },
+    onOpen: (item) => onOpen(item, [item]),
+  });
 
   const albumEntries: MusicCollectionEntry[] = useMemo(
     () =>
@@ -211,6 +218,9 @@ export function MusicGenreDeep({
           entries={albumEntries}
           emptyCopy={t("music.explore.deepEmpty")}
           onOpen={(entry) => entry.item && onOpen(entry.item, albums)}
+          onContextMenu={(entry, event) => {
+            if (entry.item) itemMenu.open(entry.item, 0, event);
+          }}
         />
       )}
       {lane === "artists" && (
@@ -218,10 +228,14 @@ export function MusicGenreDeep({
           entries={artistEntries}
           emptyCopy={t("music.explore.deepEmpty")}
           onOpen={(entry) => entry.item && onOpen(entry.item, artistEntries.flatMap((row) => (row.item ? [row.item] : [])))}
+          onContextMenu={(entry, event) => {
+            if (entry.item) itemMenu.open(entry.item, 0, event);
+          }}
         />
       )}
       {failed && <button type="button" className="self-start rounded-md bg-elevated px-4 py-2 text-sm" onClick={() => setRetry(value => value + 1)}>{t("common.retry")}</button>}
       {!laneDone && !failed && <div ref={sentinel} aria-hidden="true" className="h-12 w-full" />}
+      {itemMenu.menu}
     </section>
   );
 }

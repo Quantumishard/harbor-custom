@@ -94,6 +94,16 @@ function DiscordPresenceRow() {
             value={settings.discordMusicPresence}
             onChange={(discordMusicPresence) => update({ discordMusicPresence })}
           />
+          {settings.discordMusicPresence && settings.discordShowWhenPaused && (
+            <ToggleRow
+              label={t("Hide music after pausing")}
+              sub={t(
+                "Clear the music presence a few seconds after pausing instead of leaving 'Paused' visible. It comes back when playback resumes.",
+              )}
+              value={settings.discordHideMusicWhenPaused}
+              onChange={(discordHideMusicWhenPaused) => update({ discordHideMusicWhenPaused })}
+            />
+          )}
           <ToggleRow
             label={t("Watch party join button")}
             sub={t("Add a Join button with your room link while you're in a watch party.")}

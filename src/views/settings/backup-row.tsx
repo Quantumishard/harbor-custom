@@ -9,6 +9,7 @@ import {
   backupSections,
   downloadBackup,
   parseBackup,
+  pickBackupFile,
   type Backup,
   type BackupSectionKey,
   type BackupValidationError,
@@ -16,6 +17,8 @@ import {
 import { useT } from "@/lib/i18n";
 import { ROW_DESC, SettingRow, SettingsModal } from "./kit";
 import { SButton } from "./ui";
+
+const IS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 type BackupRowError =
   | BackupValidationError
@@ -51,6 +54,29 @@ export function BackupRow() {
     }
   };
 
+  const applyBackupText = (text: string) => {
+    const res = parseBackup(text);
+    if (!res.ok) {
+      setError(res.error);
+      return;
+    }
+    setPending(res.backup);
+    setRestoreError(false);
+  };
+
+  const startRestore = () => {
+    setError(null);
+    if (!IS_TAURI) {
+      fileRef.current?.click();
+      return;
+    }
+    void pickBackupFile()
+      .then((text) => {
+        if (text !== null) applyBackupText(text);
+      })
+      .catch(() => setError("Could not read that file."));
+  };
+
   const onFile = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = "";
@@ -58,13 +84,7 @@ export function BackupRow() {
     setError(null);
     const reader = new FileReader();
     reader.onload = () => {
-      const res = parseBackup(typeof reader.result === "string" ? reader.result : "");
-      if (!res.ok) {
-        setError(res.error);
-        return;
-      }
-      setPending(res.backup);
-      setRestoreError(false);
+      applyBackupText(typeof reader.result === "string" ? reader.result : "");
     };
     reader.onerror = () => setError("Could not read that file.");
     reader.readAsText(file);
@@ -108,7 +128,7 @@ export function BackupRow() {
           "Choose a Harbor backup and review what it contains before restoring. Your Stremio sign-in stays on this device.",
         )}
       >
-        <SButton onClick={() => fileRef.current?.click()}>
+        <SButton onClick={startRestore}>
           <Upload size={16} strokeWidth={2.4} />
           {t("Restore")}
         </SButton>

@@ -1,6 +1,5 @@
-import { ArrowUpRight, Check } from "./icons";
+import { ArrowUpRight } from "./icons";
 import type { ReactNode } from "react";
-import elfLogo from "@/assets/elfhosted.svg";
 import stremioLogo from "@/assets/stremio.png";
 import amfIcon from "@/assets/support/amf.png";
 import charityNavigatorIcon from "@/assets/support/charity-navigator.png";
@@ -16,16 +15,7 @@ import { SettingRow } from "./kit";
 import { ROW_DESC, Section } from "./shared";
 import { SButton, SRow } from "./ui";
 
-const ELF_STORE = "https://store.elfhosted.com/";
-const ELF_DONATE = "https://store.elfhosted.com/product/donation/";
 const STREMIO_DONATE = "https://www.stremio.com/donate";
-
-const ELF_PERKS = [
-  "Private Stremio add-ons with 10x the rate limits and built-in stream proxying, from $9 a month.",
-  "Managed Plex, Emby, or Jellyfin, running in minutes with no hardware and no Docker.",
-  "Over 100 self-hosted apps: the *arr stack, debrid tools, books and audiobooks, and more.",
-  "Daily backups, automatic updates, and monitoring, all handled for you.",
-];
 
 const CHARITY_NAVIGATOR = "https://www.charitynavigator.org/";
 
@@ -110,47 +100,6 @@ export function SupportPanel() {
   return (
     <>
       <Section
-        title={t("Who keeps this running")}
-        subtitle={t(
-          "Harbor's backend runs on ElfHosted. They run our servers at no cost to the community.",
-        )}
-      >
-        <Prose>
-          {t(
-            "Keeping Harbor's backend online costs real money, and ElfHosted covers it so the community does not have to. Becoming a subscriber is the best way to keep that going, and it is not a donation. You get proper infrastructure for your own setup, and Harbor stays funded at the same time.",
-          )}
-        </Prose>
-        <ul className="flex max-w-[70ch] flex-col gap-2.5">
-          {ELF_PERKS.map((perk) => (
-            <li key={perk} className={`flex items-start gap-2.5 ${ROW_DESC}`}>
-              <Check size={18} strokeWidth={2.6} className="mt-[2px] shrink-0 text-success" />
-              <span className="min-w-0">{t(perk)}</span>
-            </li>
-          ))}
-        </ul>
-        <SettingRow
-          wide
-          label={t("ElfHosted plans")}
-          desc={t(
-            "A third party runs these plans. Harbor is not affiliated with them and receives nothing from a signup. Current pricing and terms are on their site.",
-          )}
-        >
-          <div className="flex w-full flex-wrap items-end justify-between gap-x-6 gap-y-4">
-            <div className="flex flex-wrap items-center gap-2.5">
-              <OpenButton label={t("See what you get")} url={ELF_STORE} primary />
-              <OpenButton label={t("One-off donation")} url={ELF_DONATE} />
-            </div>
-            <img
-              src={elfLogo}
-              alt="ElfHosted"
-              draggable={false}
-              className="h-[84px] w-auto shrink-0 object-contain"
-            />
-          </div>
-        </SettingRow>
-      </Section>
-
-      <Section
         title={t("Built on Stremio")}
         subtitle={t(
           "Harbor would not be possible without Stremio. It is the foundation everything here is built on.",
@@ -188,7 +137,7 @@ export function SupportPanel() {
       >
         <Prose>
           {t(
-            "If you were going to send something, send it to ElfHosted or Stremio above, or to one of the charities below. They all do more good with it.",
+            "If you were going to send something, send it to Stremio above, or to one of the charities below. They all do more good with it.",
           )}
         </Prose>
       </Section>
@@ -196,7 +145,7 @@ export function SupportPanel() {
       <Section
         title={t("Badges for giving")}
         subtitle={t(
-          "Support ElfHosted or Stremio, or give to any charity below, and the badge lands on your profile.",
+          "Support Stremio, or give to any charity below, and the badge lands on your profile.",
         )}
       >
         <SRow
@@ -212,11 +161,6 @@ export function SupportPanel() {
           }
           title={t("Charity $100+")}
           description={t("For giving more than $100 to charity.")}
-        />
-        <SRow
-          leading={<img src={elfLogo} alt="" draggable={false} className={LEAD_IMG} />}
-          title={t("ElfHosted")}
-          description={t("For an active ElfHosted subscription.")}
         />
       </Section>
 

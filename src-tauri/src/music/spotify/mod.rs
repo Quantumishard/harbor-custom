@@ -4,15 +4,20 @@ mod auth;
 mod browse;
 pub mod connector;
 mod control;
+mod device_auth;
 pub mod devices;
 mod keystore;
 pub(super) mod library;
+mod meter;
 mod parse;
 mod player;
 mod session;
 mod tokens;
 
-use super::{MusicConnection, MusicConnectionField};
+pub use device_auth::{DevicePoll, DevicePrompt};
+
+use super::{MusicConnection, MusicConnectionField, MusicTrack};
+use super::engine::{MusicMeterChannel, MusicMeterSnapshot};
 use librespot_core::authentication::Credentials;
 use librespot_core::session::Session;
 use parking_lot::RwLock;
@@ -25,6 +30,23 @@ use tauri::AppHandle;
 use tokio::sync::Mutex;
 
 const NOT_INITIALIZED: &str = "Spotify storage is not initialized";
+/// Strongest level the analyzers report, matching the mpv meter's clamp.
+const MAX_METER_DB: f64 = 24.0;
+/// How far the volume compensation may lift a measurement, so a nearly silent slider
+/// cannot turn into signal.
+const MAX_COMPENSATION_DB: f64 = 60.0;
+
+/// Decibels to add back to a measurement that already went through the soft volume.
+fn meter_level_offset_db(attenuation: f64) -> f64 {
+    if !attenuation.is_finite() || attenuation <= 0.0 || attenuation >= 1.0 {
+        return 0.0;
+    }
+    (-20.0 * attenuation.log10()).min(MAX_COMPENSATION_DB)
+}
+
+fn lift_level(db: f64, offset: f64) -> f64 {
+    (db + offset).min(MAX_METER_DB)
+}
 
 struct SpotifyRuntime {
     session: Session,
@@ -66,6 +88,15 @@ pub struct SpotifyStatus {
     pub error: Option<String>,
 }
 
+/// What the local librespot player holds right now; the position is the last one it reported.
+#[derive(Debug, Clone)]
+pub struct SpotifyPlaybackState {
+    pub live: bool,
+    pub paused: bool,
+    pub track: Option<MusicTrack>,
+    pub position_seconds: Option<f64>,
+}
+
 pub struct SpotifyState {
     runtime: Mutex<Option<SpotifyRuntime>>,
     account: RwLock<Account>,
@@ -77,6 +108,7 @@ pub struct SpotifyState {
     linked: AtomicBool,
     remote: RwLock<Option<String>>,
     pub(super) remote_watch: AtomicU64,
+    device: RwLock<Option<device_auth::PendingDevice>>,
     paused: AtomicBool,
     paused_for_video: AtomicBool,
 }
@@ -94,6 +126,7 @@ impl SpotifyState {
             linked: AtomicBool::new(false),
             remote: RwLock::new(None),
             remote_watch: AtomicU64::new(0),
+            device: RwLock::new(None),
             paused: AtomicBool::new(true),
             paused_for_video: AtomicBool::new(false),
         }
@@ -139,7 +172,7 @@ impl SpotifyState {
             self.record_failure(error.clone());
             return Err(error);
         }
-        self.adopt_web_token(&app, granted, None);
+        self.adopt_web_token(&app, granted, None, None);
         self.status().await
     }
 
@@ -207,7 +240,7 @@ impl SpotifyState {
         *self.account.write() = Account {
             session: Some(spotify_session),
             username,
-            country,
+            country: country.clone(),
             tier,
         };
         *self.last_error.write() = None;
@@ -244,6 +277,73 @@ impl SpotifyState {
 
     pub async fn status(&self) -> Result<SpotifyStatus, String> {
         Ok(self.snapshot())
+    }
+
+    /// The local player's current hold on a track, so a reloaded interface can rejoin it
+    /// instead of restoring a checkpoint that has not known about playback since the page went
+    /// away. Only local playback is reported; a remote Connect device keeps its own progress.
+    pub async fn playback_state(&self) -> SpotifyPlaybackState {
+        let paused = self.paused.load(Ordering::SeqCst);
+        let slot = self.runtime.lock().await;
+        let Some(runtime) = slot.as_ref() else {
+            return SpotifyPlaybackState {
+                live: false,
+                paused: true,
+                track: None,
+                position_seconds: None,
+            };
+        };
+        let snapshot = player::snapshot(&runtime.audio);
+        SpotifyPlaybackState {
+            live: snapshot.track.is_some(),
+            paused,
+            track: snapshot.track,
+            position_seconds: snapshot.position_seconds,
+        }
+    }
+
+    /// Measured on the decoded samples instead of the mpv chain, so the dock visualizer,
+    /// signal panel and Miku keep working while Spotify is the active engine.
+    pub async fn set_meter_enabled(&self, enabled: bool) {
+        let slot = self.runtime.lock().await;
+        if let Some(runtime) = slot.as_ref() {
+            runtime.audio.meter.set_enabled(enabled);
+        }
+    }
+
+    pub async fn meter_snapshot(&self) -> Option<MusicMeterSnapshot> {
+        let paused = self.paused.load(Ordering::SeqCst);
+        let slot = self.runtime.lock().await;
+        let runtime = slot.as_ref()?;
+        let track = player::snapshot(&runtime.audio).track?;
+        let reading = runtime.audio.meter.reading();
+        // librespot attenuates the decoded samples inside the player, before the sink the
+        // meter wraps, so a reading would track the volume slider instead of the music.
+        // The mpv chain measures ahead of mpv's own volume for the same reason, so undo
+        // the attenuation and let every source's visualizer ignore the listening level.
+        let offset = meter_level_offset_db(runtime.audio.mixer.get_soft_volume().attenuation_factor());
+        Some(MusicMeterSnapshot {
+            track_id: track.id,
+            connector_id: track.connector_id,
+            active: runtime.audio.meter.running() && !paused && reading.seen,
+            channels: reading
+                .channels
+                .into_iter()
+                .map(|channel| MusicMeterChannel {
+                    rms_db: lift_level(channel.rms_db, offset),
+                    peak_db: lift_level(channel.peak_db, offset),
+                })
+                .collect(),
+            spectrum_db: reading
+                .spectrum
+                .into_iter()
+                .map(|db| lift_level(db, offset))
+                .collect(),
+            output_sample_rate_hz: Some(librespot_playback::SAMPLE_RATE),
+            output_channels: Some("stereo".to_string()),
+            output_device: None,
+            output_backend: Some("spotify".to_string()),
+        })
     }
 
     pub(super) fn connection(&self) -> MusicConnection {
@@ -368,6 +468,19 @@ fn text(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_volume_offset_undoes_attenuation_without_boosting_or_clipping() {
+        assert!((meter_level_offset_db(0.5) - 6.02).abs() < 0.01);
+        assert!((meter_level_offset_db(0.25) - 12.04).abs() < 0.01);
+        assert_eq!(meter_level_offset_db(1.0), 0.0, "a unity slider needs no lift");
+        assert_eq!(meter_level_offset_db(1.5), 0.0, "an amplified slider is not trimmed");
+        assert_eq!(meter_level_offset_db(0.0), 0.0, "a silent slider stays silent");
+        assert_eq!(meter_level_offset_db(f64::NAN), 0.0);
+        assert_eq!(meter_level_offset_db(1e-9), MAX_COMPENSATION_DB);
+        assert_eq!(lift_level(-80.0, 12.0), -68.0);
+        assert_eq!(lift_level(20.0, 12.0), MAX_METER_DB);
+    }
 
     #[test]
     fn a_disconnected_state_never_claims_premium() {

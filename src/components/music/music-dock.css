@@ -277,7 +277,7 @@
   align-items: center;
   gap: 8px;
   height: 100%;
-  max-inline-size: min(340px, 58vw);
+  max-inline-size: min(420px, 64vw);
   margin-inline-start: 12px;
   padding-inline: 4px 6px;
   overflow: hidden;
@@ -317,11 +317,10 @@
   background: var(--music-art-accent, var(--color-ink));
 }
 .music-dock-tab-chev,
-.music-dock-tab-play {
+.music-dock-tab-play,
+.music-dock-tab-skip {
   display: grid;
   place-items: center;
-  inline-size: 40px;
-  block-size: 40px;
   flex-shrink: 0;
   border-radius: 9px;
   color: var(--color-ink-muted);
@@ -329,13 +328,26 @@
     color 160ms ease-out,
     background-color 160ms ease-out;
 }
+.music-dock-tab-chev,
+.music-dock-tab-play {
+  inline-size: 40px;
+  block-size: 40px;
+}
+/* Skips stay a touch smaller than play so the title keeps its room on the tab. */
+.music-dock-tab-skip {
+  inline-size: 34px;
+  block-size: 34px;
+  border-radius: 8px;
+}
 .music-dock-tab-chev:hover,
-.music-dock-tab-play:hover {
+.music-dock-tab-play:hover,
+.music-dock-tab-skip:hover {
   color: var(--color-ink);
   background: var(--color-raised);
 }
 .music-dock-tab-chev:focus-visible,
-.music-dock-tab-play:focus-visible {
+.music-dock-tab-play:focus-visible,
+.music-dock-tab-skip:focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: -2px;
 }
@@ -379,6 +391,15 @@
   font-size: 11px;
   line-height: 1.25;
   color: var(--color-ink-subtle);
+}
+/* Below this the skips matter more than the thumbnail, so the copy keeps its room. */
+[data-music-dock-tab] {
+  container-type: inline-size;
+}
+@container (max-width: 360px) {
+  .music-dock-tab-art {
+    display: none;
+  }
 }
 @keyframes music-dock-tab-in {
   from {

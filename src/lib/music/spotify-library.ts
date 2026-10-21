@@ -45,6 +45,70 @@ export async function addTrackToSpotifyPlaylist(
   window.dispatchEvent(new Event("harbor:spotify-library-changed"));
 }
 
+export async function removeTrackFromSpotifyPlaylist(
+  playlistId: string,
+  track: MusicTrack,
+): Promise<void> {
+  const trackUri = spotifyTrackUri(track);
+  if (!trackUri) throw new Error("Only Spotify tracks can be removed from a Spotify playlist");
+  await invoke("music_spotify_remove_from_playlist", { playlistId, trackUri });
+  window.dispatchEvent(new Event("harbor:spotify-library-changed"));
+}
+
+export async function renameSpotifyPlaylist(playlistId: string, name: string): Promise<void> {
+  await invoke("music_spotify_rename_playlist", { playlistId, name: name.trim() });
+  window.dispatchEvent(new Event("harbor:spotify-library-changed"));
+}
+
+export async function setSpotifyPlaylistCover(
+  playlistId: string,
+  imageBase64: string,
+): Promise<void> {
+  await invoke("music_spotify_set_playlist_cover", { playlistId, imageBase64 });
+  window.dispatchEvent(new Event("harbor:spotify-library-changed"));
+}
+
+/**
+ * Finds one playlist in the account's list, walking the pages while it stays
+ * unfound. Bounded so a deep library cannot turn one lookup into endless calls.
+ */
+export async function loadSpotifyPlaylist(
+  playlistId: string,
+): Promise<SpotifyLibraryPlaylist | null> {
+  let offset = 0;
+  for (let page = 0; page < 10; page += 1) {
+    const result = await loadSpotifyLibraryPage("playlists", offset);
+    const found = result.playlists.find((playlist) => playlist.id === playlistId);
+    if (found) return found;
+    if (result.nextOffset === null) return null;
+    offset = result.nextOffset;
+  }
+  return null;
+}
+
+export async function spotifyPlaylistContainsTrack(
+  playlistId: string,
+  track: MusicTrack,
+): Promise<boolean> {
+  const uri = spotifyTrackUri(track);
+  if (!uri) return false;
+
+  let offset = 0;
+  for (;;) {
+    const page = await loadSpotifyLibraryPage("playlist", offset, playlistId);
+    if (page.tracks.some((item) => spotifyTrackUri(item) === uri)) return true;
+    if (page.nextOffset === null) return false;
+    if (
+      !Number.isSafeInteger(page.nextOffset) ||
+      page.nextOffset <= offset ||
+      page.nextOffset > 100_000
+    ) {
+      throw new Error("Spotify returned invalid playlist pagination");
+    }
+    offset = page.nextOffset;
+  }
+}
+
 export async function importSpotifyCollection({
   kind,
   playlistId,

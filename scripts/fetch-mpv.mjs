@@ -19,15 +19,15 @@ if (process.platform !== "win32") {
   process.exit(0);
 }
 
-const RELEASE = "20260610";
+const RELEASE = "20261010";
 const SPECS = {
   x64: {
-    asset: "mpv-x86_64-20260610-git-304426c.7z",
-    sha256: "facac536baa73c7b925771af5e39a3c9cb16b8d75b59a6e9800de89799dffca7",
+    asset: "mpv-x86_64-20261010-git-b2c255c13e.7z",
+    sha256: "70a568c046a10f0b365319c4ec5382d8fb37f509615944b7e9932b66e5ccfb25",
   },
   arm64: {
-    asset: "mpv-aarch64-20260610-git-304426c.7z",
-    sha256: "0781fdffeef27a40a7f266631d1ca9e5c1d0f82868a1678c58d23e0b1bd1eb98",
+    asset: "mpv-aarch64-20261010-git-b2c255c13e.7z",
+    sha256: "c3aabf7bcc2c7b1350b46571e992437d53164a7f11ff54010d8715a913c80f2f",
   },
 };
 

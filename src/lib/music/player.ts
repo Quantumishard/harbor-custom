@@ -14,7 +14,8 @@ import {
   sendDeckCommand,
   serveDeckCommands,
 } from "./deck-sync";
-import { createDeckAdoption } from "./deck-primary";
+import { createDeckAdoption, nativePlaybackAdoption } from "./deck-primary";
+import { engineSnapshot } from "./decks";
 import { insertIntoQueue, markManuallyQueued, queueInsertIndex } from "./queue-insert";
 import { queueTrackKey } from "./queue-order";
 import { adoptRequestedIdentity } from "./queue-source";
@@ -29,7 +30,7 @@ import { musicAdvance, musicPrevious, musicWarmTargets, resetMusicOrder } from "
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useSyncExternalStore } from "react";
-import { readMusicPreference, writeMusicPreference } from "./preferences";
+import { readMusicPreference, readStoredMusicPreference, writeMusicPreference } from "./preferences";
 import {
   clampMusicVolume,
   initializeMusicAudioSettings,
@@ -45,7 +46,13 @@ import {
 import { beginMusicQueue, getMusicPlaybackOrigin, restoreMusicPlaybackOrigin } from "./playback-origin";
 import { hydrateMusicContextTracks, hydrateMusicRecentContexts } from "./recent-context";
 import { hydrateMusicDestinations } from "./recent-destinations";
-import { hydrateMusicSourceConsent } from "./source-consent";
+import { hydratePinnedMusicPlaylists } from "./pinned-playlists";
+import {
+  hydrateMusicSourceConsent,
+  filterMusicSourceCandidates,
+  musicPlaybackSourceAllowed,
+  subscribeMusicSourceConsent,
+} from "./source-consent";
 import type {
   MusicAudioQuality,
   MusicPlayerState,
@@ -70,6 +77,7 @@ const LIKED_KEY = "harbor.music.liked.v1";
 const RECENTS_KEY = "harbor.music.recents.v1";
 const QUEUE_KEY = "harbor.music.queue.v1";
 const SESSION_KEY = "harbor.music.session.v1";
+const PLAYER_CLOSED_KEY = "harbor.music.player.closed.v1";
 let lastSessionWrite = 0;
 const VOLUME_KEY = "harbor.music.volume.v1";
 const listeners = new Set<() => void>();
@@ -120,7 +128,13 @@ function sourcesFor(
     invoke<MusicSourceCandidate[]>("music_source_candidates", { track }),
     timeout,
   ])
-    .then((value) => (Array.isArray(value) ? value.filter(candidate => compatibleVocalVersion(track, candidate.track)) : []))
+    .then((value) =>
+      filterMusicSourceCandidates(
+        Array.isArray(value)
+          ? value.filter((candidate) => compatibleVocalVersion(track, candidate.track))
+          : [],
+      ),
+    )
     .catch((error) => {
       queuedSources.delete(key);
       throw error;
@@ -138,6 +152,12 @@ const NEAR_END_MS = 45_000;
 let warmTimer: ReturnType<typeof setTimeout> | null = null;
 let nearEndKey: string | null = null;
 
+// A cached resolution or prewarm must not outlive the listener turning its source off.
+subscribeMusicSourceConsent(() => {
+  queuedSources.clear();
+  warmed.clear();
+});
+
 function warmNeighbours(): void {
   if (warmTimer) return;
   warmTimer = setTimeout(() => {
@@ -145,7 +165,7 @@ function warmNeighbours(): void {
     const around = musicWarmTargets(state.queue, state.queueIndex, 3);
     const now = Date.now();
     for (const track of around) {
-      if (!track) continue;
+      if (!track || !musicPlaybackSourceAllowed(track)) continue;
       const key = `${track.connectorId ?? ""}:${track.id}`;
       const last = warmed.get(key);
       if (last !== undefined && now - last < WARM_AGAIN_MS) continue;
@@ -164,6 +184,12 @@ function warmBeforeEnd(): void {
   const key = `${state.current.connectorId ?? ""}:${state.current.id}`;
   if (nearEndKey === key) return;
   nearEndKey = key;
+  if (state.current.connectorId === "spotify") {
+    // librespot plays a preloaded track without a load gap; stream URLs are warmed below.
+    const next = musicWarmTargets(state.queue, state.queueIndex, 1)[0];
+    if (next && musicPlaybackSourceAllowed(next) && queueTrackKey(next) !== queueTrackKey(state.current))
+      void invoke("music_spotify_preload", { track: next }).catch(() => {});
+  }
   warmNeighbours();
 }
 
@@ -219,6 +245,19 @@ function readVolume(): number {
   return Number.isFinite(parsed) ? Math.max(0, Math.min(1, parsed)) : 0.82;
 }
 
+/**
+ * Closing the player is a decision about the session, not just the current track. Without a
+ * persisted flag the saved checkpoint (and the recents fallback) brought the dock back on the
+ * next start, so the close button never survived a restart.
+ */
+function musicPlayerWasClosed(): boolean {
+  return readStoredMusicPreference(PLAYER_CLOSED_KEY) === "1";
+}
+
+function setMusicPlayerClosed(closed: boolean): void {
+  writeMusicPreference(PLAYER_CLOSED_KEY, closed ? "1" : "0");
+}
+
 let state: MusicPlayerState = {
   phase: "idle",
   current: null,
@@ -242,6 +281,7 @@ function currentCheckpoint(): MusicCheckpoint | null {
     sourceKey: `${current.connectorId ?? ""}:${current.id}`,
     position: state.currentTime,
     origin: getMusicPlaybackOrigin(),
+    track: current,
     savedAt: Date.now(),
   };
 }
@@ -249,6 +289,10 @@ function currentCheckpoint(): MusicCheckpoint | null {
 /** Written to both stores: IndexedDB survives a full localStorage, localStorage survives an unload. */
 function saveMusicCheckpoint(): void {
   const checkpoint = currentCheckpoint();
+  // A player with no current track must not erase the last checkpoint. The profile reset and
+  // the idle restore both publish a null current, and writing that as the string "null" wiped
+  // the saved session on every start.
+  if (!checkpoint) return;
   writeCheckpointToDb(checkpoint);
   writeMusicPreference(SESSION_KEY, JSON.stringify(checkpoint));
 }
@@ -316,7 +360,9 @@ function clearLegacyMigration(migration: LegacyMusicMigration | null): void {
 }
 
 export function resetMusicForProfile(): void {
-  if (!initialization && activeProfile === activeProfileId()) return;
+  // The mount-time call runs with the profile unchanged and the restore already in flight;
+  // resetting then would clear that restore for nothing. Only a real profile change resets.
+  if (activeProfile === activeProfileId() && initialization) return;
   cancelMusicQueueAutomation();
   activeProfile = activeProfileId();
   initialization = null;
@@ -348,6 +394,7 @@ export function initializeMusic(): Promise<void> {
   void hydrateMusicContextTracks().catch(() => {});
   void hydrateMusicRecentContexts().catch(() => {});
   void hydrateMusicDestinations().catch(() => {});
+  void hydratePinnedMusicPlaylists().catch(() => {});
   void hydrateLikedArtistStore().catch(() => {});
   void hydrateArtistBlockStore().catch(() => {});
   void hydrateMusicSourceConsent().catch(() => {});
@@ -361,13 +408,16 @@ export function initializeMusic(): Promise<void> {
   ])
     .then(([bootstrap, stored]) => {
       clearLegacyMigration(migration);
+      const closedByUser = musicPlayerWasClosed();
       let mirrored: MusicCheckpoint | null = null;
       try {
-        mirrored = JSON.parse(readMusicPreference(SESSION_KEY) ?? "null");
+        // Direct storage read: the preference cache can outlive a hot update and would then
+        // restore a checkpoint that no longer matches what is stored.
+        mirrored = JSON.parse(readStoredMusicPreference(SESSION_KEY) ?? "null");
       } catch {
         /* A corrupt checkpoint does not block the library. */
       }
-      const saved = newerCheckpoint(stored, mirrored);
+      const saved = closedByUser ? null : newerCheckpoint(stored, mirrored);
       if (saved?.origin) restoreMusicPlaybackOrigin(saved.origin);
       const restoredIndex = saved?.key
         ? bootstrap.queue.findIndex(
@@ -376,16 +426,33 @@ export function initializeMusic(): Promise<void> {
               `${track.connectorId ?? ""}:${track.id}` === saved?.sourceKey,
           )
         : -1;
-      const index = restoredIndex >= 0 ? restoredIndex : 0;
-      const current = bootstrap.queue[index] ?? null;
+      // A track that played through a substitute source no longer matches the saved queue, so
+      // the checkpoint itself carries the track. With no usable checkpoint at all, the most
+      // recent track is the honest fallback: the queue top is arbitrary and would resume a song
+      // the listener did not choose, which is how one miss became a permanent wrong resume.
+      // A listener who closed the player gets neither path: the dock stays closed.
+      const recovered =
+        closedByUser || restoredIndex >= 0 ? null : (saved?.track ?? bootstrap.recents[0] ?? null);
+      const queue = closedByUser
+        ? []
+        : recovered
+          ? [
+              recovered,
+              ...bootstrap.queue.filter(
+                (track) => queueTrackKey(track) !== queueTrackKey(recovered),
+              ),
+            ]
+          : bootstrap.queue;
+      const index = closedByUser ? -1 : restoredIndex >= 0 ? restoredIndex : 0;
+      const current = closedByUser ? null : restoredIndex >= 0 ? (queue[index] ?? null) : recovered;
       const position =
-        restoredIndex >= 0
-          ? usableCheckpointPosition(saved?.position, current?.durationSeconds)
+        current && (restoredIndex >= 0 || recovered === saved?.track)
+          ? usableCheckpointPosition(saved?.position, current.durationSeconds)
           : 0;
       publish({
         phase: current ? "paused" : "idle",
         current,
-        queue: bootstrap.queue,
+        queue,
         queueIndex: current ? index : -1,
         currentTime: position,
         duration: current?.durationSeconds ?? 0,
@@ -394,6 +461,7 @@ export function initializeMusic(): Promise<void> {
         likedTracks: bootstrap.likedTracks,
         recents: dedupeMusicTracks(bootstrap.recents),
       });
+      void adoptNativePlayback();
     })
     .catch((error) => {
       initialization = null;
@@ -426,6 +494,50 @@ const deckAdoption = createDeckAdoption({
     nextMusic(true);
   },
 });
+
+/**
+ * A reload leaves the native engine playing while this module starts from the checkpoint.
+ * The checkpoint only knows where the song was saved, so without adopting the live engine the
+ * progress bar freezes at that position, the first Play restarts the track from the beginning,
+ * and the controls do nothing afterwards. A live engine is the source of truth.
+ */
+async function adoptNativePlayback(): Promise<void> {
+  if (isDeckWindow()) return;
+  const profile = activeProfile;
+  const request = playRequest;
+  const snapshot = await engineSnapshot();
+  if (playRequest !== request || activeProfile !== profile) return;
+  const adopted = nativePlaybackAdoption(snapshot, state);
+  if (!adopted) return;
+  await ensureNativeEvents().catch(() => {});
+  if (playRequest !== request || activeProfile !== profile) return;
+  enginePrimed = true;
+  observedPause = adopted.phase === "paused";
+  resumeAt = null;
+  if (adopted.deck === 1) {
+    // Deck B has no event loop; the polling watch is the only way its progress keeps moving.
+    deckAdoption.adopt({
+      deck: 1,
+      track: adopted.track,
+      trackId: adopted.track.id,
+      connectorId: adopted.track.connectorId ?? null,
+      live: true,
+      paused: adopted.phase === "paused",
+      position: adopted.currentTime,
+      duration: adopted.duration,
+    });
+  }
+  publish({
+    current: adopted.track,
+    queue: adopted.queue,
+    queueIndex: adopted.queueIndex,
+    currentTime: adopted.currentTime,
+    duration: adopted.duration,
+    phase: adopted.phase,
+    error: null,
+  });
+  updateMediaSession(adopted.track);
+}
 
 function handlePlaybackEvent(payload: MpvEvent): void {
   if (
@@ -737,6 +849,8 @@ export async function playMusic(
   if (!continuing && !failedAttempts.size && !automationOwner) cancelMusicQueueAutomation();
   await initializeMusic();
   if (automationOwner && !ownsMusicQueueAutomation(automationOwner)) return;
+  // Playing something reopens the player the listener closed last time.
+  if (musicPlayerWasClosed()) setMusicPlayerClosed(false);
   if (automationOwner) markMusicQueueAutomationStarted(automationOwner);
   if (!continuing) explicitSource = explicit ? (track.connectorId ?? null) : null;
   if (explicit) pinSourceFor(track);
@@ -753,7 +867,12 @@ export async function playMusic(
     autoSkipped.clear();
   }
   recoverPlayback = null;
-  const catalog = track.connectorId === "catalog" && !track.playbackUrl;
+  // A track from a source the listener turned off is resolved like a catalog entry:
+  // find an enabled source for the same recording, or report that none can play it.
+  const sourceBlocked = !musicPlaybackSourceAllowed(track);
+  const catalog =
+    (track.connectorId === "catalog" && !track.playbackUrl) ||
+    (sourceBlocked && track.mediaKind !== "video");
   const preferredSource = readMusicPreference("harbor.music.preferred-source.v1");
   const resolvePreferred = shouldResolvePreferredSource(track, preferredSource, explicitSource !== null, failedAttempts.size > 0);
   const workingSource = state.current?.connectorId;
@@ -1237,6 +1356,11 @@ export async function closeMusicPlayer(): Promise<void> {
       duration: 0,
       error: null,
     });
+    // Remember the close and drop the resume point, so neither the checkpoint nor the recents
+    // fallback can reopen the dock on the next start.
+    setMusicPlayerClosed(true);
+    writeCheckpointToDb(null);
+    writeMusicPreference(SESSION_KEY, "null");
     if (typeof window !== "undefined")
       window.dispatchEvent(new Event("harbor:music-player-closed"));
   } catch (error) {

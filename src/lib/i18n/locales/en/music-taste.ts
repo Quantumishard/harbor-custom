@@ -95,6 +95,7 @@ const musicTaste: Record<string, string> = {
   "music.madeForYou.badge": "Daily Mix",
   "music.playlist.coverUpload": "Upload cover",
   "music.playlist.coverRemove": "Remove cover",
+  "music.playlist.editDetails": "Edit details",
   "music.playlist.coverType": "Pick an image file",
   "music.playlist.coverSize": "That image is too large",
   "music.playlist.coverFailed": "Could not use that image",

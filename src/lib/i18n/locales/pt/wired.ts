@@ -145,8 +145,8 @@ const wired: Record<string, string> = {
   Dismiss: "Dispensar",
   "Download installer": "Baixar instalador",
   "Install and reopen": "Instalar e reabrir",
-  "Harbor is closing. Harbor Setup will finish and reopen it.":
-    "O Harbor está fechando. O Harbor Setup concluirá a instalação e reabrirá o aplicativo.",
+  "Harbor is closing. Harbor Shipyard will finish and reopen it.":
+    "O Harbor está fechando. O Harbor Shipyard concluirá a instalação e reabrirá o aplicativo.",
 
   // Built-in television settings group titles.
   "Picture and feel": "Imagem e experiência",

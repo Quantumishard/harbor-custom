@@ -13,13 +13,24 @@ import {
   Plus,
   RefreshCw,
 } from "@/components/icons/music-icons";
+import { MusicTrackMenu, type MusicTrackMenuItem } from "./music-track-menu";
+import { MusicPlaylistEditDialog } from "./music-playlist-edit-dialog";
+import { spotifyPlaylistMenuItems } from "./music-playlist-menu-items";
+import {
+  pinMusicPlaylist,
+  unpinMusicPlaylist,
+  useMusicPlaylistPinned,
+} from "@/lib/music/pinned-playlists";
 import { useT } from "@/lib/i18n";
 import { useSectionBack } from "@/lib/section-back";
 import { connectSource } from "@/lib/music/catalog";
+import { guardMusicSource } from "@/lib/music/source-consent";
 import {
   createSpotifyPlaylist,
   importSpotifyCollection,
   loadSpotifyLibraryPage,
+  loadSpotifyPlaylist,
+  removeTrackFromSpotifyPlaylist,
   spotifyLibraryErrorKey,
   type SpotifyLibraryPage,
   type SpotifyLibraryPlaylist,
@@ -36,10 +47,15 @@ export function MusicSpotifyLibrary({
   onImported,
   active = true,
   initialKind = "playlists",
+  initialPlaylistId,
+  onFocused,
 }: {
   onImported: (playlist: MusicPlaylist) => void;
   active?: boolean;
   initialKind?: "playlists" | "liked";
+  /** Opens straight into this playlist, e.g. from a pinned tile. */
+  initialPlaylistId?: string;
+  onFocused?: () => void;
 }) {
   const t = useT();
   const connections = useMusicConnections();
@@ -52,10 +68,15 @@ export function MusicSpotifyLibrary({
   const [loading, setLoading] = useState(false);
   const [failure, setFailure] = useState("");
   const [notice, setNotice] = useState("");
-  const [working, setWorking] = useState<"import" | "create" | "connect" | null>(null);
+  const [working, setWorking] = useState<"import" | "create" | "connect" | "remove" | null>(null);
   const [progress, setProgress] = useState(0);
   const [name, setName] = useState("");
   const [refresh, setRefresh] = useState(0);
+  const [contextPlaylist, setContextPlaylist] = useState<SpotifyLibraryPlaylist | null>(null);
+  const [contextPosition, setContextPosition] = useState<{ x: number; y: number } | null>(null);
+  const contextAnchor = useRef<HTMLElement | null>(null);
+  const [editPlaylist, setEditPlaylist] = useState<SpotifyLibraryPlaylist | null>(null);
+  const contextPinned = useMusicPlaylistPinned(contextPlaylist?.id ?? "");
   const generation = useRef(0);
   const pages = useRef(new Map<string, SpotifyLibraryPage>());
   const cacheIdentity = useRef("");
@@ -63,6 +84,9 @@ export function MusicSpotifyLibrary({
   const heading = useRef<HTMLHeadingElement>(null);
   const importAbort = useRef<AbortController | null>(null);
   const origin = useRef<{ id: string; scroll: Element | null; top: number } | null>(null);
+  const focusRequested = useRef("");
+  const onFocusedRef = useRef(onFocused);
+  onFocusedRef.current = onFocused;
   const selectedId = selected?.id;
   const player = useMusicPlayback();
   const collection = usePlaylistFilters(selectedId ?? kind, page?.tracks, { addedAt: page?.trackAddedAt, recentFirst: kind === "liked" && !selected });
@@ -152,6 +176,21 @@ export function MusicSpotifyLibrary({
   }, []);
 
   useEffect(() => {
+    const wanted = initialPlaylistId ?? "";
+    if (!wanted || focusRequested.current === wanted) return;
+    focusRequested.current = wanted;
+    // Not tied to the effect's lifetime: StrictMode's double effect would
+    // otherwise cancel the only fetch that can open the playlist.
+    void loadSpotifyPlaylist(wanted)
+      .then((found) => {
+        if (!found) return;
+        setSelected((current) => current ?? found);
+        onFocusedRef.current?.();
+      })
+      .catch(() => {});
+  }, [initialPlaylistId]);
+
+  useEffect(() => {
     const previous = origin.current;
     if (selected || !previous || !page?.playlists.some((playlist) => playlist.id === previous.id))
       return;
@@ -194,6 +233,7 @@ export function MusicSpotifyLibrary({
   };
 
   const reconnect = async () => {
+    if (!guardMusicSource("spotify", () => void reconnect())) return;
     setWorking("connect");
     setFailure("");
     try {
@@ -206,7 +246,8 @@ export function MusicSpotifyLibrary({
     }
   };
 
-  const importCollection = async () => {
+  const importCollection = async (target: SpotifyLibraryPlaylist | null = selected) => {
+    if (working) return;
     const controller = new AbortController();
     importAbort.current = controller;
     setWorking("import");
@@ -215,9 +256,9 @@ export function MusicSpotifyLibrary({
     setProgress(0);
     try {
       const result = await importSpotifyCollection({
-        kind: selected ? "playlist" : "liked",
-        playlistId: selected?.id,
-        name: selected?.name ?? t("music.spotifyLibrary.liked"),
+        kind: target ? "playlist" : "liked",
+        playlistId: target?.id,
+        name: target?.name ?? t("music.spotifyLibrary.liked"),
         signal: controller.signal,
         onProgress: setProgress,
       });
@@ -265,7 +306,53 @@ export function MusicSpotifyLibrary({
     });
     openSourcePicker(track, queue);
   };
+  const removeTrack = async (track: MusicTrack) => {
+    if (!selected?.editable || working) return;
+    const playlist = selected;
+    setWorking("remove");
+    setFailure("");
+    setNotice("");
+    try {
+      await removeTrackFromSpotifyPlaylist(playlist.id, track);
+    } catch (error) {
+      if (selected?.id === playlist.id) setFailure(spotifyLibraryErrorKey(error));
+    } finally {
+      setWorking(null);
+    }
+  };
   const items = selected || kind === "liked" ? (page?.tracks ?? []) : (page?.playlists ?? []);
+  const contextItems: MusicTrackMenuItem[] = contextPlaylist
+    ? spotifyPlaylistMenuItems({
+        t,
+        name: contextPlaylist.name,
+        pinned: contextPinned,
+        editable: contextPlaylist.editable,
+        onOpen: contextPlaylist.canRead
+          ? () => {
+              const button = contextAnchor.current;
+              if (button instanceof HTMLButtonElement) openPlaylist(contextPlaylist, button);
+            }
+          : undefined,
+        onEdit: contextPlaylist.canRead ? () => setEditPlaylist(contextPlaylist) : undefined,
+        onTogglePin: contextPlaylist.canRead
+          ? () => {
+              if (contextPinned) {
+                unpinMusicPlaylist(contextPlaylist.id);
+                return;
+              }
+              pinMusicPlaylist({
+                id: contextPlaylist.id,
+                name: contextPlaylist.name,
+                artwork: contextPlaylist.artwork,
+                spotify: true,
+              });
+            }
+          : undefined,
+        onImport: contextPlaylist.canRead ? () => importCollection(contextPlaylist) : undefined,
+        onOpenInSpotify: () =>
+          openUrl(`https://open.spotify.com/playlist/${contextPlaylist.id.split(":").pop()}`),
+      })
+    : [];
   const needsPermission =
     failure === "music.spotifyLibrary.permission" ||
     failure === "music.spotifyLibrary.reconnectNeeded" ||
@@ -452,6 +539,17 @@ export function MusicSpotifyLibrary({
                   <button
                     type="button"
                     data-spotify-playlist-id={playlist.id}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      contextAnchor.current = event.currentTarget;
+                      setContextPosition(
+                        event.clientX !== 0 || event.clientY !== 0
+                          ? { x: event.clientX, y: event.clientY }
+                          : null,
+                      );
+                      setContextPlaylist(playlist);
+                    }}
                     className="music-spotify-playlist"
                     onClick={(event) =>
                       playlist.canRead
@@ -484,6 +582,7 @@ export function MusicSpotifyLibrary({
               <MusicPlaylistToolbar controller={collection} loading={loading} />
               <LibraryTrackList title="" subtitle="" showControls={false} tracks={collection.tracks} view={collection.filters.view}
                 likedIds={player.likedIds} selectedPlaylist={null} onPlay={play}
+                onRemove={selected?.editable ? removeTrack : undefined}
                 emptyCopy={t(collection.active ? "music.searchEmpty" : "music.spotifyLibrary.empty")} />
             </>
           )}
@@ -523,6 +622,31 @@ export function MusicSpotifyLibrary({
             <p className="text-xs text-ink-muted">
               {t("music.spotifyLibrary.skipped", { count: page.skipped })}
             </p>
+          )}
+          <MusicTrackMenu
+            anchorRef={contextAnchor}
+            open={contextPlaylist !== null}
+            onClose={() => {
+              setContextPlaylist(null);
+              setContextPosition(null);
+            }}
+            items={contextItems}
+            position={contextPosition}
+          />
+          {editPlaylist && (
+            <MusicPlaylistEditDialog
+              key={editPlaylist.id}
+              target={{
+                id: editPlaylist.id,
+                name: editPlaylist.name,
+                artwork: editPlaylist.artwork,
+                spotify: true,
+              }}
+              onClose={() => setEditPlaylist(null)}
+              onSaved={(name) =>
+                setEditPlaylist((current) => (current ? { ...current, name } : current))
+              }
+            />
           )}
         </>
       )}

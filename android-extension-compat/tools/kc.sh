@@ -8,7 +8,7 @@ KC=$(cp_join "$R"/tools/*.jar)
 CP=${KC_CLASSPATH:-$(cp_join "$R"/libs/*.jar)}
 # Java expands this file after launch, avoiding Windows' command-line size limit.
 # Convert paths here: Git Bash cannot convert paths inside an argument file.
-ARGS=$(mktemp)
+ARGS=$(mktemp "${TMPDIR:-/tmp}/kc.XXXXXX")
 trap 'rm -f "$ARGS"' EXIT HUP INT TERM
 arg() {
   printf '"%s"\n' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')" >> "$ARGS"

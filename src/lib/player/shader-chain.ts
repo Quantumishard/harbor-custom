@@ -20,7 +20,10 @@ function conflictBlocked(entry: ShaderCatalogEntry, settings: Settings): boolean
   });
 }
 
-export function generalShaderChain(settings: Settings, sourceGamma?: string): string[] {
+function selectedStages(
+  settings: Settings,
+  sourceGamma?: string,
+): Array<{ order: number; paths: string[] }> {
   const stages: Array<{ order: number; paths: string[] }> = [];
   for (const entry of SHADER_CATALOG) {
     const st = settings.playerShaders?.[entry.id];
@@ -33,10 +36,38 @@ export function generalShaderChain(settings: Settings, sourceGamma?: string): st
     stages.push({ order: STAGE_ORDER[entry.stage], paths });
   }
   stages.sort((a, b) => a.order - b.order);
-  return stages.flatMap((s) => s.paths);
+  return stages;
 }
 
-export function shaderCompanionProps(settings: Settings, sourceGamma?: string): Record<string, string> {
+export function generalShaderChain(settings: Settings, sourceGamma?: string): string[] {
+  return selectedStages(settings, sourceGamma).flatMap((s) => s.paths);
+}
+
+/**
+ * Splits the catalog shaders around an upscaler that owns the whole middle of
+ * the chain. Anime4K restores and upscales itself, so anything that feeds an
+ * upscale has to run before it and anything that finishes the picture after.
+ */
+export function splitShaderChainAroundUpscaler(
+  settings: Settings,
+  sourceGamma?: string,
+): {
+  before: string[];
+  after: string[];
+} {
+  const before: string[] = [];
+  const after: string[] = [];
+  for (const stage of selectedStages(settings, sourceGamma)) {
+    if (stage.order <= STAGE_ORDER.chroma) before.push(...stage.paths);
+    else after.push(...stage.paths);
+  }
+  return { before, after };
+}
+
+export function shaderCompanionProps(
+  settings: Settings,
+  sourceGamma?: string,
+): Record<string, string> {
   const out: Record<string, string> = {};
   for (const entry of SHADER_CATALOG) {
     const st = settings.playerShaders?.[entry.id];

@@ -38,11 +38,16 @@ export async function createMusicPlaylist(name: string): Promise<MusicPlaylist> 
 }
 
 export function renameMusicPlaylist(playlistId: string, name: string): Promise<MusicPlaylist> {
-  return invoke<MusicPlaylist>("music_rename_playlist", { playlistId, name });
+  return invoke<MusicPlaylist>("music_rename_playlist", { playlistId, name }).then((playlist) => {
+    window.dispatchEvent(new Event("harbor:music-library-changed"));
+    return playlist;
+  });
 }
 
 export function deleteMusicPlaylist(playlistId: string): Promise<void> {
-  return invoke("music_delete_playlist", { playlistId });
+  return invoke("music_delete_playlist", { playlistId }).then(() => {
+    window.dispatchEvent(new Event("harbor:music-library-changed"));
+  });
 }
 
 export function listMusicPlaylists(): Promise<MusicPlaylist[]> {

@@ -1,13 +1,8 @@
-import { activeProfileId, activeProfileIsPrimary } from "@/lib/active-profile-id";
-import { getSecret, setSecret } from "@/lib/secret-store";
+import { readSharedSecret, subscribeSecretsReady, writeSharedSecret } from "@/lib/secret-store";
 import { clearPendingWatches } from "./pending-sync";
 import type { SimklSession } from "./types";
 
 const BASE_KEY = "harbor.simkl.session.v1";
-
-function keyFor(): string {
-  return `${BASE_KEY}.${activeProfileId()}`;
-}
 
 const subscribers = new Set<() => void>();
 let cached: SimklSession | null = null;
@@ -15,16 +10,7 @@ let loaded = false;
 
 function read(): SimklSession | null {
   try {
-    const key = keyFor();
-    let raw = getSecret(key);
-    if (!raw) {
-      const legacy = getSecret(BASE_KEY);
-      if (legacy && activeProfileIsPrimary()) {
-        setSecret(key, legacy);
-        setSecret(BASE_KEY, null);
-        raw = legacy;
-      }
-    }
+    const raw = readSharedSecret(BASE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as SimklSession;
     if (typeof parsed?.accessToken !== "string") return null;
@@ -36,8 +22,7 @@ function read(): SimklSession | null {
 
 function write(session: SimklSession | null): void {
   try {
-    if (session) setSecret(keyFor(), JSON.stringify(session));
-    else setSecret(keyFor(), null);
+    writeSharedSecret(BASE_KEY, session ? JSON.stringify(session) : null);
   } catch {
     return;
   }
@@ -54,6 +39,12 @@ export function resetForProfile(): void {
   cached = null;
   for (const fn of subscribers) fn();
 }
+
+// A reader that mounted before the persisted store landed cached a null session, and
+// nothing cleared it: the account stayed signed out for the whole run while its calls
+// went out without a token, which Simkl answers with 401 user_token_failed. The store
+// announcing itself must re-arm this module.
+subscribeSecretsReady(resetForProfile);
 
 export function getSession(): SimklSession | null {
   ensureLoaded();

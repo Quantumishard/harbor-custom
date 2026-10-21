@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod install;
+mod clean_install;
 mod shell;
 mod update;
 
@@ -13,6 +14,7 @@ fn main() {
             install::default_install_dir,
             install::payload_size,
             install::run_install,
+            install::installed_features,
             install::run_repair,
             install::launch_harbor,
             install::run_uninstall,
@@ -29,5 +31,5 @@ fn main() {
             install::uninstall_facts,
         ])
         .run(tauri::generate_context!())
-        .expect("failed to start Harbor Setup");
+        .expect("failed to start Harbor Shipyard");
 }

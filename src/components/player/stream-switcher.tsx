@@ -51,6 +51,7 @@ export function StreamSwitcher({
   meta,
   episode,
   imdbId,
+  imdbIdVerified = false,
   hostSource,
 }: {
   open: boolean;
@@ -65,6 +66,7 @@ export function StreamSwitcher({
   meta: Meta;
   episode?: PlayEpisode;
   imdbId?: string | null;
+  imdbIdVerified?: boolean;
   hostSource?: SourceDescriptor | null;
 }) {
   const t = useT();
@@ -89,21 +91,24 @@ export function StreamSwitcher({
     }
     return out;
   }, [baseLangs, settings.preferredAudioLangs, isAnimeRequest]);
-  const [cache, setCache] = useState(() => peekPickerCache(meta, episode));
+  const [cache, setCache] = useState(() => peekPickerCache(meta, episode, settings.animePreferImdbStreams));
   const [addonLogos, setAddonLogos] = useState<Map<string, string | null>>(new Map());
+  const [addonNames, setAddonNames] = useState<Map<string, string>>(new Map());
   const [filterToPreferred, setFilterToPreferred] = useState(
     settings.requirePreferredLanguage === true && preferredLangs.length > 0,
   );
 
-  useEffect(
-    () => subscribePickerCache(() => setCache(peekPickerCache(meta, episode))),
-    [meta, episode],
-  );
+  useEffect(() => {
+    const updateCache = () => setCache(peekPickerCache(meta, episode, settings.animePreferImdbStreams));
+    updateCache();
+    return subscribePickerCache(updateCache);
+  }, [meta, episode, settings.animePreferImdbStreams]);
 
   const { refreshing, refresh } = useSwitcherRefresh({
     meta,
     episode,
     imdbId: imdbId ?? null,
+    imdbIdVerified,
     active: open,
   });
 
@@ -114,7 +119,9 @@ export function StreamSwitcher({
       const installed = await fetchInstalledAddons().catch(() => [] as Addon[]);
       const stremio = authKey ? await userAddons(authKey).catch(() => [] as Addon[]) : [];
       if (cancelled) return;
-      setAddonLogos(addonLogoMap([...installed, ...stremio]));
+      const list = [...installed, ...stremio];
+      setAddonLogos(addonLogoMap(list));
+      setAddonNames(new Map(list.map((a) => [a.manifest.id, a.manifest.name])));
     })();
     return () => {
       cancelled = true;
@@ -260,10 +267,27 @@ export function StreamSwitcher({
       return addonMatch && resMatch && sizeMatch;
     };
   }, [currentUrl, currentInfoHash, currentFileIdx, currentRef]);
-  const currentStream = useMemo(
-    () => allStreams.find((s) => matchCurrent(s)) ?? null,
-    [allStreams, matchCurrent],
-  );
+  const currentStream = useMemo(() => {
+    const refAddonId = currentRef?.addonId;
+    if (refAddonId) {
+      // Duplicate torrents can share a hash. Prefer the row that actually supplied
+      // the playing stream, otherwise the first same-hash row (often the faster
+      // addon) is displayed as current.
+      const exact = allStreams.find(
+        (s) =>
+          isCurrentStream(s, currentUrl, currentInfoHash, currentFileIdx) &&
+          (s.addonId === refAddonId || s.contributors?.some((c) => c.id === refAddonId)),
+      );
+      if (exact) return exact;
+    }
+    return allStreams.find((s) => matchCurrent(s)) ?? null;
+  }, [allStreams, currentRef?.addonId, currentUrl, currentInfoHash, currentFileIdx, matchCurrent]);
+  const currentAddon = useMemo(() => {
+    const id = currentRef?.addonId;
+    if (!id) return null;
+    const contributor = currentStream?.contributors?.find((c) => c.id === id);
+    return { id, name: addonNames.get(id) ?? contributor?.name ?? id };
+  }, [currentRef?.addonId, currentStream, addonNames]);
   const list = useMemo(() => {
     if (!currentStream) return filteredList;
     const curKey = streamKey(currentStream);
@@ -387,17 +411,23 @@ export function StreamSwitcher({
           </div>
         ) : (
           <ul className="flex-1 overflow-y-auto [&::-webkit-scrollbar]:w-5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-none [&::-webkit-scrollbar-thumb]:border-4 [&::-webkit-scrollbar-thumb]:border-solid [&::-webkit-scrollbar-thumb]:border-transparent [&::-webkit-scrollbar-thumb]:bg-ink/25 [&::-webkit-scrollbar-thumb]:bg-clip-padding [&::-webkit-scrollbar-thumb:hover]:bg-ink/40">
-            {list.slice(0, showCount).map((s, i) => (
-              <SwitcherRow
-                key={`${s.addonId}-${s.infoHash ?? s.url ?? i}`}
-                stream={s}
-                addonLogo={addonLogos.get(s.addonId) ?? null}
-                onPick={() => onPick(s)}
-                resolving={resolvingKey === streamKey(s)}
-                isCurrent={matchCurrent(s)}
-                match={matchBadge(matchScores?.get(s))}
-              />
-            ))}
+            {list.slice(0, showCount).map((s, i) => {
+              const isCurrent = currentStream === s;
+              const rowAddon = isCurrent ? currentAddon : null;
+              return (
+                <SwitcherRow
+                  key={`${s.addonId}-${s.infoHash ?? s.url ?? i}`}
+                  stream={s}
+                  addonLogo={addonLogos.get(rowAddon?.id ?? s.addonId) ?? null}
+                  currentAddon={rowAddon}
+                  currentName={isCurrent ? (currentRef?.name ?? null) : null}
+                  onPick={() => onPick(s)}
+                  resolving={resolvingKey === streamKey(s)}
+                  isCurrent={isCurrent}
+                  match={matchBadge(matchScores?.get(s))}
+                />
+              );
+            })}
             {list.length > showCount && (
               <li className="px-4 pb-3 pt-1.5">
                 <button

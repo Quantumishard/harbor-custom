@@ -25,6 +25,9 @@ import { currentAuthor } from "@/lib/theme-auth";
 import { useScrollMemory, useView } from "@/lib/view";
 import { pushBackHandler } from "@/lib/back-intercept";
 import { consumeProfileEditIntent } from "@/lib/social/open-profile";
+import { loadNuvioState } from "@/lib/nuvio/nuvio-client";
+import { resolveNuvioAvatar } from "@/lib/nuvio/nuvio-profiles";
+import { pullWatchProgressFromNuvio } from "@/lib/nuvio/nuvio-sync";
 import { BadgesRow } from "./badges-row";
 import { CommentsSection } from "./comments-section";
 import { FriendsPanel } from "./friends-panel";
@@ -70,6 +73,11 @@ export function ProfileView({
   const { authKey, user } = useAuth();
   const { activeProfile } = useProfiles();
   const { settings } = useSettings();
+  const isNuvio = settings.accountProvider === "nuvio";
+  const nuvioState = loadNuvioState();
+  const activeNuvioProfile = isNuvio
+    ? (nuvioState.profiles.find((p) => p.profile_index === nuvioState.activeProfileIndex) || nuvioState.profiles[0] || null)
+    : null;
   const scrollRef = useRef<HTMLDivElement>(null);
   const [editing, setEditing] = useState(false);
   const [pickingLists, setPickingLists] = useState(false);
@@ -78,12 +86,34 @@ export function ProfileView({
   const [showRatings, setShowRatings] = useState(false);
   const [importingRatings, setImportingRatings] = useState(false);
   const [arranging, setArranging] = useState(false);
+  const [nuvioStats, setNuvioStats] = useState({ episodes: 0, movies: 0, minutes: 0 });
   const mangaProgress = useMangaProgressList();
   const watchedCount = useWatchedCount();
   const { state, summary, friends, badges, activity, reload, patchSummary } = useProfile(handle);
   const localLists = useCustomLists();
   const isOwner = summary?.isOwner ?? false;
   const viewerSignedIn = !!currentAuthor();
+
+  useEffect(() => {
+    if (!isNuvio || !isOwner) return;
+    pullWatchProgressFromNuvio("active")
+      .then((records) => {
+        let eps = 0;
+        let movs = 0;
+        let mins = 0;
+        for (const r of records) {
+          mins += Math.floor((r.progress_seconds || 0) / 60);
+          if (r.season != null && r.season > 0 && r.episode != null && r.episode > 0) {
+            eps += 1;
+          } else {
+            movs += 1;
+          }
+        }
+        setNuvioStats({ episodes: eps, movies: movs, minutes: mins });
+      })
+      .catch(() => {});
+  }, [isNuvio, isOwner, activeNuvioProfile?.profile_index]);
+
   const libWatched = useLibraryWatchedCount(authKey, isOwner);
   const watchedBreakdown = useLibraryWatchedBreakdown(authKey, isOwner);
   const custom = summary ? resolveCustomization(summary) : null;
@@ -98,7 +128,7 @@ export function ProfileView({
   const cloudMinutes = summary?.counts.minutesWatched ?? 0;
 
   useEffect(() => {
-    if (!isOwner || !watchedBreakdown.ready) return;
+    if (!isOwner || isNuvio || !watchedBreakdown.ready) return;
     const w = Math.max(watchedCount, libWatched);
     const m = mangaProgress.length;
     const movies = watchedBreakdown.moviesWatched;
@@ -116,6 +146,7 @@ export function ProfileView({
     pushStats(w, m, movies, episodes, minutes);
   }, [
     isOwner,
+    isNuvio,
     libWatched,
     watchedCount,
     mangaProgress.length,
@@ -148,12 +179,15 @@ export function ProfileView({
   if (state === "empty" || !summary) return <ProfileEmpty handle={handle} onBack={goBack} />;
 
   const locked = summary.private && !summary.isOwner;
+
   const ownerAvatar = summary.isOwner
-    ? activeProfile?.avatar ||
-      settings.harborAvatar ||
-      user?.avatar ||
-      currentAuthor()?.avatar ||
-      undefined
+    ? (isNuvio && activeNuvioProfile
+        ? (resolveNuvioAvatar(activeNuvioProfile) || currentAuthor()?.avatar || undefined)
+        : activeProfile?.avatar ||
+          settings.harborAvatar ||
+          user?.avatar ||
+          currentAuthor()?.avatar ||
+          undefined)
     : undefined;
   const heroAvatar = summary.isOwner
     ? ownerAvatar || summary.avatarUrl
@@ -293,19 +327,32 @@ export function ProfileView({
   const orderedCards = effectiveOrder(layout, presentCards);
 
   const heroSummary =
-    summary.isOwner && watchedBreakdown.ready
+    isNuvio && summary.isOwner
       ? {
           ...summary,
+          alias: activeNuvioProfile?.name || summary.alias,
           counts: {
             ...summary.counts,
-            watched: Math.max(summary.counts.watched ?? 0, watchedBreakdown.watched),
-            moviesWatched: watchedBreakdown.moviesWatched,
-            episodesWatched: watchedBreakdown.episodesWatched,
-            minutesWatched: watchedBreakdown.minutesWatched,
-            hoursWatched: Math.floor(watchedBreakdown.minutesWatched / 60),
+            watched: Math.max(summary.counts.watched ?? 0, nuvioStats.episodes + nuvioStats.movies),
+            moviesWatched: Math.max(summary.counts.moviesWatched ?? 0, nuvioStats.movies),
+            episodesWatched: Math.max(summary.counts.episodesWatched ?? 0, nuvioStats.episodes),
+            minutesWatched: Math.max(summary.counts.minutesWatched ?? 0, nuvioStats.minutes),
+            hoursWatched: Math.floor(Math.max(summary.counts.minutesWatched ?? 0, nuvioStats.minutes) / 60),
           },
         }
-      : summary;
+      : summary.isOwner && watchedBreakdown.ready
+        ? {
+            ...summary,
+            counts: {
+              ...summary.counts,
+              watched: Math.max(summary.counts.watched ?? 0, watchedBreakdown.watched),
+              moviesWatched: watchedBreakdown.moviesWatched,
+              episodesWatched: watchedBreakdown.episodesWatched,
+              minutesWatched: watchedBreakdown.minutesWatched,
+              hoursWatched: Math.floor(watchedBreakdown.minutesWatched / 60),
+            },
+          }
+        : summary;
 
   return (
     <div

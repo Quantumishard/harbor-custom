@@ -2568,7 +2568,7 @@ dependencies = [
 
 [[package]]
 name = "harbor"
-version = "0.9.132"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2598,6 +2598,7 @@ dependencies = [
  "libmpv2",
  "libmpv2-sys",
  "librespot-core",
+ "librespot-metadata",
  "librespot-oauth",
  "librespot-playback",
  "librqbit",

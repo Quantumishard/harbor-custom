@@ -15,11 +15,13 @@ function fixture() {
   let requests = 0;
   let response: () => Promise<unknown> = async () => ({ ok: true, json: async () => ({ ratings: { "3:1": 7 } }) });
   const evictors = new Map<string, (aggressive: boolean) => void>();
+  // harborImdbEpisodes calls safeFetch, so the injected fetch must be what safe-fetch resolves to.
+  const send = () => { requests++; return response(); };
   const mocks: Record<string, unknown> = {
     "@/lib/cache": { lruSet },
     "@/lib/maintenance": { registerEvictable: (name: string, evict: (aggressive: boolean) => void) => evictors.set(name, evict) },
     "@/lib/config/endpoints": { HARBOR_API_BASE: "https://fixture.invalid" },
-    "@/lib/safe-fetch": { safeFetch: () => { requests++; return response(); } },
+    "@/lib/safe-fetch": { safeFetch: send },
     "@/lib/providers/csm": {},
   };
   const source = readFileSync(new URL("../src/lib/providers/harbor-imdb.ts", import.meta.url), "utf8");
@@ -30,7 +32,7 @@ function fixture() {
   new Function("require", "exports", "fetch", "Date", compiled)((id: string) => {
     assert.ok(Object.hasOwn(mocks, id), `Unexpected dependency: ${id}`);
     return mocks[id];
-  }, exports, () => { requests++; return response(); }, { now: () => now });
+  }, exports, send, { now: () => now });
   return {
     get: exports.harborImdbEpisodes as (id: string) => Promise<Map<string, number>>,
     cached: exports.harborImdbEpisodesCached as (id: string) => Map<string, number> | undefined,

@@ -1,20 +1,32 @@
-import { ArrowLeft, Pencil, Rows3 } from "lucide-react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { ArrowLeft, Pencil, Rows3, PanelTopOpen, Share2, UserRound } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useT } from "@/lib/i18n";
 import { posterPlate } from "@/components/poster";
 import { ResultPoster } from "@/components/search/result-poster";
 import { BackToTop } from "@/components/back-to-top";
 import { useView } from "@/lib/view";
 import { MangaMatchPicker } from "./manga-match-picker";
-import { useCollection, type CollectionItem, type CollectionItemType } from "@/lib/collections";
+import {
+  getCollection,
+  useCollection,
+  type CollectionItem,
+  type CollectionItemType,
+} from "@/lib/collections";
 import type { MetaType } from "@/lib/cinemeta";
 import { CommunityShareButton } from "./community-share-button";
 import { AddToPageMenu } from "./add-to-page-menu";
 import { Avatar } from "@/components/together-modal/avatar";
 import { useSelfAvatar } from "@/views/profile/use-self-avatar";
+import { fetchSummary } from "@/views/profile/profile-api";
+import type { ProfileSummary } from "@/views/profile/profile-types";
 import { currentAuthor } from "@/lib/theme-auth";
 import { UserHoverCard } from "@/views/profile/user-hover-card";
-import { requestOpenProfile } from "@/lib/social/open-profile";
+import { canOpenProfile, requestOpenProfile } from "@/lib/social/open-profile";
+import { collectionAuthorHandle } from "@/lib/collection-author";
+import { MetaContextButton } from "@/components/context-menu/meta-context-button";
+import { useContextTarget } from "@/lib/context-menu";
+import { captureMembershipProfile, isMembershipProfileCurrent } from "@/lib/membership-operations";
+import { CommunityShareModal } from "./community-share-modal";
 
 const TYPE_DOT: Record<CollectionItemType, string> = {
   movie: "bg-sky-400",
@@ -39,9 +51,69 @@ export function CommunityCollectionPage({
   const collection = useCollection(id);
   const { openMeta, openManga } = useView();
   const self = useSelfAvatar();
+  const savedCollection = !!(collection?.sourceHandle || collection?.sourceId);
+  const authorHandle = collection
+    ? (collectionAuthorHandle(collection) ?? (savedCollection ? null : self.handle))
+    : null;
+  const [authorProfile, setAuthorProfile] = useState<ProfileSummary | null>(null);
+  useEffect(() => {
+    if (!savedCollection || !authorHandle) return;
+    const controller = new AbortController();
+    void fetchSummary(authorHandle, controller.signal)
+      .then((profile) => {
+        if (!controller.signal.aborted) setAuthorProfile(profile);
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [savedCollection, authorHandle]);
   const scrollRef = useRef<HTMLElement>(null);
   const pageBtnRef = useRef<HTMLButtonElement>(null);
   const [pageMenu, setPageMenu] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const headerContextRef = useContextTarget<HTMLElement>(() => {
+    const profile = captureMembershipProfile();
+    const authorHandle = collection ? collectionAuthorHandle(collection) : null;
+    return {
+      kind: "actions",
+      id: `collection:${id}`,
+      label: collection?.name ?? t("Collection"),
+      isValid: () => isMembershipProfileCurrent(profile) && !!getCollection(id),
+      actions: () => [
+        ...(authorHandle && canOpenProfile(authorHandle)
+          ? [
+              {
+                id: `collection:author:${id}`,
+                icon: <UserRound size={16} />,
+                label: t("Open author profile"),
+                run: () => requestOpenProfile(authorHandle),
+                restoreFocus: false,
+              },
+            ]
+          : []),
+        {
+          id: `collection:edit:${id}`,
+          icon: <Pencil size={16} />,
+          label: t("Edit collection"),
+          run: () => onEdit(id),
+          restoreFocus: false,
+        },
+        {
+          id: `collection:page:${id}`,
+          icon: <PanelTopOpen size={16} />,
+          label: t("Add to page"),
+          run: () => setPageMenu(true),
+          restoreFocus: false,
+        },
+        {
+          id: `collection:share:${id}`,
+          icon: <Share2 size={16} />,
+          label: t("Share"),
+          run: () => setSharing(true),
+          restoreFocus: false,
+        },
+      ],
+    };
+  });
   const [typeFilter, setTypeFilter] = useState<"all" | CollectionItemType>("all");
   const items = collection?.items ?? [];
   const typeCounts = useMemo(() => {
@@ -86,8 +158,12 @@ export function CommunityCollectionPage({
   const backdropSharp = !!collection.bgImage;
   const count = collection.items.length;
   const numbered = !!collection.numbered;
-  const authorHandle = self.handle;
-  const authorName = currentAuthor()?.username ?? authorHandle ?? "";
+  const originalAuthor =
+    authorProfile?.handle.toLowerCase() === authorHandle ? authorProfile : null;
+  const authorName = savedCollection
+    ? originalAuthor?.alias || authorHandle || ""
+    : (currentAuthor()?.username ?? authorHandle ?? "");
+  const authorAvatar = savedCollection ? originalAuthor?.avatarUrl : self.avatar;
   const typeLabel = (ty: CollectionItemType) =>
     ty === "movie" ? t("Movie") : ty === "series" ? t("Series") : t("Manga");
   const typeFilters: { id: "all" | CollectionItemType; label: string; count: number }[] = [
@@ -113,7 +189,7 @@ export function CommunityCollectionPage({
       return;
     }
     const type: MetaType = item.type === "series" ? "series" : "movie";
-    openMeta({ id: item.id, type, name: item.name, poster: item.poster });
+    openMeta({ ...item, type });
   };
 
   return (
@@ -147,11 +223,11 @@ export function CommunityCollectionPage({
               ref={pageBtnRef}
               type="button"
               onClick={() => setPageMenu((v) => !v)}
-              aria-label={t("Add to a page")}
+              aria-label={t("Add to page")}
               className="inline-flex h-11 items-center gap-2 rounded-full border border-edge bg-canvas/80 px-5 text-[14px] font-semibold text-ink backdrop-blur-md transition-colors hover:border-ink-subtle hover:bg-canvas/95"
             >
               <Rows3 size={15} strokeWidth={2} />
-              <span className="hidden sm:inline">{t("Add to a page")}</span>
+              <span className="hidden sm:inline">{t("Add to page")}</span>
             </button>
             <button
               type="button"
@@ -171,7 +247,7 @@ export function CommunityCollectionPage({
           />
         </div>
 
-        <header className="flex min-w-0 max-w-4xl flex-col gap-4">
+        <header ref={headerContextRef} className="flex min-w-0 max-w-4xl flex-col gap-4">
           <span className="text-[11px] font-bold uppercase tracking-[0.28em] text-ink-subtle">
             {t("Collection")}
           </span>
@@ -187,7 +263,7 @@ export function CommunityCollectionPage({
                   aria-label={t("Open {alias} profile", { alias: authorName })}
                   className="inline-flex items-center gap-2 rounded-full border border-edge-soft bg-elevated/60 py-1 ps-1 pe-3 backdrop-blur-md transition-colors hover:bg-raised"
                 >
-                  <Avatar name={authorName} src={self.avatar} size={24} />
+                  <Avatar name={authorName} src={authorAvatar} size={24} />
                   <span className="text-[13px] font-semibold text-ink">@{authorHandle}</span>
                 </button>
               </UserHoverCard>
@@ -261,8 +337,10 @@ export function CommunityCollectionPage({
                   style={{ gridTemplateColumns: "repeat(auto-fill, minmax(128px, 1fr))" }}
                 >
                   {filteredItems.map((item, i) => (
-                    <button
+                    <MetaContextButton
                       key={item.id}
+                      meta={item}
+                      membership={{ kind: "collection", id }}
                       type="button"
                       onClick={() => open(item)}
                       title={`${item.name}  ·  ${typeLabel(item.type)}`}
@@ -296,7 +374,7 @@ export function CommunityCollectionPage({
                       <span className="line-clamp-2 text-[12.5px] leading-tight text-ink-muted">
                         {item.name}
                       </span>
-                    </button>
+                    </MetaContextButton>
                   ))}
                 </div>
               </div>
@@ -315,6 +393,7 @@ export function CommunityCollectionPage({
           onClose={() => setMatchItem(null)}
         />
       )}
+      {sharing && <CommunityShareModal collectionId={id} onClose={() => setSharing(false)} />}
     </main>
   );
 }

@@ -1,9 +1,15 @@
 import { safeFetch as fetch, safeFetchLocal } from "@/lib/safe-fetch";
 import type { Addon } from "@/lib/addons";
+import { clearPrefetchedRequests, prefetchRequest } from "./prefetch-request";
 import { dlog, dwarn } from "@/lib/debug";
 import { isHarborFetchPolicyError } from "@/lib/fetch-fallback-policy";
 import { isLocalNetworkUrl } from "@/lib/local-network";
-import { isAddonRanked, isStatusOnlyAddon } from "./addon-detect";
+import {
+  isAddonRanked,
+  isRetiredTorboxAddon,
+  isStatusOnlyAddon,
+  isStremioLocalAddon,
+} from "./addon-detect";
 import type { AddonRankFn } from "./addon-priority";
 import { hasUncachedMarker } from "./cached";
 import { infoHashFromSources, infoHashFromUrl } from "@/lib/torrent/magnet";
@@ -18,6 +24,10 @@ import type { Stream } from "./types";
 
 const TIMEOUT_MS_FAST = 8000;
 const TIMEOUT_MS_SLOW = 22000;
+export function clearAddonStreamCache(): void {
+  clearPrefetchedRequests();
+}
+
 const SLOW_ADDON_PATTERNS = [
   /mediafusion/i,
   /comet/i,
@@ -40,6 +50,7 @@ function timeoutFor(addon: Addon, ceilingMs: number): number {
 export type StreamRequest = {
   type: string;
   ids: string[];
+  preferredAnimeImdbId?: string;
   animeIdUnverified?: boolean;
   context?: StreamRequestContext;
 };
@@ -99,8 +110,8 @@ export function pluginQueryId(
 ): string | undefined {
   if (forcedId) return forcedId;
   return (
-    pickIds(addon, req.type, req.ids, req.animeIdUnverified === true)[0] ??
-    pickIdByDeclaredTypes(addon, req.ids)?.id
+    pickIds(addon, req.type, req.ids, req.animeIdUnverified === true, req.preferredAnimeImdbId)[0] ??
+    pickIdByDeclaredTypes(addon, req.ids, req.preferredAnimeImdbId)?.id
   );
 }
 
@@ -113,6 +124,7 @@ export async function fetchAddonStreams(
   timeoutMs = TIMEOUT_MS_SLOW,
   ranks?: AddonRankFn | null,
   forced?: Array<{ base: string; id: string }>,
+  prefetch = false,
 ): Promise<Stream[]> {
   const forcedBases = new Map((forced ?? []).map((f) => [f.base, f.id]));
   // A request that names a plugin is that plugin's to answer, the way CloudStream asks only the
@@ -146,7 +158,11 @@ export async function fetchAddonStreams(
         addonId: addon.manifest.id,
         name: addon.manifest.name,
         plugin: true,
-        p: runPluginAddon(addon, req, pluginId, signal, timeoutMs).then((ss) =>
+        p: prefetchRequest(
+          JSON.stringify([addon.transportUrl, req, pluginId, timeoutMs]), signal, prefetch,
+          (sharedSignal) => runPluginAddon(addon, req, pluginId, sharedSignal, timeoutMs),
+          (streams) => streams.length > 0,
+        ).then((ss) =>
           ss.map((s, idx) => ({ ...s, addonPriority: priority, addonReturnIdx: idx })),
         ),
       });
@@ -156,11 +172,19 @@ export async function fetchAddonStreams(
       skipped.push(`${addon.manifest.name}(status-addon)`);
       continue;
     }
+    if (isStremioLocalAddon(addon)) {
+      skipped.push(`${addon.manifest.name}(stremio-local)`);
+      continue;
+    }
+    if (isRetiredTorboxAddon(addon)) {
+      skipped.push(`${addon.manifest.name}(retired)`);
+      continue;
+    }
     const forcedId = forcedBases.get(addon.transportUrl.replace(/\/manifest\.json$/, ""));
     const ids =
       forcedId != null
         ? [forcedId]
-        : pickIds(addon, req.type, req.ids, req.animeIdUnverified === true);
+        : pickIds(addon, req.type, req.ids, req.animeIdUnverified === true, req.preferredAnimeImdbId);
     if (ids.length > 0) {
       for (const id of ids) {
         // Local lists only persist movie/series, which can drop the type an addon's
@@ -175,7 +199,7 @@ export async function fetchAddonStreams(
         namedTasks.push({
           addonId: addon.manifest.id,
           name,
-          p: fetchOne(addon, req.type, id, signal, timeoutMs, altTypes).then((r) => {
+          p: fetchOne(addon, req.type, id, signal, timeoutMs, altTypes, prefetch).then((r) => {
             if (r.failure) noteFailure(addon.manifest.id, name, r.failure);
             return r.streams.map((s, idx) => ({
               ...s,
@@ -190,7 +214,7 @@ export async function fetchAddonStreams(
 
     // No (type, id) pair matched the request, but a non-standard id may still be
     // served under a type the catalog declared. Query those types directly.
-    const anyType = pickIdByDeclaredTypes(addon, req.ids);
+    const anyType = pickIdByDeclaredTypes(addon, req.ids, req.preferredAnimeImdbId);
     if (anyType == null) {
       skipped.push(`${addon.manifest.name}(no-matching-id)`);
       continue;
@@ -199,7 +223,7 @@ export async function fetchAddonStreams(
     namedTasks.push({
       addonId: addon.manifest.id,
       name: `${addon.manifest.name}[${idScheme(id)}]`,
-      p: fetchOne(addon, types[0], id, signal, timeoutMs, types.slice(1)).then((r) => {
+      p: fetchOne(addon, types[0], id, signal, timeoutMs, types.slice(1), prefetch).then((r) => {
         if (r.failure)
           noteFailure(addon.manifest.id, `${addon.manifest.name}[${idScheme(id)}]`, r.failure);
         return r.streams.map((s, idx) => ({
@@ -309,15 +333,30 @@ function hasStandardIdScheme(id: string): boolean {
   return STANDARD_ID_SCHEMES.some((p) => id.startsWith(p));
 }
 
-function pickIds(addon: Addon, type: string, ids: string[], animeIdUnverified = false): string[] {
-  const sorted = [...ids].sort((a, b) => idPriority(a) - idPriority(b));
+function sortedIds(ids: string[], preferredAnimeImdbId?: string): string[] {
+  const priority = (id: string) =>
+    id === preferredAnimeImdbId && /^tt\d+(?::\d+:\d+)?$/.test(id) ? -1 : idPriority(id);
+  return [...ids].sort((a, b) => priority(a) - priority(b));
+}
+
+function pickIds(
+  addon: Addon,
+  type: string,
+  ids: string[],
+  animeIdUnverified = false,
+  preferredAnimeImdbId?: string,
+): string[] {
+  const sorted = sortedIds(ids, preferredAnimeImdbId);
   const accepted = sorted.filter((id) => addonAcceptsId(addon, type, id));
   if (accepted.length === 0) return [];
   const animeId = accepted.find((id) => ANIME_SCHEMES.some((s) => id.startsWith(s)));
   const ttId = accepted.find((id) => id.startsWith("tt"));
   if (!animeId || !ttId) return [accepted[0]];
   // Specials have no reliable kitsu numbering, so both identities stay.
-  if (SPECIALS_SCOPED_TT_RX.test(ttId)) return [animeId, ttId];
+  if (SPECIALS_SCOPED_TT_RX.test(ttId)) {
+    return ttId === preferredAnimeImdbId ? [ttId, animeId] : [animeId, ttId];
+  }
+  if (ttId === preferredAnimeImdbId) return [ttId];
   if (animeIdUnverified) return [ttId];
   return [animeId];
 }
@@ -325,8 +364,9 @@ function pickIds(addon: Addon, type: string, ids: string[], animeIdUnverified = 
 function pickIdByDeclaredTypes(
   addon: Addon,
   ids: string[],
+  preferredAnimeImdbId?: string,
 ): { id: string; types: string[] } | null {
-  const sorted = [...ids].sort((a, b) => idPriority(a) - idPriority(b));
+  const sorted = sortedIds(ids, preferredAnimeImdbId);
   for (const id of sorted) {
     const types = streamTypesAcceptingId(addon, id);
     if (types.length > 0) return { id, types };
@@ -386,6 +426,23 @@ function alternateStreamTypes(addon: Addon, type: string, id: string): string[] 
 }
 
 async function fetchOne(
+  addon: Addon,
+  type: string,
+  id: string,
+  signal: AbortSignal,
+  timeoutMs: number,
+  altTypes: string[] = [],
+  prefetch = false,
+): Promise<{ streams: Stream[]; failure?: AddonFailureCode }> {
+  return prefetchRequest(
+    JSON.stringify([addon.transportUrl, addon.manifest.id, type, id, altTypes, timeoutMs]),
+    signal, prefetch,
+    (sharedSignal) => fetchOneUncached(addon, type, id, sharedSignal, timeoutMs, altTypes),
+    (result) => !result.failure && result.streams.length > 0,
+  );
+}
+
+async function fetchOneUncached(
   addon: Addon,
   type: string,
   id: string,

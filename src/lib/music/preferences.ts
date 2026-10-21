@@ -21,3 +21,16 @@ export function writeMusicPreference(key: string, value: string): void {
     // Optional persistence must never prevent a playback control from taking effect.
   }
 }
+
+/**
+ * Reads the stored value directly, bypassing the in-memory cache. The cache can outlive a
+ * hot module update, so anything that must reflect what is actually on disk (the session
+ * checkpoint) has to read storage itself.
+ */
+export function readStoredMusicPreference(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}

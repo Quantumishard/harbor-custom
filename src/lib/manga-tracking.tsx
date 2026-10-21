@@ -48,10 +48,6 @@ function chapterValue(raw: string | null): number | null {
   return Number.isFinite(n) && n >= 1 ? Math.floor(n) : null;
 }
 
-function titleKeyOf(title: string): string {
-  return title.toLowerCase().replace(/[^a-z0-9]+/g, "");
-}
-
 /**
  * A chapter is a sync candidate once the reader has actually read most of it
  * (~80%, mirroring the app's anime "watched" threshold). Merely starting a
@@ -79,7 +75,7 @@ async function pushOne(
   // Toast the tracker entry the user pinned (if any) rather than the local
   // title, so an explicit repair pick is reflected back even when the local
   // title names a different work.
-  const displayTitle = getMangaMatchTitle(pid, tracker, titleKeyOf(entry.title)) ?? entry.title;
+  const displayTitle = getMangaMatchTitle(pid, tracker, normalizeTitle(entry.title)) ?? entry.title;
   emitMangaSync(tracker, { kind: "syncing", title: displayTitle, chapter });
   const outcome = await withPushTimeout(
     tracker === "anilist"
@@ -136,7 +132,7 @@ function run(pid: string): void {
     if (!entry.title || !isReading(entry)) continue;
     const chapter = candidateChapter(entry);
     if (chapter == null) continue;
-    const titleKey = titleKeyOf(entry.title);
+    const titleKey = normalizeTitle(entry.title);
     for (const tracker of upcoming) {
       if (chapter <= (pushed[tracker].get(entry.id) ?? 0)) continue;
       const map = getMangaMatchEntry(pid, tracker, titleKey);

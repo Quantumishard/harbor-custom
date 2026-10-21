@@ -53,7 +53,7 @@ export function setLocale(code) {
     try {
       fn(next);
     } catch (err) {
-      console.error('[harbor-installer] locale listener threw', err);
+      console.error('[harbor-shipyard] locale listener threw', err);
     }
   });
   return true;

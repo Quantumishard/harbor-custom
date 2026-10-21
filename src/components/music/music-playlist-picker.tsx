@@ -11,6 +11,9 @@ import {
 } from "react";
 import { Loader2, Plus, X } from "@/components/icons/music-icons";
 import { MusicActionGlyph } from "./music-action-feedback";
+import { MusicPlaylistCover } from "./music-playlist-cover";
+import { MusicPlaylistDuplicateConfirm } from "./music-playlist-duplicate-confirm";
+import { useScrollPreserved } from "./use-scroll-preserved";
 import { ModalShell, useModalExit } from "@/components/modal-shell";
 import { useT } from "@/lib/i18n";
 import {
@@ -19,6 +22,7 @@ import {
   listMusicPlaylists,
 } from "@/lib/music/library";
 import type { MusicPlaylist, MusicTrack } from "@/lib/music/types";
+import { sameMusicTrack } from "@/lib/music/track-identity";
 import { useMusicConnections } from "./music-connections";
 import { MusicSpotifyDestination } from "./music-spotify-destination";
 import { MusicServiceLogo } from "./music-service-logo";
@@ -62,16 +66,18 @@ function PickerModal({ track, onDismiss }: { track: MusicTrack; onDismiss: () =>
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
   const [target, setTarget] = useState<string | null>(null);
+  const [duplicateTarget, setDuplicateTarget] = useState<MusicPlaylist | null>(null);
   const mounted = useRef(false);
-  const finishTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [error, setError] = useState("");
   const [name, setName] = useState("");
   const [query, setQuery] = useState("");
   const root = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLUListElement>(null);
   const titleId = useId();
   const filtered = playlists.filter(playlist => matchesPlaylistSearch(playlist.name, query));
   const [destination, setDestination] = useState<"harbor" | "spotify">("harbor");
   const { openConnections } = useMusicConnections();
+  const listScroll = useScrollPreserved(list);
 
   useEffect(() => {
     let cancelled = false;
@@ -91,21 +97,29 @@ function PickerModal({ track, onDismiss }: { track: MusicTrack; onDismiss: () =>
     return () => {
       cancelled = true;
       mounted.current = false;
-      if (finishTimer.current) clearTimeout(finishTimer.current);
       if (origin?.isConnected) origin.focus({ preventScroll: true });
     };
   }, []);
 
-  const save = async (playlistId: string) => {
+  const save = async (playlistId: string, allowDuplicate = false) => {
     if (busy || saved || closing) return;
+    const playlist = playlists.find((item) => item.id === playlistId);
+    if (
+      !allowDuplicate &&
+      playlist?.tracks.some((existing) => sameMusicTrack(existing, track))
+    ) {
+      setDuplicateTarget(playlist);
+      return;
+    }
+    if (!allowDuplicate) setDuplicateTarget(null);
     setBusy(true);
     setTarget(playlistId);
     setError("");
     try {
       await addTrackToMusicPlaylist(playlistId, track);
       if (!mounted.current) return;
+      setDuplicateTarget(null);
       setSaved(playlistId);
-      finishTimer.current = setTimeout(close, 600);
     } catch (cause) {
       if (mounted.current) setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -115,7 +129,7 @@ function PickerModal({ track, onDismiss }: { track: MusicTrack; onDismiss: () =>
 
   const createAndSave = async () => {
     const trimmed = name.trim();
-    if (!trimmed || busy || saved || closing) return;
+    if (!trimmed || busy || saved || closing || duplicateTarget) return;
     setBusy(true);
     setTarget(null);
     setError("");
@@ -124,7 +138,6 @@ function PickerModal({ track, onDismiss }: { track: MusicTrack; onDismiss: () =>
       await addTrackToMusicPlaylist(playlist.id, track);
       if (!mounted.current) return;
       setSaved(playlist.id);
-      finishTimer.current = setTimeout(close, 600);
     } catch (cause) {
       if (mounted.current) setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -133,7 +146,7 @@ function PickerModal({ track, onDismiss }: { track: MusicTrack; onDismiss: () =>
   };
 
   return (
-    <ModalShell closing={closing} onDismiss={close} width={420} labelledBy={titleId}>
+    <ModalShell closing={closing} onDismiss={close} width={820} labelledBy={titleId}>
       <div ref={root} className="music-playlist-picker" onKeyDown={event => {
         if (event.key !== "Tab") return;
         const targets = [...root.current!.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled)')].filter(node => node.getClientRects().length);
@@ -156,7 +169,7 @@ function PickerModal({ track, onDismiss }: { track: MusicTrack; onDismiss: () =>
             <button
               type="button"
               key={value}
-              disabled={busy || !!saved}
+              disabled={busy || !!saved || !!duplicateTarget}
               aria-pressed={destination === value}
               onClick={() => setDestination(value)}
               className={`flex min-h-11 items-center justify-center gap-2 rounded-md px-3 text-[13px] ${destination === value ? "bg-ink text-canvas" : "bg-raised text-ink-muted"}`}
@@ -185,6 +198,15 @@ function PickerModal({ track, onDismiss }: { track: MusicTrack; onDismiss: () =>
           <>
             <span role="status" className="sr-only">{saved ? t("music.similar.saved") : ""}</span>
             {error && <p role="alert" className="text-[13px] text-danger">{error}</p>}
+            {duplicateTarget && (
+              <MusicPlaylistDuplicateConfirm
+                title={track.title}
+                playlistName={duplicateTarget.name}
+                busy={busy}
+                onCancel={() => setDuplicateTarget(null)}
+                onContinue={() => void save(duplicateTarget.id, true)}
+              />
+            )}
 
             {loading ? (
               <span className="flex items-center gap-2 text-[13px] text-ink-muted">
@@ -192,24 +214,35 @@ function PickerModal({ track, onDismiss }: { track: MusicTrack; onDismiss: () =>
                 {t("common.loading")}
               </span>
             ) : (
-              <ul className="music-playlist-destination-list">
+              <ul ref={list} className="music-playlist-destination-list" onScroll={listScroll.onScroll}>
                 {filtered.map((playlist) => (
                   <li key={playlist.id}>
                     <button
                       type="button"
-                      disabled={busy || !!saved}
+                      disabled={busy || !!saved || !!duplicateTarget}
                       aria-busy={busy && target === playlist.id}
                       data-music-action-state={saved === playlist.id ? "done" : busy && target === playlist.id ? "busy" : "idle"}
                       onClick={() => void save(playlist.id)}
-                      className="music-action-button flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-[14px] text-ink transition-colors hover:bg-elevated disabled:opacity-60"
+                      className="music-action-button music-playlist-destination-cell"
                     >
-                      <span className="truncate">{playlist.name}</span>
+                      <MusicPlaylistCover
+                        artwork={playlist.tracks.map((entry) => entry.artwork)}
+                        seed={playlist.id}
+                        glyphSize={20}
+                        className="music-playlist-destination-cover"
+                      />
+                      <span className="music-playlist-destination-copy">
+                        <span className="truncate">{playlist.name}</span>
+                        <small className="truncate">
+                          {t("music.card.trackCount", { count: playlist.tracks.length })}
+                        </small>
+                      </span>
                       <MusicActionGlyph state={saved === playlist.id ? "done" : busy && target === playlist.id ? "busy" : "idle"} idle={null} size={16} />
                     </button>
                   </li>
                 ))}
                 {filtered.length === 0 && (
-                  <li className="px-3 py-2 text-[13px] text-ink-muted">
+                  <li className="music-playlist-destination-empty">
                     {t(query.trim() ? "music.playlist.noMatches" : "music.playlist.none")}
                   </li>
                 )}
@@ -219,7 +252,7 @@ function PickerModal({ track, onDismiss }: { track: MusicTrack; onDismiss: () =>
             <div className="flex items-center gap-2 border-t border-edge pt-4">
               <input
                 value={name}
-                disabled={busy || !!saved}
+                disabled={busy || !!saved || !!duplicateTarget}
                 onChange={(event) => setName(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") void createAndSave();
@@ -230,7 +263,7 @@ function PickerModal({ track, onDismiss }: { track: MusicTrack; onDismiss: () =>
               />
               <button
                 type="button"
-                disabled={busy || !!saved || name.trim().length === 0}
+                disabled={busy || !!saved || !!duplicateTarget || name.trim().length === 0}
                 aria-busy={busy && target === null}
                 data-music-action-state={saved && target === null ? "done" : busy && target === null ? "busy" : "idle"}
                 onClick={() => void createAndSave()}

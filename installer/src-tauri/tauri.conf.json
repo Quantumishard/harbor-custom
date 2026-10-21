@@ -1,15 +1,15 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Harbor Setup",
-  "version": "0.9.132",
-  "identifier": "app.harbor.setup",
+  "productName": "Harbor Shipyard",
+  "version": "1.0.1",
+  "identifier": "app.harbor.shipyard",
   "build": {
     "frontendDist": "../ui"
   },
   "app": {
     "windows": [
       {
-        "title": "Harbor Setup",
+        "title": "Harbor Shipyard",
         "width": 1028,
         "height": 632,
         "resizable": true,

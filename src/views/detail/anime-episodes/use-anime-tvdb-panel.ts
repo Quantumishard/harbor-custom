@@ -3,7 +3,9 @@ import { useT } from "@/lib/i18n";
 import type { KitsuEpisode } from "@/lib/providers/kitsu";
 import { kitsuToTvdb } from "@/lib/providers/anime-mapping";
 import { isFranchiseExtra, type FranchiseEntry } from "@/lib/providers/anime-detail";
+import { isForeignScriptTitle } from "@/lib/providers/anime-episode-build";
 import {
+  defaultOrderLabel,
   tvdbLangFromIso1,
   tvdbOrderTypeHasEpisodes,
   tvdbSeasonTypes,
@@ -12,10 +14,12 @@ import {
   type TvdbSeasonTypeOption,
 } from "@/lib/providers/tvdb";
 import { tmdbLanguageIso } from "@/lib/providers/tmdb/tmdb-client";
-import { pickLocalizedText } from "@/lib/localized-text";
+import { pickPreferredEpisodeOverview, pickPreferredEpisodeTitle } from "@/lib/localized-text";
+import { isUpcomingDate } from "@/lib/dates";
 import { harborImdbEpisodesCached } from "@/lib/providers/harbor-imdb";
 import {
   fetchTvdbOrderBySeriesId,
+  waitForTvdbSeasonNames,
   seasonDateRange,
   type TvdbOrder,
 } from "@/lib/providers/tvdb-order";
@@ -57,6 +61,26 @@ const isCloseDate = (d1: string, d2: string) => {
   return Math.abs(t1 - t2) <= 86400000;
 };
 
+// A TVDB season binds to the franchise entry whose start date falls nearest to
+// the season's first aired episode; distant starts are no match at all.
+function entryStartingNear(franchise: FranchiseEntry[], from: string): FranchiseEntry | null {
+  const t = Date.parse(from);
+  if (!Number.isFinite(t)) return null;
+  let best: FranchiseEntry | null = null;
+  let bestDelta = Infinity;
+  for (const f of franchise) {
+    if (!f.startDate) continue;
+    const st = Date.parse(f.startDate);
+    if (!Number.isFinite(st)) continue;
+    const d = Math.abs(st - t);
+    if (d < bestDelta) {
+      bestDelta = d;
+      best = f;
+    }
+  }
+  return best != null && bestDelta <= 60 * 86_400_000 ? best : null;
+}
+
 export function useAnimeTvdbPanel(
   kitsuId: number | null,
   imdbId: string | null,
@@ -71,6 +95,7 @@ export function useAnimeTvdbPanel(
   metaId?: string | null,
 ): AnimeTvdbPanelState {
   const t = useT();
+  const metadataLanguage = tmdbLanguageIso();
   const [seriesId, setSeriesId] = useState<number | null>(null);
   const [ordering, setOrdering] = useState<TvdbOrder | null>(null);
   const [orderTypes, setOrderTypes] = useState<TvdbSeasonTypeOption[]>([]);
@@ -118,7 +143,12 @@ export function useAnimeTvdbPanel(
       return;
     }
     let cancelled = false;
-    void (async () => {
+    const lang = tvdbLangFromIso1(tmdbLanguageIso());
+    const norm = (seasonType === "official" ? "aired" : seasonType) as TvdbOrderType;
+    const requested = fetchTvdbOrderBySeriesId(tvdbKey, seriesId, norm, lang, true);
+    // Discover the other order tabs concurrently; the selected order can render
+    // while those optional availability checks are still in flight.
+    const available = (async () => {
       const base = await tvdbSeasonTypes(tvdbKey, seriesId);
       const candidates = base.some((c) => c.value === "aired")
         ? base
@@ -126,33 +156,50 @@ export function useAnimeTvdbPanel(
       const checks = await Promise.all(
         candidates.map((c) => tvdbOrderTypeHasEpisodes(tvdbKey, seriesId, c.value)),
       );
+      return candidates.filter((_, i) => checks[i]);
+    })().catch(() => []);
+    const publish = (type: TvdbOrderType, order: TvdbOrder) => {
       if (cancelled) return;
-      const nonEmpty = candidates.filter((_, i) => checks[i]);
+      setActiveType(type);
+      setOrdering(order);
+      void waitForTvdbSeasonNames(order).then((named) => {
+        if (!cancelled && named !== order) setOrdering(named);
+      });
+    };
+    void (async () => {
+      const preferred = await requested;
+      if (cancelled) return;
+      if (preferred) publish(norm, preferred);
+      const nonEmpty = await available;
+      if (cancelled) return;
+      if (preferred) {
+        // A failed availability probe must not hide an order already loaded.
+        setOrderTypes(
+          nonEmpty.some((c) => c.value === norm)
+            ? nonEmpty
+            : [...nonEmpty, { value: norm, label: defaultOrderLabel(norm) }],
+        );
+        return;
+      }
+      setOrderTypes(nonEmpty);
       if (nonEmpty.length === 0) {
-        setOrderTypes([]);
         setOrdering(null);
         setResolved("none");
         return;
       }
-      const norm = (seasonType === "official" ? "aired" : seasonType) as TvdbOrderType;
-      const values = new Set(nonEmpty.map((c) => c.value));
-      const effective = values.has(norm) ? norm : values.has("aired") ? "aired" : nonEmpty[0].value;
-      setOrderTypes(nonEmpty);
-      setActiveType(effective);
-      const o = await fetchTvdbOrderBySeriesId(
-        tvdbKey,
-        seriesId,
-        effective,
-        tvdbLangFromIso1(tmdbLanguageIso()),
-      );
+      const effective = nonEmpty.some((c) => c.value === "aired") ? "aired" : nonEmpty[0].value;
+      const fallback = await fetchTvdbOrderBySeriesId(tvdbKey, seriesId, effective, lang, true);
       if (cancelled) return;
-      setOrdering(o);
-      if (!o) setResolved("none");
+      if (fallback) publish(effective, fallback);
+      else {
+        setOrdering(null);
+        setResolved("none");
+      }
     })();
     return () => {
       cancelled = true;
     };
-  }, [enabled, tvdbKey, seriesId, seasonType]);
+  }, [enabled, tvdbKey, seriesId, seasonType, metadataLanguage]);
 
   const [foreignSeasons, setForeignSeasons] = useState<Set<number> | null>(null);
   useEffect(() => {
@@ -178,7 +225,8 @@ export function useAnimeTvdbPanel(
   const extrasLabel = t("Extras");
   const built = useMemo(() => {
     if (!ordering) return null;
-    const lang = tmdbLanguageIso();
+    const lang = metadataLanguage;
+    const englishTarget = lang === "" || lang === "en";
     const pool = franchiseEpisodes ?? episodes;
     const franchiseWide = franchiseEpisodes != null;
     const byPair = new Map<string, KitsuEpisode>();
@@ -219,7 +267,49 @@ export function useAnimeTvdbPanel(
       if (bucket.length === 0) continue;
       const seenId = new Set<number>();
       const eps: KitsuEpisode[] = [];
-      for (const e of bucket) {
+      // TVDB rows for the season that is airing right now often lack air dates
+      // and can lag the entry's own provider data, which poisons the upcoming
+      // badge and the aired checks. Bind the season to the franchise entry
+      // that started around the same week and let that entry's episode air
+      // dates fill or correct the rows'.
+      const seasonEntry =
+        franchise && bucket.length > 0
+          ? entryStartingNear(franchise, seasonDateRange(bucket).from ?? "")
+          : null;
+      const entryRowsByNumber = new Map<number, KitsuEpisode>();
+      if (seasonEntry) {
+        for (const p of pool) {
+          // Anchor rows of the entry itself carry no sourceMetaId; they belong
+          // to the current meta and must still match their own season entry.
+          if ((p.sourceMetaId ?? metaId) !== seasonEntry.meta.id || p.number == null) continue;
+          if (!entryRowsByNumber.has(p.number)) entryRowsByNumber.set(p.number, p);
+        }
+      }
+      const now = Date.now();
+      const rowAir = bucket.map((e) => {
+        const poolDate = entryRowsByNumber.get(e.episodeNumber)?.airdate ?? null;
+        if (e.airDate && isUpcomingDate(e.airDate) && poolDate && !isUpcomingDate(poolDate)) {
+          return poolDate;
+        }
+        return e.airDate ?? poolDate ?? null;
+      });
+      const rowTime = rowAir.map((a) => {
+        const t = a ? Date.parse(a) : NaN;
+        return Number.isFinite(t) ? t : null;
+      });
+      let airedFrontier = -1;
+      rowTime.forEach((t, i) => {
+        if (t != null && t <= now) airedFrontier = i;
+      });
+      const seasonOngoing = rowTime.some((t) => t != null && t > now);
+      // Episodes after the last dated-aired row of an ongoing season have no
+      // IMDb rating yet; a hit would be a mis-keyed rating from another
+      // episode (TVDB often dates only the first rows of an unaired season).
+      const rowUnaired = (i: number) => {
+        const t = rowTime[i];
+        return t != null ? t > now : seasonOngoing && airedFrontier >= 0 && i > airedFrontier;
+      };
+      for (const [bi, e] of bucket.entries()) {
         const abs = ordering.absByEpId.get(e.id);
         const img =
           e.stillUrl ?? e.stillPath ?? (abs != null ? ordering.imageByAbs.get(abs) : undefined);
@@ -240,18 +330,34 @@ export function useAnimeTvdbPanel(
           currentByTvdbId.get(e.id) ??
           currentByPair.get(`${e.seasonNumber}:${e.episodeNumber}`) ??
           (abs != null ? currentByAbs.get(abs) : undefined);
-        let title: string | undefined;
-        let synopsis: string | undefined;
-        if (match && currentMatch && match !== currentMatch) {
-          title = pickLocalizedText([{ text: match?.title }, { text: currentMatch?.title }], {
-            forName: true,
-            lang,
-          });
-          synopsis = pickLocalizedText(
-            [{ text: match?.synopsis }, { text: currentMatch?.synopsis }],
-            { lang },
-          );
-        }
+        const title = pickPreferredEpisodeTitle(
+          [
+            {
+              text: englishTarget && isForeignScriptTitle(e.name) ? undefined : e.name,
+              language: e.nameLanguage,
+            },
+            {
+              text: englishTarget && isForeignScriptTitle(e.nameEn) ? undefined : e.nameEn,
+              language: e.nameEnLanguage,
+            },
+          ],
+          [
+            { text: match?.title, language: match?.titleLanguage },
+            { text: currentMatch?.title, language: currentMatch?.titleLanguage },
+          ],
+          lang,
+        );
+        const synopsis = pickPreferredEpisodeOverview(
+          [
+            { text: e.overview, language: e.overviewLanguage },
+            { text: e.overviewEn, language: e.overviewEnLanguage },
+          ],
+          [
+            { text: match?.synopsis, language: match?.synopsisLanguage },
+            { text: currentMatch?.synopsis, language: currentMatch?.synopsisLanguage },
+          ],
+          lang,
+        );
 
         let streamId: string | undefined;
         if (!match && franchise) {
@@ -279,9 +385,10 @@ export function useAnimeTvdbPanel(
           }
         }
 
-        const imdbRating =
-          imdbMap?.get(`${e.seasonNumber}:${e.episodeNumber}`) ??
-          (abs != null ? imdbMap?.get(`1:${abs}`) : undefined);
+        const imdbRating = rowUnaired(bi)
+          ? undefined
+          : (imdbMap?.get(`${e.seasonNumber}:${e.episodeNumber}`) ??
+            (abs != null ? imdbMap?.get(`1:${abs}`) : undefined));
 
         const ep: KitsuEpisode = match
           ? {
@@ -289,6 +396,22 @@ export function useAnimeTvdbPanel(
               thumbnail: !match.thumbnail && img ? img : match.thumbnail,
               ...(title != null ? { title } : {}),
               ...(synopsis != null ? { synopsis } : {}),
+              titleLanguage:
+                title === match.title
+                  ? match.titleLanguage
+                  : currentMatch && title === currentMatch.title
+                    ? currentMatch.titleLanguage
+                    : title === e.name
+                      ? e.nameLanguage
+                      : e.nameEnLanguage,
+              synopsisLanguage:
+                synopsis === match.synopsis
+                  ? match.synopsisLanguage
+                  : currentMatch && synopsis === currentMatch.synopsis
+                    ? currentMatch.synopsisLanguage
+                    : synopsis === e.overview
+                      ? e.overviewLanguage
+                      : e.overviewEnLanguage,
               ...(match.rating == null && imdbRating != null
                 ? { rating: imdbRating, ratingIsImdb: true }
                 : {}),
@@ -297,22 +420,22 @@ export function useAnimeTvdbPanel(
               id: -e.id,
               number: e.episodeNumber,
               seasonNumber: e.seasonNumber,
-              title:
-                pickLocalizedText(
-                  [{ text: e.name }, { text: e.nameEn ?? "" }, { text: currentMatch?.title ?? "" }],
-                  { forName: true, lang },
-                ) ?? e.name,
-              synopsis:
-                pickLocalizedText(
-                  [
-                    { text: e.overview },
-                    { text: e.overviewEn ?? "" },
-                    { text: currentMatch?.synopsis ?? "" },
-                  ],
-                  { lang },
-                ) ?? e.overview,
+              title: title ?? e.name,
+              synopsis: synopsis ?? "",
+              titleLanguage:
+                currentMatch && title === currentMatch.title
+                  ? currentMatch.titleLanguage
+                  : title === e.name
+                    ? e.nameLanguage
+                    : e.nameEnLanguage,
+              synopsisLanguage:
+                currentMatch && synopsis === currentMatch.synopsis
+                  ? currentMatch.synopsisLanguage
+                  : synopsis === e.overview
+                    ? e.overviewLanguage
+                    : e.overviewEnLanguage,
               thumbnail: img ?? null,
-              airdate: e.airDate ?? null,
+              airdate: rowAir[bi] ?? null,
               length: e.runtime ?? null,
               imdbSeason: e.seasonNumber,
               imdbEpisode: e.episodeNumber,
@@ -332,11 +455,16 @@ export function useAnimeTvdbPanel(
       items.push({
         key,
         name: s.name,
+        nameLanguage: s.nameLanguage ?? "en",
+        overview: s.overview,
+        overviewLanguage: s.overviewLanguage,
         count: eps.length,
         year: s.airDate?.slice(0, 4),
         from,
         to,
         extra: s.seasonNumber === 0,
+        seasonNumber: s.seasonNumber,
+        isGenericName: s.isGenericName,
       });
       subset.set(key, eps);
     }
@@ -351,7 +479,17 @@ export function useAnimeTvdbPanel(
     }
     if (items.length === 0) return null;
     return { items, subset, pool };
-  }, [ordering, episodes, franchiseEpisodes, extrasLabel, franchise, foreignSeasons, imdbId]);
+  }, [
+    ordering,
+    episodes,
+    franchiseEpisodes,
+    extrasLabel,
+    franchise,
+    foreignSeasons,
+    imdbId,
+    metaId,
+    metadataLanguage,
+  ]);
 
   useEffect(() => {
     if (!ordering) return;

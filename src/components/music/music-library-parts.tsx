@@ -28,10 +28,12 @@ import { MusicArtistLink } from "./music-artist-link";
 import { MusicMediaBadge } from "./music-media-badge";
 import { MusicTrackLabels } from "./music-track-labels";
 import { useMusicPlaylistPicker } from "./music-playlist-picker";
+import { useMusicNavigate } from "./music-navigate";
 import { useMusicSourcePicker } from "./music-source-picker";
 import { useT } from "@/lib/i18n";
 import { LoaderCircle } from "@/components/icons/music-icons";
 import { nowPlayingMatches } from "@/lib/music/now-playing-key";
+import { musicTrackIdentity } from "@/lib/music/track-identity";
 import "./music-like-burst.css";
 
 const ROW_LIKE_SPOKES = [0, 45, 90, 135, 180, 225, 270, 315];
@@ -100,7 +102,10 @@ export function LibraryTrackList({
   };
   const { openSourcePicker } = useMusicSourcePicker();
   const positions = useMemo(() => new Map(order.map((track, index) => [track.id, index])), [order]);
-  const added = useMemo(() => new Set(selectedPlaylist?.tracks.map((track) => track.id)), [selectedPlaylist?.tracks]);
+  const added = useMemo(
+    () => new Set(selectedPlaylist?.tracks.map(musicTrackIdentity)),
+    [selectedPlaylist?.tracks],
+  );
   const liked = useMemo(() => new Set(likedIds), [likedIds]);
   const keys = useMemo(() => tracks.map(track => track.id), [tracks]);
   const renderRow = (displayIndex: number) => {
@@ -115,7 +120,7 @@ export function LibraryTrackList({
       showAlbum={Boolean(view)}
       count={order.length}
       liked={likedIdsFor(track).some(id => liked.has(id))}
-      alreadyAdded={added.has(track.id)}
+      alreadyAdded={added.has(musicTrackIdentity(track))}
       onAdd={onAdd}
       onRemove={onRemove}
       onMove={onMove}
@@ -143,9 +148,10 @@ export function LibraryTrackList({
       <div ref={resultsRef} style={{ position: "relative" }}>
       <div inert={filtering} style={{ visibility: slowFilter && filtering ? "hidden" : undefined }}>
       {tracks.length ? (
-        tracks.length > 100
-          ? <MusicVirtualTrackList keys={keys} compact={view === "compact"} renderRow={renderRow} />
-          : <div>{tracks.map((_, index) => renderRow(index))}</div>
+        // One renderer for every length. Swapping between the plain list and the
+        // virtual one when a page crosses 100 rows remounts the list and resets
+        // the scroll position to the top.
+        <MusicVirtualTrackList keys={keys} compact={view === "compact"} renderRow={renderRow} />
       ) : (
         <p className="music-library-empty">{emptyCopy ?? t("music.library.saveEmpty")}</p>
       )}
@@ -192,13 +198,16 @@ function LibraryTrack({
   const t = useT();
   const { openSourcePicker } = useMusicSourcePicker();
   const { openPlaylistPicker } = useMusicPlaylistPicker();
+  const { goToArtist } = useMusicNavigate();
   const shared = useMusicTrackMenuItems(track, {
     onPlay: () => start(track, tracks),
+    onToggleLike: () => toggleMusicLiked(track),
     onAddToQueue: () => enqueueMusic(track),
     onAddToPlaylist: () => openPlaylistPicker(track),
+    onGoToArtist: () => goToArtist(track.artist, track),
     onMoreLikeThis: () => requestMusicExplore({ kind: "similar", track }),
   });
-  const anchor = useRef<HTMLButtonElement>(null);
+  const anchor = useRef<HTMLElement | null>(null);
   const menu = useRef<HTMLDivElement | null>(null);
   const bindMenu = useCallback((node: HTMLDivElement | null) => {
     menu.current = node;
@@ -213,24 +222,20 @@ function LibraryTrack({
     openSourcePicker(item, queue);
   };
   const [open, setOpen] = useState(false);
+  const [contextPosition, setContextPosition] = useState<{ x: number; y: number } | null>(null);
   const [burst, setBurst] = useState(0);
   const close = () => {
     if (menu.current?.contains(document.activeElement)) anchor.current?.focus();
     setOpen(false);
+    setContextPosition(null);
   };
   const actions = [
     ...shared,
-    {
-      label: t(liked ? "music.unsaveTrack" : "music.saveTrack"),
-      icon: <Heart size={16} fill={liked ? "currentColor" : "none"} />,
-      run: () => toggleMusicLiked(track),
-    },
     ...(onAdd
       ? [
           {
             label: t(alreadyAdded ? "music.playlist.alreadyAdded" : "music.playlist.add"),
             icon: <Plus size={16} />,
-            disabled: alreadyAdded,
             run: () => onAdd(track),
           },
         ]
@@ -262,9 +267,19 @@ function LibraryTrack({
       data-now-playing={nowPlaying || undefined}
       data-menu-open={open || undefined}
       aria-current={nowPlaying ? "true" : undefined}
+      tabIndex={-1}
       onContextMenu={(event) => {
         event.preventDefault();
         event.stopPropagation();
+        const target = event.target instanceof Element
+          ? event.target.closest<HTMLElement>("button, [href], [tabindex]:not([tabindex='-1'])")
+          : null;
+        anchor.current = target && event.currentTarget.contains(target) ? target : event.currentTarget;
+        setContextPosition(
+          event.clientX !== 0 || event.clientY !== 0
+            ? { x: event.clientX, y: event.clientY }
+            : null,
+        );
         setOpen(true);
       }}
     >
@@ -349,16 +364,25 @@ function LibraryTrack({
       <span className="music-library-track-duration">{track.durationLabel}</span>
       <button
         type="button"
-        ref={anchor}
         className="music-library-track-more"
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={t("music.card.moreActions", { title: track.title })}
-        onClick={() => setOpen(true)}
+        onClick={(event) => {
+          anchor.current = event.currentTarget;
+          setContextPosition(null);
+          setOpen(true);
+        }}
       >
         <MoreHorizontal size={18} />
       </button>
-      <AnchoredMenu anchorRef={anchor} open={open} onClose={close} width={260}>
+      <AnchoredMenu
+        anchorRef={anchor}
+        open={open}
+        onClose={close}
+        fitContent
+        position={contextPosition}
+      >
         <div
           role="menu"
           ref={bindMenu}

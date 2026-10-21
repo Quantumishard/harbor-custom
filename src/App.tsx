@@ -9,9 +9,19 @@ import { usePlaylists } from "@/lib/iptv/playlists-store";
 import { SportsAccessGate } from "@/views/sports/access-gate";
 import { SportsEventSkeleton } from "@/views/sports/sports-skeletons";
 import { SportsReminderLoop } from "@/components/sports-reminder-loop";
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { lazyView as lazy } from "@/lib/lazy-view";
 import { startIdleAway } from "@/lib/social/idle-away";
+import { requestAppBack } from "@/lib/app-back";
 import { FloatingBack } from "@/chrome/floating-back";
 import { ensureStaticHeroArt } from "@/lib/providers/anime-hero-art-static";
 import { ensureCuratedLogos } from "@/lib/curated-logos";
@@ -38,6 +48,7 @@ import { flushCloudSync } from "@/views/player/hooks/use-stremio-sync";
 import { startWriteQueueFlusher } from "@/lib/stremio-write-queue";
 import {
   mediaServerConnections,
+  mediaServerRefreshIntervalMs,
   mediaServerSyncDue,
   updateMediaServerConnection,
 } from "@/lib/media-server/connections";
@@ -65,6 +76,7 @@ import { VoyageRoot } from "@/components/voyage/voyage-root";
 import { ScreensaverRoot } from "@/components/screensaver/screensaver-root";
 import { CustomCodeMount } from "@/components/custom-code-mount";
 import { MemoryHud } from "@/components/memory-hud";
+import { Profiled } from "@/components/profiled";
 import { OfflineBanner } from "@/chrome/offline-banner";
 
 const MobileShell = lazy(() =>
@@ -115,11 +127,12 @@ import { TrackerProfileBridge } from "@/lib/tracker-profile-bridge";
 import { ProfilePickerModal } from "@/components/profile-picker/picker-modal";
 import { WatchlistSync } from "@/lib/watchlist-sync";
 import { ContextMenuProvider } from "@/lib/context-menu";
+import { PageContextNavigationDialogs } from "@/chrome/context-page-navigation";
 import { TopRankModalProvider } from "@/lib/top-rank-modal";
 import { OnboardingProvider } from "@/lib/onboarding";
 import { RankingsProvider } from "@/lib/rankings";
 import { SettingsProvider } from "@/lib/settings";
-import { SearchProvider, useSearch } from "@/lib/search-context";
+import { SearchProvider, useSearchActions, useSearchOpen } from "@/lib/search-context";
 import { SearchOverlay } from "@/components/search/search-overlay";
 import { SearchHotkey } from "@/components/search/search-hotkey";
 import { LinkOutInterstitial } from "@/components/link-out-interstitial";
@@ -151,17 +164,25 @@ import { getUnreadCount, subscribeUnread } from "@/lib/social/unread-bridge";
 import { fetchMe } from "@/lib/account/identity";
 import { ThemeChromeBridge } from "@/components/theme-chrome-bridge";
 import type { MetaType } from "@/lib/cinemeta";
+import { profileMediaMeta } from "@/lib/social/profile-media-meta";
 import { useDiscordPresence } from "@/lib/discord/use-discord-presence";
 import { useWatchShare } from "@/lib/social/watch-presence";
 import { usePluginCataloguesAvailable } from "@/lib/streams/plugins/available";
 import { SpooktoberHome } from "@/views/spooktober/spooktober-home";
+
+// Shell re-renders on its own state (idle-evict timers, memory pressure, immersive, games nav).
+// Memoizing the view stops that from cascading into a full re-render of the home feed, which the
+// profiler measured rendering ~18 times a second while the user was on other tabs.
+const MemoSpooktoberHome = memo(SpooktoberHome);
 import { MusicDock } from "@/components/music/music-dock";
+import { useInstallFeatures } from "@/lib/features/install";
 import { MusicSurprisePrompt } from "@/components/music/music-surprise-prompt";
 import { ParentalProvider } from "@/lib/parental";
 import { TraktProvider } from "@/lib/trakt/provider";
 import { AnilistProvider } from "@/lib/anilist/provider";
 import { MalProvider } from "@/lib/mal/provider";
 import { SimklProvider } from "@/lib/simkl/provider";
+import { PublicMetaDbProvider } from "@/lib/publicmetadb/provider";
 import { LetterboxdProvider } from "@/lib/stremboxd/provider";
 import {
   useKeyboardNavigation,
@@ -223,8 +244,8 @@ const CalendarView = lazy(() => importCalendar().then((m) => ({ default: m.Calen
 const WrappedView = lazy(() => importWrapped().then((m) => ({ default: m.WrappedView })));
 const DetailView = lazy(() => importDetail().then((m) => ({ default: m.DetailView })));
 const AddonsView = lazy(() => importAddons().then((m) => ({ default: m.AddonsView })));
-const Discover = lazy(() => importDiscover().then((m) => ({ default: m.Discover })));
-const Catalogs = lazy(() => importCatalogs().then((m) => ({ default: m.Catalogs })));
+const Discover = memo(lazy(() => importDiscover().then((m) => ({ default: m.Discover }))));
+const Catalogs = memo(lazy(() => importCatalogs().then((m) => ({ default: m.Catalogs }))));
 const PluginsView = lazy(() => importPlugins().then((m) => ({ default: m.Plugins })));
 const AwardView = lazy(() => importAward().then((m) => ({ default: m.AwardView })));
 const AnimeAwardView = lazy(() => importAnimeAward().then((m) => ({ default: m.AnimeAwardView })));
@@ -260,7 +281,7 @@ const CommunityCollectionsView = lazy(() =>
 );
 const PlayPicker = lazy(() => importPlayPicker().then((m) => ({ default: m.PlayPicker })));
 const PlayerView = lazy(() => importPlayer().then((m) => ({ default: m.PlayerView })));
-const Movies = lazy(() => importMovies().then((m) => ({ default: m.Movies })));
+const Movies = memo(lazy(() => importMovies().then((m) => ({ default: m.Movies }))));
 const Kids = lazy(() => importKids().then((m) => ({ default: m.Kids })));
 const KidsDetailView = lazy(() =>
   import("@/views/kids-detail").then((m) => ({ default: m.KidsDetailView })),
@@ -296,46 +317,64 @@ function useViewPreloader(tmdbKey: string) {
     let cancelled = false;
     const win = window as Window & {
       requestIdleCallback?: (cb: () => void, opts?: { timeout?: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
     };
-    const schedule = (cb: () => void) =>
-      typeof win.requestIdleCallback === "function"
-        ? win.requestIdleCallback(cb, { timeout: 2500 })
-        : window.setTimeout(cb, 1200);
-    schedule(() => {
-      if (cancelled) return;
-      void importDetail();
-      void importPlayPicker();
-      void importPlayer();
-      void importSettings();
-      void importAddons();
-      void importDiscover();
-      void importPerson();
-      void importPeople();
-      void importFilter();
-      void importCalendar();
-      void importMovies();
-      void importShows();
-      void importLive();
-      void importAnime();
-      void importQueue();
-      void importAward();
-      void importAnimeAward();
-      void importService();
-      void importOnboarding();
-      void importCatalogs();
-      void importPlugins();
-      void importLibrary();
-      void importCommunityCollections();
-      void importDownloads();
-      void importGrid();
-      void importWrapped();
-      void importKids();
-      if (keyRef.current) {
-        void import("@/lib/feed/pool").then((m) => m.getPool(keyRef.current)).catch(() => {});
-      }
-    });
+    let handle = 0;
+    const idle = typeof win.requestIdleCallback === "function";
+    const schedule = (cb: () => void) => {
+      handle = idle ? win.requestIdleCallback!(cb, { timeout: 2500 }) : window.setTimeout(cb, 1200);
+    };
+    const preloaders: Array<() => Promise<unknown>> = [
+      importDetail,
+      importPlayPicker,
+      importPlayer,
+      importSettings,
+      importDiscover,
+      importAddons,
+      importPerson,
+      importPeople,
+      importFilter,
+      importCalendar,
+      importMovies,
+      importShows,
+      importLive,
+      importAnime,
+      importQueue,
+      importAward,
+      importAnimeAward,
+      importService,
+      importOnboarding,
+      importCatalogs,
+      importPlugins,
+      importLibrary,
+      importCommunityCollections,
+      importDownloads,
+      importGrid,
+      importWrapped,
+      importKids,
+      async () => {
+        if (keyRef.current) {
+          const m = await import("@/lib/feed/pool");
+          if (!cancelled) await m.getPool(keyRef.current);
+        }
+      },
+    ];
+    let next = 0;
+    const warmNext = () => {
+      if (cancelled || next >= preloaders.length) return;
+      // One module per idle opportunity: warming every view at once evaluates
+      // unrelated feature modules and starts their storage/network work during Home boot.
+      void preloaders[next++]()
+        .catch(() => {})
+        .finally(() => {
+          if (!cancelled) schedule(warmNext);
+        });
+    };
+    schedule(warmNext);
     return () => {
       cancelled = true;
+      if (idle) win.cancelIdleCallback?.(handle);
+      else window.clearTimeout(handle);
     };
   }, []);
 }
@@ -376,6 +415,31 @@ function useRetainedValue<T>(value: T | null): T | null {
   return retained.current;
 }
 
+/**
+ * Renders children after the shell's first paint. Every background runner fires its first IPC
+ * round at mount; doing that inside the home feed's first commit put a ~630ms React work loop in
+ * the boot frame. Two frames of delay lets the shell paint before that work lands.
+ */
+function AfterFirstPaint({ children, delayMs = 0 }: { children: ReactNode; delayMs?: number }) {
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    let second = 0;
+    let timer = 0;
+    const first = requestAnimationFrame(() => {
+      second = requestAnimationFrame(() => {
+        if (delayMs > 0) timer = window.setTimeout(() => setReady(true), delayMs);
+        else setReady(true);
+      });
+    });
+    return () => {
+      cancelAnimationFrame(first);
+      cancelAnimationFrame(second);
+      window.clearTimeout(timer);
+    };
+  }, [delayMs]);
+  return ready ? <>{children}</> : null;
+}
+
 function useIdleEvict(active: boolean, pin = false): boolean {
   const [alive, setAlive] = useState(active);
   const [pressure, setPressure] = useState(false);
@@ -401,117 +465,136 @@ export function App({ onReady }: { onReady?: () => void }) {
             <AnilistProvider>
               <MalProvider>
                 <SimklProvider>
-                  <LetterboxdProvider>
-                    <RankingsProvider>
-                      <AuthProvider>
-                        <OnboardingProvider>
-                          <TogetherProvider>
-                            <ViewProvider>
-                              <ListenTogetherProvider>
-                                <SearchProvider>
-                                  <DvrProvider>
-                                    <FavoritesProvider>
-                                      <MediaFavoritesProvider>
-                                        <CharacterFavoritesProvider>
-                                          <MangaFavoritesProvider>
-                                            <LocalWatchlistProvider>
-                                              <ContextMenuProvider>
-                                                <TopRankModalProvider>
-                                                  <HarborErrorBoundary>
-                                                    <ProfileIdentitySync />
-                                                    <HarborAvatarSync />
-                                                    <HarborNameSync />
-                                                    <SettingsProfileBridge />
-                                                    <TrackerProfileBridge />
-                                                    <AnilistAvatarSync />
-                                                    <MalAvatarSync />
-                                                    <MiddleClickScroll />
-                                                    <ThemeBackdrop />
-                                                    <WatchlistSync />
-                                                    {isMobileWeb() || isRemoteRoute() ? (
-                                                      <>
+                  <PublicMetaDbProvider>
+                    <LetterboxdProvider>
+                      <RankingsProvider>
+                        <AuthProvider>
+                          <OnboardingProvider>
+                            <TogetherProvider>
+                              <ViewProvider>
+                                <ListenTogetherProvider>
+                                  <SearchProvider>
+                                    <DvrProvider>
+                                      <FavoritesProvider>
+                                        <MediaFavoritesProvider>
+                                          <CharacterFavoritesProvider>
+                                            <MangaFavoritesProvider>
+                                              <LocalWatchlistProvider>
+                                                <ContextMenuProvider>
+                                                  <TopRankModalProvider>
+                                                    <HarborErrorBoundary>
+                                                      <ProfileIdentitySync />
+                                                      <HarborAvatarSync />
+                                                      <HarborNameSync />
+                                                      <SettingsProfileBridge />
+                                                      <TrackerProfileBridge />
+                                                      <AnilistAvatarSync />
+                                                      <MalAvatarSync />
+                                                      <MiddleClickScroll />
+                                                      <ThemeBackdrop />
+                                                      <Profiled id="startup.watchlist-sync">
+                                                        <WatchlistSync />
+                                                      </Profiled>
+                                                      {isMobileWeb() || isRemoteRoute() ? (
+                                                        <>
+                                                          <Suspense fallback={null}>
+                                                            <MobileShell />
+                                                          </Suspense>
+                                                          <RevealOnMount onReady={onReady} />
+                                                        </>
+                                                      ) : (
+                                                        <Profiled id="shell">
+                                                          <Shell onReady={onReady} />
+                                                        </Profiled>
+                                                      )}
+                                                      {!isMobileWeb() && !isRemoteRoute() && (
                                                         <Suspense fallback={null}>
-                                                          <MobileShell />
+                                                          <OnboardingModal />
                                                         </Suspense>
-                                                        <RevealOnMount onReady={onReady} />
-                                                      </>
-                                                    ) : (
-                                                      <Shell onReady={onReady} />
-                                                    )}
-                                                    {!isMobileWeb() && !isRemoteRoute() && (
-                                                      <Suspense fallback={null}>
-                                                        <OnboardingModal />
-                                                      </Suspense>
-                                                    )}
-                                                    <TogetherInviteToast />
-                                                    <TogetherFloater />
-                                                    <TogetherHostLeavingPrompt />
-                                                    <TogetherSummonToast />
-                                                    <TogetherParticipantLeftToast />
-                                                    <AnilistSyncToast />
-                                                    <MalSyncToast />
-                                                    <MangaSyncToast tracker="anilist" />
-                                                    <MangaSyncToast tracker="mal" />
-                                                    <ListToastHost />
-                                                    <DiagnosticsConsentHost />
-                                                    <TogetherLeaveForLiveModal />
-                                                    <TogetherLocationPublisher />
-                                                    <IdleAwayRunner />
-                                                    <SessionRefreshRunner />
-                                                    <StatsSyncRunner />
-                                                    <FeaturedListsSyncRunner />
-                                                    <RatingsSyncRunner />
-                                                    <ActivitySyncRunner />
-                                                    <MediaServerSyncRunner />
-                                                    <AutoDownloadRunner />
-                                                    <RemindersRunner />
-                                                    <GameDownloadNotificationsRunner />
-                                                    <GameSourceAlertsRunner />
-                                                    <MangaTrackingRunner />
-                                                    <RemoteHostMount />
-                                                    <RemoteOpenBridge />
-                                                    <PlayOnModal />
-                                                    <GamepadRunner />
-                                                    <ControllerConnectedToast />
-                                                    <DiscordPresence />
-                                                    <WatchPresenceRunner />
-                                                    <ContextMenu />
-                                                    <AnnouncementGlobal />
-                                                    <WatchLocalModal />
-                                                    <LocalEpisodesModal />
-                                                    <LocalVersionsModal />
-                                                    <HoverPreview />
-                                                    <CustomHoverCssMount />
-                                                    <TopRankModal />
-                                                    <ProfilePickerModal />
-                                                    <CurfewGuard />
-                                                    <SearchOverlay />
-                                                    <SearchHotkey />
-                                                    <LinkOutInterstitial />
-                                                    <EmbedViewportRoot />
-                                                    <InstallerViewportRoot />
-                                                    <UpdateRoot />
-                                                    <VoyageRoot />
-                                                    <ScreensaverRoot />
-                                                  </HarborErrorBoundary>
-                                                  <ErrorView />
-                                                  <DevErrorTrigger />
-                                                </TopRankModalProvider>
-                                              </ContextMenuProvider>
-                                            </LocalWatchlistProvider>
-                                          </MangaFavoritesProvider>
-                                        </CharacterFavoritesProvider>
-                                      </MediaFavoritesProvider>
-                                    </FavoritesProvider>
-                                  </DvrProvider>
-                                </SearchProvider>
-                              </ListenTogetherProvider>
-                            </ViewProvider>
-                          </TogetherProvider>
-                        </OnboardingProvider>
-                      </AuthProvider>
-                    </RankingsProvider>
-                  </LetterboxdProvider>
+                                                      )}
+                                                      <TogetherInviteToast />
+                                                      <TogetherFloater />
+                                                      <TogetherHostLeavingPrompt />
+                                                      <TogetherSummonToast />
+                                                      <TogetherParticipantLeftToast />
+                                                      <AnilistSyncToast />
+                                                      <MalSyncToast />
+                                                      <MangaSyncToast tracker="anilist" />
+                                                      <MangaSyncToast tracker="mal" />
+                                                      <ListToastHost />
+                                                      <DiagnosticsConsentHost />
+                                                      <TogetherLeaveForLiveModal />
+                                                      <AfterFirstPaint>
+                                                        <TogetherLocationPublisher />
+                                                        <IdleAwayRunner />
+                                                        <SessionRefreshRunner />
+                                                        <RemoteHostMount />
+                                                        <RemoteOpenBridge />
+                                                      </AfterFirstPaint>
+                                                      <AfterFirstPaint delayMs={1500}>
+                                                        <StatsSyncRunner />
+                                                        <FeaturedListsSyncRunner />
+                                                        <RatingsSyncRunner />
+                                                        <ActivitySyncRunner />
+                                                      </AfterFirstPaint>
+                                                      <AfterFirstPaint>
+                                                        <MediaServerSyncRunner />
+                                                        <AutoDownloadRunner />
+                                                        <RemindersRunner />
+                                                        <GameDownloadNotificationsRunner />
+                                                        <GameSourceAlertsRunner />
+                                                        <MangaTrackingRunner />
+                                                      </AfterFirstPaint>
+                                                      <PlayOnModal />
+                                                      <GamepadRunner />
+                                                      <ControllerConnectedToast />
+                                                      <AfterFirstPaint>
+                                                        <DiscordPresence />
+                                                        <WatchPresenceRunner />
+                                                      </AfterFirstPaint>
+                                                      <Profiled id="startup.context-menu">
+                                                        <ContextMenu />
+                                                      </Profiled>
+                                                      <PageContextNavigationDialogs />
+                                                      <AnnouncementGlobal />
+                                                      <WatchLocalModal />
+                                                      <LocalEpisodesModal />
+                                                      <LocalVersionsModal />
+                                                      <HoverPreview />
+                                                      <CustomHoverCssMount />
+                                                      <TopRankModal />
+                                                      <ProfilePickerModal />
+                                                      <CurfewGuard />
+                                                      <Profiled id="search.overlay">
+                                                        <SearchOverlay />
+                                                      </Profiled>
+                                                      <SearchHotkey />
+                                                      <LinkOutInterstitial />
+                                                      <EmbedViewportRoot />
+                                                      <InstallerViewportRoot />
+                                                      <UpdateRoot />
+                                                      <VoyageRoot />
+                                                      <ScreensaverRoot />
+                                                    </HarborErrorBoundary>
+                                                    <ErrorView />
+                                                    <DevErrorTrigger />
+                                                  </TopRankModalProvider>
+                                                </ContextMenuProvider>
+                                              </LocalWatchlistProvider>
+                                            </MangaFavoritesProvider>
+                                          </CharacterFavoritesProvider>
+                                        </MediaFavoritesProvider>
+                                      </FavoritesProvider>
+                                    </DvrProvider>
+                                  </SearchProvider>
+                                </ListenTogetherProvider>
+                              </ViewProvider>
+                            </TogetherProvider>
+                          </OnboardingProvider>
+                        </AuthProvider>
+                      </RankingsProvider>
+                    </LetterboxdProvider>
+                  </PublicMetaDbProvider>
                 </SimklProvider>
               </MalProvider>
             </AnilistProvider>
@@ -593,8 +676,25 @@ function MediaServerSyncRunner() {
     const onWake = () => {
       if (document.visibilityState === "visible") void refresh();
     };
-    const timer = window.setInterval(() => void refresh(), MEDIA_SERVER_SYNC_MS);
-    const initial = window.setTimeout(() => void refresh(), 2500);
+    // Wake when the soonest configured interval is due (or the base cadence),
+    // so custom minute-level intervals are honored instead of a fixed 15-minute poll.
+    let timer: number | undefined;
+    const nextDelay = () => {
+      const now = Date.now();
+      let soonest = MEDIA_SERVER_SYNC_MS;
+      for (const entry of mediaServerConnections()) {
+        const interval = mediaServerRefreshIntervalMs(entry);
+        if (interval == null) continue;
+        const due = entry.lastSyncAt == null ? 0 : entry.lastSyncAt + interval - now;
+        soonest = Math.min(soonest, Math.max(0, due));
+      }
+      return Math.min(MEDIA_SERVER_SYNC_MS, Math.max(30_000, soonest));
+    };
+    const schedule = () => {
+      if (cancelled) return;
+      timer = window.setTimeout(() => void refresh().finally(schedule), nextDelay());
+    };
+    const initial = window.setTimeout(() => void refresh().finally(schedule), 2500);
     const onProfile = () => {
       launchSynced.clear();
       void refresh();
@@ -604,7 +704,7 @@ function MediaServerSyncRunner() {
     document.addEventListener("visibilitychange", onWake);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (timer !== undefined) window.clearTimeout(timer);
       window.clearTimeout(initial);
       window.removeEventListener("harbor:active-profile-changed", onProfile);
       window.removeEventListener("online", refresh);
@@ -817,7 +917,8 @@ function Shell({ onReady }: { onReady?: () => void }) {
     chromeHidden,
   } = useView();
   const { settings, update } = useSettings();
-  const { open: searchOpen, setOpen: setSearchOpen } = useSearch();
+  const searchOpen = useSearchOpen();
+  const { setOpen: setSearchOpen } = useSearchActions();
   const bigPicture = useBigPicture().active;
   const bigPictureBootChecked = useRef(false);
   const uiScaleRef = useRef(settings.uiScale);
@@ -1031,15 +1132,7 @@ function Shell({ onReady }: { onReady?: () => void }) {
   useEffect(() => {
     const onMouseDown = (e: MouseEvent) => {
       if (e.button === 3) {
-        const localBack = new Event("harbor:local-back", { cancelable: true });
-        if (!window.dispatchEvent(localBack)) {
-          e.preventDefault();
-          return;
-        }
-        if (canGoBack || hasBackHandlers()) {
-          e.preventDefault();
-          goBack();
-        }
+        if (requestAppBack(canGoBack || hasBackHandlers(), goBack)) e.preventDefault();
       } else if (e.button === 4 && canGoForward) {
         e.preventDefault();
         goForward();
@@ -1398,8 +1491,9 @@ function Shell({ onReady }: { onReady?: () => void }) {
   const moviesTop = topKind === "movies";
   const kidsTop = topKind === "kids";
   const showsTop = topKind === "shows";
-  const musicTop = topKind === "music";
-  const gamesTop = topKind === "games";
+  const installFeatures = useInstallFeatures();
+  const musicTop = topKind === "music" && installFeatures.music;
+  const gamesTop = topKind === "games" && installFeatures.games;
   const [gamesNavigationOpen, setGamesNavigationOpen] = useState(false);
 
   useEffect(() => {
@@ -1413,18 +1507,33 @@ function Shell({ onReady }: { onReady?: () => void }) {
     if (!sportsEnabled && (topKind === "sports" || topKind === "match-detail")) setView("live");
   }, [sportsEnabled, topKind, setView]);
   const pluginCatalogues = usePluginCataloguesAvailable();
-  const pluginsTop = topKind === "plugins" && pluginCatalogues;
+  const pluginsTop = topKind === "plugins" && pluginCatalogues && installFeatures.plugins;
   useEffect(() => {
-    if (!pluginCatalogues && topKind === "plugins") setView("home");
-  }, [pluginCatalogues, topKind, setView]);
+    if ((!pluginCatalogues || !installFeatures.plugins) && topKind === "plugins") setView("home");
+  }, [pluginCatalogues, installFeatures.plugins, topKind, setView]);
+  // A feature the installer was told to leave out hides its tab and cannot be reached by deep
+  // links or search results either; the choice lives in harbor-install.json, not here.
+  useEffect(() => {
+    if (!installFeatures.music && topKind === "music") setView("home");
+    if (!installFeatures.games && topKind === "games") setView("home");
+    if (!installFeatures.manga && topKind === "manga") setView("home");
+    if (!installFeatures.ebook && topKind === "ebook") setView("home");
+  }, [
+    installFeatures.music,
+    installFeatures.games,
+    installFeatures.manga,
+    installFeatures.ebook,
+    topKind,
+    setView,
+  ]);
   const liveTop = topKind === "live";
   const liveHasSources = usePlaylists().length > 0;
   const standaloneLive = liveTop && liveHasSources;
   const matchDetailTop = topKind === "match-detail";
   const vodTop = topKind === "vod";
   const downloadsTop = topKind === "downloads";
-  const mangaTop = topKind === "manga";
-  const ebookTop = topKind === "ebook";
+  const mangaTop = topKind === "manga" && installFeatures.manga;
+  const ebookTop = topKind === "ebook" && installFeatures.ebook;
   const peopleTop = topKind === "people";
   const retainedFilter = useRetainedValue(filter);
   const retainedBrands = useRetainedValue(brands);
@@ -1483,6 +1592,7 @@ function Shell({ onReady }: { onReady?: () => void }) {
   useEffect(() => resetMusicForProfile(), [activeProfileForMusic]);
 
   const overlayPinned = useOverlayPinned();
+  const homeAlive = useIdleEvict(homeTop);
   const settingsAlive = useIdleEvict(settingsTop, overlayPinned);
   const animeAlive = useIdleEvict(animeTop);
   const discoverAlive = useIdleEvict(discoverTop);
@@ -1539,12 +1649,12 @@ function Shell({ onReady }: { onReady?: () => void }) {
   const ebookAlive = useIdleEvict(ebookTop);
   const peopleAlive = useIdleEvict(peopleTop);
 
-  const gameDockVisible =
+  const quickLibraryVisible =
     !kid && !kidsTop && !playerActive && !pickerTop && !bigPicture && !immersive && !chromeHidden;
   return (
     <GameAccessProvider
       profile={activeProfile?.id ?? "default"}
-      enabled={!kid && !bigPicture && !playerActive}
+      enabled={installFeatures.games && !kid && !bigPicture && !playerActive}
       gamesActive={gamesTop}
       onNavigate={openGames}
       onLeave={goBack}
@@ -1642,16 +1752,18 @@ function Shell({ onReady }: { onReady?: () => void }) {
               <WindowControls />
             </div>
           )}
-          <MusicDock />
+          {installFeatures.music && <MusicDock />}
           <MusicSurprisePrompt />
           {!playerActive && <WindowResizeEdges />}
           <HybridTitleBar suppressed={playerActive || immersive || chromeHidden} />
           <div
             className={`relative flex min-h-0 min-w-0 flex-1 flex-col ${playerActive ? "invisible" : ""}`}
           >
-            <div key={"home-" + (viewResetVersions["home"] ?? 0)} {...parkLayerProps(homeTop)}>
-              <SpooktoberHome active={homeTop} onReady={onReady} />
-            </div>
+            {homeAlive && (
+              <div key={"home-" + (viewResetVersions["home"] ?? 0)} {...parkLayerProps(homeTop)}>
+                <MemoSpooktoberHome active={homeTop} onReady={onReady} />
+              </div>
+            )}
             {settingsAlive && (
               <div {...layerProps(settingsTop)}>
                 <Suspense fallback={null}>
@@ -1709,7 +1821,10 @@ function Shell({ onReady }: { onReady?: () => void }) {
                 {...layerProps(calendarTop)}
               >
                 <Suspense fallback={null}>
-                  <CalendarView active={calendarTop} gamesAllowed={!kid && GAMES_IN_NAV} />
+                  <CalendarView
+                    active={calendarTop}
+                    gamesAllowed={!kid && GAMES_IN_NAV && installFeatures.games}
+                  />
                 </Suspense>
               </div>
             )}
@@ -1762,7 +1877,9 @@ function Shell({ onReady }: { onReady?: () => void }) {
             {gamesAlive && (
               <div key={"games-" + (viewResetVersions["games"] ?? 0)} {...layerProps(gamesTop)}>
                 <Suspense fallback={<GameRouteLoading />}>
-                  <GameDockWelcome eligible={gamesTop && gameDockVisible && !gamesNavigationOpen} />
+                  <GameDockWelcome
+                    eligible={gamesTop && quickLibraryVisible && !gamesNavigationOpen}
+                  />
                   <GamesView
                     harborNavigationOpen={gamesNavigationOpen}
                     onHarborNavigationChange={setGamesNavigationOpen}
@@ -1870,7 +1987,7 @@ function Shell({ onReady }: { onReady?: () => void }) {
               </div>
             )}
             {peopleAlive && (
-              <div key={"people-" + (viewResetVersions["people"] ?? 0)} {...layerProps(peopleTop)}>
+              <div {...layerProps(peopleTop)}>
                 <Suspense fallback={null}>
                   <PeopleView init={peopleInit} />
                 </Suspense>
@@ -1929,12 +2046,7 @@ function Shell({ onReady }: { onReady?: () => void }) {
                         openManga(id);
                         return;
                       }
-                      const animeIsh = /^(kitsu|mal|anilist|anidb):/i.test(id);
-                      const t: MetaType =
-                        kind === "series" || kind === "tv" || kind === "anime" || animeIsh
-                          ? "series"
-                          : "movie";
-                      openMeta({ id, type: t, name: hint?.name ?? "", poster: hint?.poster });
+                      openMeta(profileMediaMeta(id, kind, hint));
                     }}
                   />
                 </Suspense>
@@ -2116,14 +2228,10 @@ function Shell({ onReady }: { onReady?: () => void }) {
                 </Suspense>
               </div>
             )}
-            {curatedListAlive && retainedCuratedListId && (
+            {curatedListAlive && curatedListId && (
               <div {...layerProps(curatedListTop)}>
                 <Suspense fallback={null}>
-                  <CuratedListView
-                    key={`curated-list-${retainedCuratedListId}`}
-                    listId={retainedCuratedListId}
-                    active={curatedListTop}
-                  />
+                  <CuratedListView key={`curated-list-${curatedListId}`} listId={curatedListId} />
                 </Suspense>
               </div>
             )}
@@ -2131,7 +2239,7 @@ function Shell({ onReady }: { onReady?: () => void }) {
               <div {...layerProps(pickerTop)}>
                 <Suspense fallback={null}>
                   <PlayPicker
-                    key={`picker-${picker.meta.id}-${picker.episode?.season ?? ""}-${picker.episode?.episode ?? ""}-${picker.attempt ?? 0}-${picker.intent ?? "play"}-${picker.seasonEpisodes?.length ?? 0}`}
+                    key={`picker-${picker.meta.id}-${picker.episode?.season ?? ""}-${picker.episode?.episode ?? ""}-${picker.attempt ?? 0}-${picker.intent ?? "play"}-${picker.seasonEpisodes?.length ?? 0}-${picker.contextRequestId ?? ""}-${picker.continuation?.id ?? ""}`}
                     meta={picker.meta}
                     episode={picker.episode}
                     autoPlay={picker.intent === "download" ? false : picker.autoPlay}
@@ -2139,6 +2247,7 @@ function Shell({ onReady }: { onReady?: () => void }) {
                     intent={picker.intent}
                     seasonEpisodes={picker.seasonEpisodes}
                     resume={picker.resume}
+                    continuation={picker.continuation}
                     playerActive={playerActive}
                   />
                 </Suspense>
@@ -2177,7 +2286,7 @@ function Shell({ onReady }: { onReady?: () => void }) {
             )}
           </div>
         </div>
-        <GameLibraryDock visible={gameDockVisible && !gamesTop} />
+        <GameLibraryDock visible={quickLibraryVisible && !gamesTop} />
         {player && (
           <Suspense fallback={null}>
             <PlayerView

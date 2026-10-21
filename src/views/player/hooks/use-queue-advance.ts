@@ -43,7 +43,13 @@ export function useQueueAdvance(params: {
     const nextItem = queueItemAfter(src.meta, src.episode);
     if (nextItem) {
       firedForRef.current = src.url;
-      openPicker(nextItem.meta, nextItem.episode);
+      // A queue entry for the same series still needs auto-play so the preferred
+      // source is resolved; different titles keep the manual picker.
+      openPicker(
+        nextItem.meta,
+        nextItem.episode,
+        nextItem.meta.id === src.meta.id ? { autoPlay: true } : undefined,
+      );
       return;
     }
     if (getSleepAtEnd()) {

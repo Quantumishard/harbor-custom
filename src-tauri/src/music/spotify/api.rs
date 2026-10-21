@@ -187,6 +187,116 @@ pub async fn post(
     })
 }
 
+/// Playlist writes are not retried: a lost response can still mean Spotify applied the change.
+pub async fn delete(
+    http: &reqwest::Client,
+    token: &str,
+    path: &str,
+    body: &Value,
+) -> Result<Value, ApiError> {
+    let response = http
+        .delete(format!("{BASE}{path}"))
+        .bearer_auth(token)
+        .json(body)
+        .timeout(std::time::Duration::from_secs(25))
+        .send()
+        .await
+        .map_err(|_| ApiError {
+            status: None,
+            message: "Spotify did not confirm the change. Check the playlist on Spotify before trying again.".to_string(),
+        })?;
+    let status = response.status().as_u16();
+    if response.status().is_success() {
+        let bytes = response.bytes().await.map_err(|_| ApiError {
+            status: Some(status),
+            message: "Spotify did not confirm the change. Check the playlist on Spotify before trying again.".to_string(),
+        })?;
+        return if bytes.is_empty() {
+            Ok(Value::Null)
+        } else {
+            serde_json::from_slice(&bytes).map_err(|_| ApiError {
+                status: Some(status),
+                message: "Spotify did not confirm the change. Check the playlist on Spotify before trying again.".to_string(),
+            })
+        };
+    }
+    let text = response.text().await.unwrap_or_default();
+    Err(ApiError {
+        status: Some(status),
+        message: describe(status, &text),
+    })
+}
+
+/// Playlist writes are not retried: a lost response can still mean Spotify applied the change.
+pub async fn put(
+    http: &reqwest::Client,
+    token: &str,
+    path: &str,
+    body: &Value,
+) -> Result<Value, ApiError> {
+    let response = http
+        .put(format!("{BASE}{path}"))
+        .bearer_auth(token)
+        .json(body)
+        .timeout(std::time::Duration::from_secs(25))
+        .send()
+        .await
+        .map_err(|_| ApiError {
+            status: None,
+            message: "Spotify did not confirm the change. Check the playlist on Spotify before trying again.".to_string(),
+        })?;
+    let status = response.status().as_u16();
+    if response.status().is_success() {
+        let bytes = response.bytes().await.map_err(|_| ApiError {
+            status: Some(status),
+            message: "Spotify did not confirm the change. Check the playlist on Spotify before trying again.".to_string(),
+        })?;
+        return if bytes.is_empty() {
+            Ok(Value::Null)
+        } else {
+            serde_json::from_slice(&bytes).map_err(|_| ApiError {
+                status: Some(status),
+                message: "Spotify did not confirm the change. Check the playlist on Spotify before trying again.".to_string(),
+            })
+        };
+    }
+    let text = response.text().await.unwrap_or_default();
+    Err(ApiError {
+        status: Some(status),
+        message: describe(status, &text),
+    })
+}
+
+/// Playlist cover upload takes the base64 JPEG as the raw body.
+pub async fn put_image(
+    http: &reqwest::Client,
+    token: &str,
+    path: &str,
+    image: &str,
+) -> Result<(), ApiError> {
+    let response = http
+        .put(format!("{BASE}{path}"))
+        .bearer_auth(token)
+        .header("content-type", "image/jpeg")
+        .body(image.to_string())
+        .timeout(std::time::Duration::from_secs(25))
+        .send()
+        .await
+        .map_err(|_| ApiError {
+            status: None,
+            message: "Spotify did not confirm the change. Check the playlist on Spotify before trying again.".to_string(),
+        })?;
+    if response.status().is_success() {
+        return Ok(());
+    }
+    let status = response.status().as_u16();
+    let text = response.text().await.unwrap_or_default();
+    Err(ApiError {
+        status: Some(status),
+        message: describe(status, &text),
+    })
+}
+
 pub async fn my_playlists(
     http: &reqwest::Client,
     token: &str,

@@ -29,6 +29,7 @@ export type TrackInfo = {
   release?: string;
   provider?: string;
   providerDerived?: boolean;
+  localTrusted?: boolean;
   fps?: number;
   downloads?: number;
   author?: string;
@@ -79,6 +80,9 @@ export type PlayerSnapshot = {
   audioNormalize: boolean;
   videoWidth: number;
   videoHeight: number;
+  /** Native decoded video size, before mpv scales it to the window. */
+  videoSourceWidth: number;
+  videoSourceHeight: number;
   hdrGamma: string;
   errorMessage: string | null;
   errorCode: "decode" | "codec" | "network" | "source" | "unknown" | null;
@@ -99,6 +103,8 @@ export type PlayerSource = {
   }[];
   notWebReady?: boolean;
   startAtSec?: number;
+  startPaused?: boolean;
+  title?: string;
   isLive?: boolean;
   headers?: Record<string, string>;
 };
@@ -118,8 +124,10 @@ export type PlayerBridge = {
   attach: (host: HTMLElement) => void;
   detach: () => void;
   load: (src: PlayerSource) => Promise<void>;
-  play: (options?: { preserveMuted?: boolean }) => Promise<void>;
-  pause: () => void;
+  // `reason` only names the caller in mpv's log (see pause-trace.ts); playback
+  // behaviour never depends on it.
+  play: (options?: { preserveMuted?: boolean; reason?: string }) => Promise<void>;
+  pause: (reason?: string) => void;
   seek: (sec: number, precision?: PlayerSeekPrecision) => void;
   frameStep?: (dir: 1 | -1) => void;
   setVolume: (v: number) => void;
@@ -168,6 +176,8 @@ export type PlayerBridge = {
 
 export type PlayerCapabilities = {
   engine: "html5" | "mpv";
+  /** Playback runs in the user's own external player window, outside Harbor. */
+  external?: boolean;
   pictureInPicture: boolean;
   airplay: boolean;
   chromecast: boolean;
@@ -196,6 +206,8 @@ export const emptySnapshot: PlayerSnapshot = {
   audioNormalize: false,
   videoWidth: 0,
   videoHeight: 0,
+  videoSourceWidth: 0,
+  videoSourceHeight: 0,
   hdrGamma: "",
   errorMessage: null,
   errorCode: null,

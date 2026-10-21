@@ -1,4 +1,6 @@
 const coverage: Record<string, string> = {
+  "Waiting for {name}…": "En attente de {name}…",
+  "Keeping the source you were watching.": "Conservation de la source que vous regardiez.",
   "Sound descriptions": "Descriptions sonores",
   "Hide sound effects and speaker names": "Masquer les bruitages et les noms de personnages",
   "Removes bracketed descriptions like [door creaks] and shouted speaker labels like JOHN: while subtitles play, so a release that only ships an SDH track still reads as plain dialogue. Song lyrics, ordinary parentheses and non-Latin scripts are left alone. Skipped on forced and picture-based tracks.": "Supprime les descriptions entre crochets comme [la porte grince] et les noms de personnages en majuscules comme JOHN: pendant la lecture, pour qu'une version livrée uniquement avec une piste SDH se lise comme un dialogue normal. Les paroles de chansons, les parenthèses ordinaires et les écritures non latines sont préservées. Ignoré sur les pistes forcées et les pistes image.",
@@ -264,8 +266,8 @@ const coverage: Record<string, string> = {
   "Harbor found episode sources, but none was a downloadable package for {season}. Try another addon or refresh the sources.":
     "Harbor a trouvé des sources pour les épisodes, mais aucune ne proposait de fichier téléchargeable pour {season}. Essayez une autre extension ou actualisez les sources.",
   "Harbor in a browser": "Harbor dans un navigateur",
-  "Harbor is closing. Harbor Setup will finish and reopen it.":
-    "Harbor va se fermer. Harbor Setup terminera l’installation, puis relancera Harbor.",
+  "Harbor is closing. Harbor Shipyard will finish and reopen it.":
+    "Harbor va se fermer. Harbor Shipyard terminera l’installation, puis relancera Harbor.",
   "Harbor {version} downloaded but did not install on its own.":
     "Harbor {version} a été téléchargé, mais ne s’est pas installé automatiquement.",
   "Harbor's full video engine. Plays anything you throw at it.":

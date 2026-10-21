@@ -39,6 +39,17 @@ if (!capstanStaged && !process.env.HARBOR_CAPSTAN_OPTIONAL) {
   process.exit(1);
 }
 
+// The game engine is optional at build time the same way: ship it when it is staged, refuse to
+// forget it silently, and let an explicit env var declare a build without it.
+const POKEMON = join(APP, 'resources', 'pokemon-engine');
+const pokemonStaged = existsSync(join(POKEMON, 'Harbor.PokemonEngine.exe'));
+if (!pokemonStaged && !process.env.HARBOR_POKEMON_OPTIONAL) {
+  console.error('No game engine is staged, so this installer would ship tab-only games.\n');
+  console.error('  ' + POKEMON + '\n');
+  console.error('Build tools/pokemon-engine first, or set HARBOR_POKEMON_OPTIONAL=1 to ship without it.');
+  process.exit(1);
+}
+
 const missing = FILES.filter(([src]) => !existsSync(src)).map(([src]) => src);
 if (missing.length) {
   console.error('Missing inputs.\n');
@@ -119,6 +130,14 @@ if (capstanStaged) {
   total += treeBytes(CAPSTAN);
 } else {
   console.error('SHIPPING WITHOUT EXTENSION SUPPORT: no runtime staged at ' + CAPSTAN);
+}
+
+if (pokemonStaged) {
+  mkdirSync(join(STAGE, 'resources'), { recursive: true });
+  cpSync(POKEMON, join(STAGE, 'resources', 'pokemon-engine'), { recursive: true });
+  total += treeBytes(POKEMON);
+} else {
+  console.error('SHIPPING WITHOUT THE GAME ENGINE: no engine staged at ' + POKEMON);
 }
 
 const appVersion = JSON.parse(readFileSync(join(APP, 'tauri.conf.json'), 'utf8')).version;

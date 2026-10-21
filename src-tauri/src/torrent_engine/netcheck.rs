@@ -163,7 +163,7 @@ async fn https_step() -> NetStep {
             }
         }
     }
-    if client.get("https://harbor.site").send().await.is_ok() {
+    if client.get("https://harborcommunity.site").send().await.is_ok() {
         return degraded(
             "https egress",
             "no HTTPS tracker replied but HTTPS works (trackers may be temporarily down)",

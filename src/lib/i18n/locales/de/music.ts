@@ -340,11 +340,11 @@ const music: Record<string, string> = {
   "music.source.preferred": "Bevorzugt",
   "music.source.loading": "Musikquellen werden gesucht",
   "music.source.none": "Derzeit ist keine passende Quelle verfügbar.",
-  "music.consent.title": "Bevor du YouTube oder SoundCloud aktivierst",
+  "music.consent.title": "Bevor du YouTube, SoundCloud oder Spotify aktivierst",
   "music.consent.hosting":
     "Harbor hostet keine Musik. Es ist Open-Source-Code von Mitwirkenden aus aller Welt, der öffentlich zugängliche Seiten der von dir aktivierten Dienste öffnet. Weder Harbor noch die Mitwirkenden speichern, laden hoch oder liefern Inhalte aus.",
   "music.consent.terms":
-    "YouTube und SoundCloud sind eigenständige Dienste mit eigenen Nutzungsbedingungen. Wenn du einen davon hier aktivierst, erklärst du dich bereit, dessen Bedingungen einzuhalten und die Nutzung zu beenden, falls du sie nicht mehr akzeptierst. Harbor steht in keiner Verbindung zu diesen Diensten und wird von ihnen nicht unterstützt.",
+    "YouTube, SoundCloud und Spotify sind eigenständige Dienste mit eigenen Nutzungsbedingungen. Wenn du einen davon hier aktivierst, erklärst du dich bereit, dessen Bedingungen einzuhalten und die Nutzung zu beenden, falls du sie nicht mehr akzeptierst. Harbor steht in keiner Verbindung zu diesen Diensten und wird von ihnen nicht unterstützt.",
   "music.consent.responsibility":
     "Du bist dafür verantwortlich, wie du diese Quellen nutzt und die Gesetze deines Landes einhältst. Die Mitwirkenden von Harbor übernehmen keine Verantwortung oder Haftung dafür, was du abspielst, herunterlädst oder teilst.",
   "music.consent.rights":

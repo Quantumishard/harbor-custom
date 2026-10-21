@@ -4,11 +4,14 @@
 The prepare command runs before `tauri build`. It recursively collects the
 dynamic libraries reachable from libmpv and the mpv CLI, rewrites their install
 names to use the application Frameworks directory, stages the CLI as a sidecar,
-and writes a small Tauri overlay config
-whose minimumSystemVersion is raised to the highest minos in that closure. A
-closure that raises it past HIGHEST_ALLOWED_MINIMUM_MAJOR fails the build
-instead, because that is Homebrew moving its bottle to a newer macOS and
-stranding every Mac below the new floor.
+stages the rewritten libmpv again as the plain `libmpv.dylib` that the linker's
+`-lmpv` looks for (in its own `link/` directory, which is never bundled), and
+writes a small Tauri overlay config whose minimumSystemVersion is raised to the
+highest minos in that closure. Point HARBOR_MACOS_LIB_DIR at the printed link
+directory so a release build links the bundled copy instead of the machine's
+Homebrew one. A closure that raises the floor past HIGHEST_ALLOWED_MINIMUM_MAJOR
+fails the build instead, because that is Homebrew moving its bottle to a newer
+macOS and stranding every Mac below the new floor.
 
 The finalize command runs through Tauri's beforeBundleCommand after the Harbor
 binary has been linked. It rewrites the binary's Homebrew load commands, drops
@@ -181,6 +184,24 @@ def collect(
     return collected
 
 
+def stage_link_shim(destination: Path, libmpv: Path) -> Path:
+    """Stage the rewritten libmpv under the plain name `-lmpv` resolves to.
+
+    libmpv2-sys links with a plain `-lmpv`, so the linker only looks for
+    libmpv.dylib, never the ABI-named libmpv.2.dylib that gets bundled. Copying
+    the already-rewritten library into its own `link/` directory (which the
+    overlay config never lists, so it cannot end up in the app) lets a release
+    build record @rpath/libmpv.2.dylib at link time instead of the build
+    machine's Homebrew path. Returns the directory HARBOR_MACOS_LIB_DIR must
+    point at.
+    """
+    link_dir = destination / "link"
+    link_dir.mkdir(parents=True, exist_ok=True)
+    shim = link_dir / "libmpv.dylib"
+    shutil.copy2(libmpv, shim)
+    return link_dir
+
+
 def stage_mpv(source: Path, target: Path, libraries: dict[Path, Path], triple: str) -> None:
     architecture = {"aarch64-apple-darwin": "arm64", "x86_64-apple-darwin": "x86_64"}[triple]
     run("lipo", str(source), "-verify_arch", architecture)
@@ -299,6 +320,7 @@ def prepare(args: argparse.Namespace) -> None:
     source = find_libmpv()
     mpv = find_mpv()
     collected = collect(source, destination, [mpv])
+    link_dir = stage_link_shim(destination, collected[source.resolve()])
     staged_mpv = root / "src-tauri" / "binaries" / f"mpv-{args.target}"
     stage_mpv(mpv, staged_mpv, collected, args.target)
     minimum, raised_by = bundle_minimum(root, [*collected.values(), staged_mpv])
@@ -310,7 +332,8 @@ def prepare(args: argparse.Namespace) -> None:
     )
     print(
         f"[macos-bundle] collected {len(collected)} dynamic libraries from {source.resolve()} "
-        f"into {destination}; staged thumbnail helper {staged_mpv}"
+        f"into {destination}; staged thumbnail helper {staged_mpv}; "
+        f"link libmpv with HARBOR_MACOS_LIB_DIR={link_dir}"
     )
     if raised_by:
         print(f"[macos-bundle] {raised_by} raises minimumSystemVersion to {version_text(minimum)}")

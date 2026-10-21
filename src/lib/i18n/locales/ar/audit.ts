@@ -19,8 +19,8 @@ const audit: Record<string, string> = {
     "أكّد مرة أخرى أن الاستخدام شخصي، ثم حدّد مربع الموافقة على شروط API.",
   "Copy your API Key": "انسخ مفتاح API",
   "Fill in the details, then Subscribe": "أدخل التفاصيل، ثم اضغط «اشتراك»",
-  "For Application URL anything works, for example https://harbor.site. TMDB never visits it.":
-    "يمكنك إدخال أي عنوان في حقل Application URL، مثل https://harbor.site. لن يزور TMDB هذا العنوان.",
+  "For Application URL anything works, for example https://harborcommunity.site. TMDB never visits it.":
+    "يمكنك إدخال أي عنوان في حقل Application URL، مثل https://harborcommunity.site. لن يزور TMDB هذا العنوان.",
   "Free forever for personal use. No payment, ever.":
     "مجاني دائمًا للاستخدام الشخصي. لا يتطلب أي دفع.",
   "Get your free TMDB key": "احصل على مفتاح TMDB المجاني",
@@ -118,8 +118,8 @@ const audit: Record<string, string> = {
   Dismiss: "تجاهل",
   "Download installer": "تنزيل برنامج التثبيت",
   "Install and reopen": "التثبيت وإعادة الفتح",
-  "Harbor is closing. Harbor Setup will finish and reopen it.":
-    "جارٍ إغلاق Harbor. سيكمل Harbor Setup التثبيت ثم يعيد فتحه.",
+  "Harbor is closing. Harbor Shipyard will finish and reopen it.":
+    "جارٍ إغلاق Harbor. سيكمل Harbor Shipyard التثبيت ثم يعيد فتحه.",
 
   "Broadcast networks": "شبكات البث",
   News: "الأخبار",

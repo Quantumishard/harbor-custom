@@ -27,8 +27,39 @@ const subs = new Set<() => void>();
 let version = 0;
 const cache = new Map<string, Record<string, LocalCwEntry>>();
 
+function nuvioAccountId(): string {
+  try {
+    const raw = localStorage.getItem("harbor.nuvio.state.v1") ?? localStorage.getItem("harbor.nuvio.state");
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed?.session?.user?.id) return String(parsed.session.user.id);
+    }
+  } catch {}
+  return "anon";
+}
+
+function isNuvioMode(): boolean {
+  try {
+    const explicit = localStorage.getItem("harbor.account-provider");
+    if (explicit === "nuvio") return true;
+    if (explicit === "stremio") return false;
+    for (const key of ["harbor.settings.shared", "harbor.settings", "harbor.settings.v1"]) {
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed.accountProvider === "nuvio") return true;
+        if (parsed.accountProvider === "stremio") return false;
+      }
+    }
+  } catch {}
+  return false;
+}
+
 function primaryProfileId(): string {
   try {
+    if (isNuvioMode()) {
+      return cwProfileScope().sharedId;
+    }
     const raw = localStorage.getItem(PROFILES_KEY);
     const s = raw
       ? (JSON.parse(raw) as { profiles?: Array<{ id?: string; isPrimary?: boolean }> })
@@ -42,12 +73,17 @@ function primaryProfileId(): string {
 
 function storeKey(privateOnly = false, ownerId?: string): string {
   const scope = cwProfileScope(ownerId);
+  if (isNuvioMode() || scope.profileId.startsWith("nuvio-")) {
+    const acc = nuvioAccountId();
+    return `${KEY_PREFIX}${acc}.${scope.profileId}`;
+  }
   if (privateOnly) return PRIVATE_PREFIX + scope.profileId;
   const id = scope.sharedId;
   return id ? KEY_PREFIX + id : LEGACY_KEY;
 }
 
 function migrateLegacy(): void {
+  if (isNuvioMode()) return;
   try {
     const legacy = localStorage.getItem(LEGACY_KEY);
     if (!legacy) return;
@@ -76,12 +112,15 @@ function readAll(key: string): Record<string, LocalCwEntry> {
   return next;
 }
 
-function writeAll(key: string, all: Record<string, LocalCwEntry>): void {
+function writeAll(key: string, all: Record<string, LocalCwEntry>, acknowledged = false): void {
   cache.set(key, all);
   try {
     localStorage.setItem(key, JSON.stringify(all));
-  } catch {
-    /* noop */
+  } catch (error) {
+    if (acknowledged)
+      throw new Error("Could not save the change. Check available storage and try again.", {
+        cause: error,
+      });
   }
 }
 
@@ -111,13 +150,23 @@ function saveEntry(key: string, entry: LocalCwEntry): void {
 // writing the shared store; its history cannot establish who watched a title.
 export function saveLocalCw(entry: LocalCwEntry, ownerId?: string, shared = true): void {
   if (!entry.id || (entry.type !== "movie" && entry.type !== "series")) return;
+  if (isNuvioMode()) {
+    saveEntry(storeKey(false, ownerId), entry);
+    emit();
+    return;
+  }
   if (ownerId) saveEntry(storeKey(true, ownerId), entry);
   if (shared) saveEntry(storeKey(false, ownerId), entry);
   emit();
 }
 
-export function listLocalCw(privateOnly = !!privateCwProfileId()): LocalCwEntry[] {
-  return Object.values(readAll(storeKey(privateOnly))).sort((a, b) => b.t - a.t);
+export function listLocalCw(privateOnly = !!privateCwProfileId(), ownerId?: string): LocalCwEntry[] {
+  const isNuvio = isNuvioMode();
+  const entries = Object.values(readAll(storeKey(privateOnly, ownerId)));
+  if (!isNuvio) {
+    return entries.filter((e) => !(e.id && (e as any).external === "nuvio")).sort((a, b) => b.t - a.t);
+  }
+  return entries.sort((a, b) => b.t - a.t);
 }
 
 export function localCwEntry(
@@ -128,18 +177,65 @@ export function localCwEntry(
   return readAll(storeKey(privateOnly, ownerId))[id] ?? null;
 }
 
-export function clearLocalCw(id: string, ownerId?: string): void {
+export function clearLocalCw(
+  id: string,
+  ownerOrOptions?: string | { acknowledged?: boolean },
+  options: { acknowledged?: boolean } = {},
+): void {
+  const ownerId = typeof ownerOrOptions === "string" ? ownerOrOptions : undefined;
+  const acknowledged =
+    typeof ownerOrOptions === "object" ? ownerOrOptions.acknowledged : options.acknowledged;
+  const targetKeys = new Set<string>();
+  if (ownerId) {
+    targetKeys.add(storeKey(true, ownerId));
+    targetKeys.add(storeKey(false, ownerId));
+  } else {
+    targetKeys.add(storeKey(!!privateCwProfileId()));
+  }
+  targetKeys.add(LEGACY_KEY);
+  let changed = false;
+  for (const key of targetKeys) {
+    const all = readAll(key);
+    if (!(id in all)) continue;
+    const next = { ...all };
+    delete next[id];
+    writeAll(key, next, acknowledged);
+    changed = true;
+  }
+  if (changed) emit();
+}
+
+export function clearAllNuvioLocalCw(): void {
+  try {
+    const toRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (
+        key &&
+        (key.startsWith("harbor.localcw.v1.nuvio-") ||
+          key.includes(".nuvio-") ||
+          key.startsWith("harbor.localcw.private.v1.nuvio-"))
+      ) {
+        toRemove.push(key);
+      }
+    }
+    for (const k of toRemove) localStorage.removeItem(k);
+    cache.clear();
+    emit();
+  } catch {}
+}
+
+export function clearAllLocalCw(ownerId?: string): void {
   const keys = ownerId
     ? [storeKey(true, ownerId), storeKey(false, ownerId)]
     : [storeKey(!!privateCwProfileId())];
   let changed = false;
   for (const key of keys) {
     const all = readAll(key);
-    if (!(id in all)) continue;
-    const next = { ...all };
-    delete next[id];
-    writeAll(key, next);
-    changed = true;
+    if (Object.keys(all).length > 0) {
+      writeAll(key, {});
+      changed = true;
+    }
   }
   if (changed) emit();
 }
@@ -158,7 +254,8 @@ export function localCwVersion(): number {
 if (typeof window !== "undefined") {
   const identity = () => {
     const s = cwProfileScope();
-    return `${s.profileId}|${s.sharedId}`;
+    const acc = isNuvioMode() || s.profileId.startsWith("nuvio-") ? nuvioAccountId() : "";
+    return `${acc}|${s.profileId}|${s.sharedId}`;
   };
   let lastProfile = identity();
   const onProfileChange = () => {
@@ -170,4 +267,7 @@ if (typeof window !== "undefined") {
   };
   window.addEventListener("harbor:active-profile-changed", onProfileChange);
   window.addEventListener("harbor:profiles-updated", onProfileChange);
+  window.addEventListener("harbor:nuvio-profile-changed", onProfileChange);
+  window.addEventListener("harbor:nuvio-state-changed", onProfileChange);
+  window.addEventListener("harbor:account-provider-changed", onProfileChange);
 }

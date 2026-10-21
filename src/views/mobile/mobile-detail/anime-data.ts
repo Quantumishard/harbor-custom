@@ -79,6 +79,8 @@ type ExtrasPatch = {
   cinematography?: TmdbDetail["cinematography"];
   editor?: TmdbDetail["editor"];
   cast?: CastEntry[];
+  recommendations?: Meta[];
+  similar?: Meta[];
 };
 
 function mergeExtras(detail: TmdbDetail, extras: ExtrasPatch): TmdbDetail {
@@ -98,6 +100,11 @@ function mergeExtras(detail: TmdbDetail, extras: ExtrasPatch): TmdbDetail {
     cinematography: extras.cinematography ?? detail.cinematography,
     editor: extras.editor ?? detail.editor,
     cast: extras.cast && extras.cast.length > 0 ? extras.cast : detail.cast,
+    recommendations:
+      extras.recommendations && extras.recommendations.length > 0
+        ? extras.recommendations
+        : detail.recommendations,
+    similar: extras.similar && extras.similar.length > 0 ? extras.similar : detail.similar,
   };
 }
 
@@ -145,11 +152,7 @@ export function dedupeRelated(nodes: AnilistRelatedNode[]): AnilistRelatedNode[]
   return out;
 }
 
-export function dedupeMeta(
-  items: Meta[],
-  seenIds?: Set<string>,
-  seenNames?: Set<string>,
-): Meta[] {
+export function dedupeMeta(items: Meta[], seenIds?: Set<string>, seenNames?: Set<string>): Meta[] {
   const ids = seenIds ?? new Set<string>();
   const names = seenNames ?? new Set<string>();
   const out: Meta[] = [];

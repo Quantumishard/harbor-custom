@@ -161,7 +161,7 @@ const library: Record<string, string> = {
   "Auto-sync subtitles": "自动同步字幕",
   "Community sync": "社区同步",
   "Community sync server": "社区同步服务器",
-  "https://sync.harbor.site": "https://sync.harbor.site",
+  "https://sync.harborcommunity.site": "https://sync.harborcommunity.site",
   'Posters, logos, and title art load in the first available language from this list, falling back down the order. "Original" uses the title\'s own language. Put your main language first. Needs a TMDB key.':
     "海报、徽标和标题图将按此列表中的语言顺序，使用首个可用语言加载，并依次回退。“原始语言”会使用作品标题本身的语言。请将你的主要语言放在首位。需要 TMDB 密钥。",
   "When you reopen a show you were already browsing, jump straight back to your spot (usually the episode list) instead of starting at the top. The jump happens before the page shows, so there is no flash.":
@@ -288,8 +288,8 @@ const library: Record<string, string> = {
     "已设置。如果之后字幕逐渐不同步，请向前播放一段，并在后面的字幕行再次点按“从此处同步”以校正偏移。",
   "Sync subtitles": "同步字幕",
   "Loading your library…": "正在加载你的媒体库…",
-  "This one installs through Harbor Setup, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
-    "此更新通过 Harbor Setup 安装，但更新清单中没有它的签名。Harbor 不会运行无法验证的安装程序。请下载后自行运行。",
+  "This one installs through Harbor Shipyard, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
+    "此更新通过 Harbor Shipyard 安装，但更新清单中没有它的签名。Harbor 不会运行无法验证的安装程序。请下载后自行运行。",
   "Download installer": "下载安装程序",
   "Your collection.": "你的收藏。",
   "Watchlist is what you've saved for later. History is everything you've watched. Local is files on your computer.":

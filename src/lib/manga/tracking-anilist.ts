@@ -1,6 +1,7 @@
 import { anilistRequest } from "@/lib/anilist/client";
 import { isAuthenticated } from "@/lib/anilist/session";
 import { isConfidentTitleMatch } from "@/lib/manga-match";
+import { stripColorTag } from "@/lib/manga/title";
 import type { MangaCandidate, MangaPushResult } from "./sync";
 
 const SEARCH = `query ($q: String) {
@@ -49,7 +50,7 @@ export function anilistMangaAuthed(): boolean {
 }
 
 export async function searchAnilistMangaEntries(title: string): Promise<MangaCandidate[]> {
-  const q = title.trim();
+  const q = stripColorTag(title).trim();
   if (q.length < 2) return [];
   const data = await anilistRequest<{ Page: { media: AniSearchMedia[] } | null }>(
     SEARCH,

@@ -27,11 +27,18 @@ const QUALITY_LINES: Record<Settings["mpvQuality"], string[]> = {
   ],
 };
 
-export function compileMpvOptions(s: Settings): string {
-  // Leave external HDR shader pipelines in control when Harbor tonemapping is disabled.
+export function compileMpvOptions(s: Settings, opts?: { anime4k?: boolean }): string {
   const lines: string[] = (QUALITY_LINES[s.mpvQuality] ?? []).filter(
     (line) => s.playerHdrToSdr || !line.startsWith("hdr-compute-peak="),
   );
+  if (opts?.anime4k) {
+    // mpv runs `scale` after the user shaders, so a bilinear kernel here would
+    // undo the upscale Anime4K just performed. Only the bilinear kernels are
+    // dropped; the sharp lanczos ones still help and stay on.
+    const kept = lines.filter((l) => !/^(scale|cscale|dscale)=bilinear$/.test(l));
+    lines.length = 0;
+    lines.push(...kept);
+  }
   if (s.mpvHwdec === "on") lines.push("hwdec=yes");
   else if (s.mpvHwdec === "off") lines.push("hwdec=no");
   lines.push(...bufferMpvLines(bufferSizeFor(s)));
@@ -52,8 +59,12 @@ export function svpMpvLines(s: Settings, svpActive: boolean): string {
   );
 }
 
-export function mergeMpvOptions(s: Settings, svpActive: boolean): string | undefined {
-  const merged = [compileMpvOptions(s), svpMpvLines(s, svpActive), s.mpvExtraOptions || ""]
+export function mergeMpvOptions(
+  s: Settings,
+  svpActive: boolean,
+  opts?: { anime4k?: boolean },
+): string | undefined {
+  const merged = [compileMpvOptions(s, opts), svpMpvLines(s, svpActive), s.mpvExtraOptions || ""]
     .filter((p) => p.trim())
     .join("\n");
   return merged.trim() ? merged : undefined;

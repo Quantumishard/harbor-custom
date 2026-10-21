@@ -1,4 +1,10 @@
-import { useEffect, useRef } from "react";
+import { Image } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { useContextMenu, useContextTarget, type ContextMenuTarget } from "@/lib/context-menu";
+import { ContextImageViewer } from "@/components/context-image-viewer";
+import type { ContextImage } from "@/lib/context-image";
+import { useT } from "@/lib/i18n";
+import { visibleReaderPages } from "./reader-context";
 import {
   fitLevel,
   guardPageLoaded,
@@ -22,6 +28,7 @@ const hostOf = (u: string): string => {
 };
 
 const SNAP_BACK_MS = 220;
+const ASPECT_TIMEOUT_MS = 3000;
 
 function prefersReducedMotion(): boolean {
   return (
@@ -80,16 +87,44 @@ function loadFlipbook(): Promise<void> {
   return loaded;
 }
 
+function sampleAspect(src: string): Promise<number> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(1.4);
+    }, ASPECT_TIMEOUT_MS);
+    void measureAspect(src).then(
+      (aspect) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        resolve(aspect);
+      },
+      () => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        resolve(1.4);
+      },
+    );
+  });
+}
+
 function sampledAspect(srcs: string[]): Promise<number> {
   if (srcs.length === 0) return Promise.resolve(1.4);
   const idxs = [
     ...new Set(
-      [0, Math.floor(srcs.length * 0.25), Math.floor(srcs.length * 0.5), Math.floor(srcs.length * 0.75)].filter(
-        (i) => i < srcs.length,
-      ),
+      [
+        0,
+        Math.floor(srcs.length * 0.25),
+        Math.floor(srcs.length * 0.5),
+        Math.floor(srcs.length * 0.75),
+      ].filter((i) => i < srcs.length),
     ),
   ];
-  return Promise.all(idxs.map((i) => measureAspect(srcs[i]))).then((aspects) => {
+  return Promise.all(idxs.map((i) => sampleAspect(srcs[i]))).then((aspects) => {
     const valid = aspects.filter((a) => a > 0.2 && a < 6).sort((a, b) => a - b);
     if (!valid.length) return 1.4;
     return valid[Math.floor((valid.length - 1) / 2)];
@@ -118,6 +153,7 @@ export function BookFlip({
   instantTurns = false,
   onProgress,
   onReady,
+  onError,
 }: {
   pages: string[];
   rtl: boolean;
@@ -130,12 +166,15 @@ export function BookFlip({
   instantTurns?: boolean;
   onProgress: (page: number, spread: string) => void;
   onReady?: (api: BookApi) => void;
+  onError?: (error: unknown) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const report = useRef(onProgress);
   report.current = onProgress;
   const ready = useRef(onReady);
   ready.current = onReady;
+  const failed = useRef(onError);
+  failed.current = onError;
   const soundOn = useRef(soundEnabled);
   soundOn.current = soundEnabled;
   const headersRef = useRef(pageHeaders);
@@ -144,6 +183,30 @@ export function BookFlip({
   const wrapRef = useRef<HTMLDivElement>(null);
   const panRef = useRef({ x: 0, y: 0 });
   const zoomRef = useRef(1);
+  const visiblePages = useRef<ReturnType<typeof visibleReaderPages>>([]);
+  const [image, setImage] = useState<ContextImage | null>(null);
+  const t = useT();
+  const { open } = useContextMenu();
+  const contextTarget = (): ContextMenuTarget => ({
+    kind: "actions",
+    id: `reader-pages:${instanceName}`,
+    label: t("Visible pages"),
+    actions: () =>
+      visiblePages.current.map((page) => ({
+        id: `reader-page:${instanceName}:${page.number}`,
+        icon: <Image size={16} />,
+        label: t("View page {number}", { number: page.number }),
+        restoreFocus: false,
+        run: () =>
+          setImage({
+            src: page.src,
+            label: t("Page {number}", { number: page.number }),
+            filename: `page-${page.number}`,
+          }),
+      })),
+  });
+  const contextRef = useContextTarget(contextTarget);
+  const contextOrigin = useRef<HTMLDivElement | null>(null);
 
   const applyTransform = (smooth: boolean) => {
     const el = wrapRef.current;
@@ -203,6 +266,7 @@ export function BookFlip({
     ensureStyle();
     let cancelled = false;
     let inst: FlipInstance | null = null;
+    visiblePages.current = [];
 
     const origFetch = window.fetch;
     const origOnPopState = window.onpopstate;
@@ -220,15 +284,12 @@ export function BookFlip({
         : null;
     if (httpMod) {
       window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-        const u =
-          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        const u = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
         const host = hostOf(u);
         const headers =
           headersRef.current?.[u] ?? (host && hosts.has(host) ? IMAGE_FALLBACK_HEADERS : undefined);
         if (headers) {
-          return httpMod.then((m) =>
-            (m.fetch as unknown as typeof fetch)(u, { headers }),
-          );
+          return httpMod.then((m) => (m.fetch as unknown as typeof fetch)(u, { headers }));
         }
         return origFetch(input, init);
       }) as typeof fetch;
@@ -238,6 +299,7 @@ export function BookFlip({
       const d = (e as CustomEvent).detail as { page?: string | number; name?: string } | undefined;
       if (!d || d.name !== instanceName) return;
       const spread = String(d.page);
+      visiblePages.current = visibleReaderPages(pages, spread);
       const first = Number(spread.split("-")[0]);
       if (!Number.isFinite(first) || first <= 0) return;
       report.current(first - 1, spread);
@@ -249,7 +311,7 @@ export function BookFlip({
       if (cancelled || !ref.current) return;
       guardPageLoaded();
       const Ctor = (window as unknown as { FlipBook?: FlipCtor }).FlipBook;
-      if (!Ctor) return;
+      if (!Ctor) throw new Error("Flipbook constructor is unavailable");
       const FB = (window as unknown as { FLIPBOOK?: Record<string, unknown> }).FLIPBOOK;
       if (FB) {
         FB.threejsSrc = `${BASE}/js/libs/three.min.js`;
@@ -399,7 +461,11 @@ export function BookFlip({
       window.setTimeout(() => {
         if (instRef.current === local) window.dispatchEvent(new Event("resize"));
       }, 250);
-    })();
+    })().catch((error) => {
+      if (cancelled) return;
+      console.warn("[flipbook]", error);
+      failed.current?.(error);
+    });
     return () => {
       cancelled = true;
       instRef.current = null;
@@ -417,7 +483,19 @@ export function BookFlip({
   }, [pages, rtl, bg, resumePage, instanceName]);
 
   return (
-    <div className="relative h-full w-full overflow-hidden">
+    <div
+      ref={(node) => {
+        contextOrigin.current = node;
+        contextRef(node);
+      }}
+      tabIndex={0}
+      aria-label={t("Visible pages")}
+      className="relative h-full w-full overflow-hidden"
+      onContextMenuCapture={(event) => {
+        if (event.target instanceof Node && event.currentTarget.contains(event.target))
+          open(event, contextTarget());
+      }}
+    >
       <div
         ref={wrapRef}
         className="h-full w-full"
@@ -425,6 +503,13 @@ export function BookFlip({
       >
         <div ref={ref} className="harbor-flipbook h-full w-full" />
       </div>
+      {image && (
+        <ContextImageViewer
+          image={image}
+          returnFocus={contextOrigin.current}
+          onClose={() => setImage(null)}
+        />
+      )}
     </div>
   );
 }

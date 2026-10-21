@@ -1,6 +1,7 @@
 import { malRequest } from "@/lib/mal/client";
 import { isAuthenticated } from "@/lib/mal/session";
 import { isConfidentTitleMatch } from "@/lib/manga-match";
+import { stripColorTag } from "@/lib/manga/title";
 import type { MangaCandidate } from "./sync";
 import type { MangaPushOutcome } from "./tracking-anilist";
 
@@ -20,7 +21,7 @@ type MalSearchNode = {
 };
 
 export async function searchMalMangaEntries(title: string): Promise<MangaCandidate[]> {
-  const q = title.trim();
+  const q = stripColorTag(title).trim();
   if (q.length < 3) return [];
   const fields = "id,title,title_english,main_picture,num_chapters,media_type,mean,start_date";
   const path = `/manga?q=${encodeURIComponent(q.slice(0, 64))}&limit=10&fields=${fields}`;

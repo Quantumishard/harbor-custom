@@ -1,4 +1,4 @@
-import { deckSnapshot, type MusicDeckSnapshot } from "./decks";
+import { deckSnapshot, type MusicDeckSnapshot, type MusicEngineState } from "./decks";
 import { queueTrackKey } from "./queue-order";
 import { musicTrackIdentity } from "./track-identity";
 import type { MusicPlayerState, MusicTrack } from "./types";
@@ -36,6 +36,62 @@ function carrying(track: MusicTrack, trackId: string | null, connectorId: string
   if (!trackId || track.id !== trackId) return false;
   if (!connectorId || !track.connectorId) return true;
   return track.connectorId === connectorId;
+}
+
+/**
+ * What a still-running native engine is carrying after the page reloaded under it.
+ *
+ * The checkpoint only knows where the song was when the page went away; the engine kept
+ * going. Restoring the checkpoint alone would show a paused song that is audibly playing,
+ * freeze the progress bar (no events are attached), and make the first Play restart the
+ * track. When the engine is live its state outranks the checkpoint.
+ */
+export type NativePlaybackAdoption = {
+  deck: number | null;
+  track: MusicTrack;
+  queue: MusicTrack[];
+  queueIndex: number;
+  currentTime: number;
+  duration: number;
+  phase: "playing" | "paused";
+};
+
+export function nativePlaybackAdoption(
+  engine: MusicEngineState,
+  state: Pick<
+    MusicPlayerState,
+    "current" | "queue" | "queueIndex" | "recents" | "currentTime" | "duration"
+  >,
+): NativePlaybackAdoption | null {
+  if (!engine.live) return null;
+  const carried = (track: MusicTrack) => carrying(track, engine.trackId, engine.connectorId);
+  const seated = state.queue.findIndex(carried);
+  const current =
+    state.current && carried(state.current)
+      ? state.current
+      : seated >= 0
+        ? state.queue[seated]
+        : (state.recents.find(carried) ?? null);
+  if (!current) return null;
+  const queue =
+    seated >= 0
+      ? state.queue
+      : [current, ...state.queue.filter((item) => queueTrackKey(item) !== queueTrackKey(current))];
+  const duration =
+    engine.durationSeconds && engine.durationSeconds > 0
+      ? engine.durationSeconds
+      : state.duration > 0
+        ? state.duration
+        : current.durationSeconds;
+  return {
+    deck: engine.deck,
+    track: current,
+    queue,
+    queueIndex: seated >= 0 ? seated : 0,
+    currentTime: engine.positionSeconds ?? state.currentTime,
+    duration,
+    phase: engine.paused ? "paused" : "playing",
+  };
 }
 
 export function createDeckAdoption(host: DeckAdoptionHost): DeckAdoption {

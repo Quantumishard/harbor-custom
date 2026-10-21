@@ -1338,10 +1338,10 @@ const audit: Record<string, string> = {
     "Tautan ini menuju situs eksternal yang tidak dikendalikan atau dijamin tepercaya oleh Harbor. Periksa alamatnya tiga kali sebelum melanjutkan, dan jangan pernah memasukkan kata sandi Harbor Anda di tempat selain Harbor.",
   "This member has hidden their showcase, activity and friends from public view.":
     "Anggota ini menyembunyikan etalase, aktivitas, dan daftar temannya dari publik.",
-  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Setup. Harbor closes, the installer finishes, then Harbor reopens.":
-    "Yang ini juga menggantikan pemutar dan alat bawaan Harbor, jadi pemasangannya dilakukan melalui Harbor Setup. Harbor akan ditutup, penginstal menyelesaikan prosesnya, lalu Harbor dibuka kembali.",
-  "This one installs through Harbor Setup, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
-    "Yang ini dipasang melalui Harbor Setup, tetapi manifes pembaruannya tidak memiliki tanda tangan. Harbor tidak akan menjalankan penginstal yang tidak dapat diverifikasi. Unduh dan jalankan sendiri.",
+  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Shipyard. Harbor closes, the installer finishes, then Harbor reopens.":
+    "Yang ini juga menggantikan pemutar dan alat bawaan Harbor, jadi pemasangannya dilakukan melalui Harbor Shipyard. Harbor akan ditutup, penginstal menyelesaikan prosesnya, lalu Harbor dibuka kembali.",
+  "This one installs through Harbor Shipyard, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
+    "Yang ini dipasang melalui Harbor Shipyard, tetapi manifes pembaruannya tidak memiliki tanda tangan. Harbor tidak akan menjalankan penginstal yang tidak dapat diverifikasi. Unduh dan jalankan sendiri.",
   "This opens Harbor to devices on your Wi-Fi. You can turn it off again in Settings.":
     "Ini membuat Harbor dapat diakses oleh perangkat di Wi-Fi Anda. Anda dapat menonaktifkannya lagi di Pengaturan.",
   "This page cannot reach your TV": "Halaman ini tidak dapat terhubung ke TV Anda",

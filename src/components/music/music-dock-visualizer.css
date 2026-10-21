@@ -56,7 +56,7 @@
   transform-origin: bottom;
   opacity: calc(0.55 + var(--v) * 0.45);
   transition:
-    transform var(--response, 45ms) ease-out,
+    transform var(--response, 35ms) ease-out,
     opacity 80ms linear;
 }
 

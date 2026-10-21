@@ -5,7 +5,7 @@ import ts from "typescript";
 import type { LibraryItem } from "../src/lib/stremio";
 
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
-const item = (source: "simkl" | "trakt", id: string): LibraryItem => ({
+const item = (source: "simkl" | "trakt" | "publicmetadb", id: string): LibraryItem => ({
   _id: id,
   type: "movie",
   name: id,
@@ -23,14 +23,24 @@ function fixture() {
   const providers = {
     simkl: async (): Promise<LibraryItem[]> => [],
     trakt: async (): Promise<LibraryItem[]> => [],
+    publicmetadb: async (): Promise<LibraryItem[]> => [],
   };
-  const connected = { simkl: true, trakt: true };
-  const sessions = { simkl: {}, trakt: {} };
+  const connected = { simkl: true, trakt: true, publicmetadb: false };
+  const sessions = { simkl: {}, trakt: {}, publicmetadb: {} };
   const detectionBatches: LibraryItem[][] = [];
   const mocks: Record<string, unknown> = {
     react: {},
     "@/lib/simkl/playback": { fetchSimklPlaybackItems: () => providers.simkl() },
     "@/lib/trakt/playback": { fetchTraktPlaybackItems: () => providers.trakt() },
+    "@/lib/publicmetadb/playback": {
+      fetchPublicMetaDbPlaybackItems: () => providers.publicmetadb(),
+    },
+    "@/lib/publicmetadb/session": {
+      getSession: () => (connected.publicmetadb ? sessions.publicmetadb : null),
+      subscribeSession: (fn: () => void) => {
+        listeners.publicmetadb = fn;
+      },
+    },
     "@/lib/simkl/session": {
       getSession: () => (connected.simkl ? sessions.simkl : null),
       subscribeSession: (fn: () => void) => {
@@ -48,6 +58,19 @@ function fixture() {
       detectAnimeForCw: async (items: LibraryItem[]) => {
         detectionBatches.push(items);
       },
+    },
+    "@/lib/render-cause": { noteNotify: () => {} },
+    "@/lib/nuvio/nuvio-playback": {
+      fetchNuvioPlaybackItems: async () => [],
+      readCachedNuvioPlaybackItems: () => [],
+      writeCachedNuvioPlaybackItems: () => {},
+    },
+    "@/lib/nuvio/nuvio-client": {
+      isNuvioSignedIn: () => false,
+    },
+    "@/lib/nuvio/nuvio-sync": {
+      isNuvioProviderActive: () => false,
+      resolveNuvioProfileIndex: () => 1,
     },
   };
   const source = readFileSync(new URL("../src/lib/feed/external-cw.ts", import.meta.url), "utf8");
@@ -143,6 +166,32 @@ test("changing linked accounts clears the old account even if its replacement is
   );
 });
 
+test("PublicMetaDB account changes clear only that account's cards and refresh", async () => {
+  const h = fixture();
+  h.api.setExternalCwSources({ simkl: true, trakt: true, publicmetadb: true });
+  await h.api.refreshExternalCw();
+  h.providers.trakt = async () => [item("trakt", "keep-trakt")];
+  h.providers.publicmetadb = async () => [item("publicmetadb", "old-pmdb")];
+  h.connected.publicmetadb = true;
+  h.listeners.publicmetadb();
+  await settle();
+  assert.deepEqual(new Set(h.api.listExternalCw().map((i) => i._id)), new Set(["keep-trakt", "old-pmdb"]));
+
+  h.sessions.publicmetadb = {};
+  h.providers.publicmetadb = async () => { throw new Error("offline"); };
+  h.listeners.publicmetadb();
+  assert.deepEqual(h.api.listExternalCw().map((i) => i._id), ["keep-trakt"]);
+  await settle();
+  h.providers.publicmetadb = async () => [item("publicmetadb", "new-pmdb")];
+  await h.retry();
+  assert.deepEqual(new Set(h.api.listExternalCw().map((i) => i._id)), new Set(["keep-trakt", "new-pmdb"]));
+
+  h.connected.publicmetadb = false;
+  h.listeners.publicmetadb();
+  assert.deepEqual(h.api.listExternalCw().map((i) => i._id), ["keep-trakt"]);
+  await settle();
+});
+
 test("tracker progress enters shared anime detection without waiting for the Stremio library", async () => {
   const h = fixture();
   const trackerItem = item("trakt", "tt101");
@@ -152,6 +201,36 @@ test("tracker progress enters shared anime detection without waiting for the Str
   await h.api.refreshExternalCw(true);
   assert.deepEqual(h.detectionBatches, [[trackerItem]]);
   assert.equal(h.api.listExternalCw().length, 2);
+});
+
+test("PublicMetaDB and Trakt collapse when PMDB resolves the show's IMDb id", async () => {
+  const h = fixture();
+  h.connected.publicmetadb = true;
+  h.providers.trakt = async () => [
+    {
+      ...item("trakt", "tt3032476"),
+      state: {
+        ...item("trakt", "tt3032476").state!,
+        lastWatched: "2026-09-29T11:00:00Z",
+      },
+    },
+  ];
+  h.providers.publicmetadb = async () => [
+    {
+      ...item("publicmetadb", "tt3032476"),
+      state: {
+        ...item("publicmetadb", "tt3032476").state!,
+        lastWatched: "2026-09-29T12:00:00Z",
+      },
+    },
+  ];
+  h.api.setExternalCwSources({ simkl: true, trakt: true, publicmetadb: true });
+  await settle();
+  await h.api.refreshExternalCw(true);
+
+  const cards = h.api.listExternalCw();
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].external, "publicmetadb", "newest progress wins");
 });
 
 test("cold-start partial failures use bounded retries even when the other tracker succeeds empty", async () => {

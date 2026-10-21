@@ -238,7 +238,7 @@ const appFill: Record<string, string> = {
     "Harbor n’héberge aucun manga ni aucune source. Connectez un serveur auto-hébergé que vous administrez, installez un plugin de source depuis un dépôt de confiance ou ouvrez un dossier que vous possédez déjà.",
   "Harbor does not host any manga. Add a source plugin from a repository you trust, connect your own server, or open a local folder. You can turn this off anytime in Settings.":
     "Harbor n’héberge aucun manga. Ajoutez un plugin de source depuis un dépôt de confiance, connectez votre propre serveur ou ouvrez un dossier local. Vous pouvez désactiver cette option à tout moment dans les paramètres.",
-  "Harbor Setup did not finish updating Harbor. Nothing was changed.":
+  "Harbor Shipyard did not finish updating Harbor. Nothing was changed.":
     "Le programme d’installation de Harbor n’a pas terminé la mise à jour de Harbor. Aucun changement n’a été effectué.",
   "Harbor Voyages": "Voyages Harbor",
   "Heads up: most IPTV providers cap how many streams an account can run at the same time. If other devices or players are using these credentials, close them and try again.":
@@ -614,10 +614,10 @@ const appFill: Record<string, string> = {
     "Il s’agit d’un dépôt Tachiyomi / Mihon. Ses extensions sont conçues pour Android (APK), Harbor ne peut donc pas les exécuter directement. Pour utiliser ces sources sur ordinateur, lancez un serveur Suwayomi et connectez-y Harbor depuis la section Serveurs.",
   "This is the primary profile": "Il s’agit du profil principal",
   "This list is full ({max} items)": "Cette liste est pleine ({max} éléments)",
-  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Setup. Harbor closes, the installer finishes, then Harbor reopens.":
-    "Celui-ci remplace également les lecteurs et outils intégrés à Harbor, il s’installe donc via Harbor Setup. Harbor se ferme, le programme d’installation termine l’opération, puis Harbor se rouvre.",
-  "This one installs through Harbor Setup, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
-    "Celui-ci s’installe via Harbor Setup, mais son manifeste de mise à jour ne contient aucune signature. Harbor n’exécutera pas un programme d’installation qu’il ne peut pas vérifier. Téléchargez-le et exécutez-le vous-même.",
+  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Shipyard. Harbor closes, the installer finishes, then Harbor reopens.":
+    "Celui-ci remplace également les lecteurs et outils intégrés à Harbor, il s’installe donc via Harbor Shipyard. Harbor se ferme, le programme d’installation termine l’opération, puis Harbor se rouvre.",
+  "This one installs through Harbor Shipyard, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
+    "Celui-ci s’installe via Harbor Shipyard, mais son manifeste de mise à jour ne contient aucune signature. Harbor n’exécutera pas un programme d’installation qu’il ne peut pas vérifier. Téléchargez-le et exécutez-le vous-même.",
   "This server is too old to add repos from Harbor":
     "Ce serveur est trop ancien pour ajouter des dépôts depuis Harbor",
   "This server lists no extensions": "Ce serveur ne répertorie aucune extension",

@@ -54,12 +54,12 @@ function countCrossing(kind: BridgeKind, url: string): void {
   bridgeCounts.byHost[key] = (bridgeCounts.byHost[key] ?? 0) + 1;
 }
 
-// Torrentio + TorBox sit behind Cloudflare that blocks datacenter IPs, so on web they
-// MUST be fetched directly from the browser's residential IP (they set CORS, so it
-// works) — proxying them through the VPS gets 403'd. EVERYTHING ELSE routes through the
+// Torrentio sits behind Cloudflare that blocks datacenter IPs, so on web it
+// MUST be fetched directly from the browser's residential IP (it sets CORS, so it
+// works) — proxying it through the VPS gets 403'd. EVERYTHING ELSE routes through the
 // VPS /api-proxy: it's required for addons that send no CORS header at all (OpenSubtitles)
 // and for the CORS-less debrid REST APIs, and it's fine for the rest (Cinemeta, Comet).
-const DIRECT_HOSTS = new Set(["torrentio.strem.fun", "stremio.torbox.app"]);
+const DIRECT_HOSTS = new Set(["torrentio.strem.fun"]);
 
 const PROXY_HOSTS = new Set([
   "jikanfortheweebs.midnightignite.me",
@@ -582,6 +582,7 @@ export function safeFetchBytes(
   init?: RequestInit,
   timeoutMs = 30000,
   maxResponseBytes?: number,
+  allowLocalNetwork = false,
 ): Promise<Response> {
   const target = typeof input === "string" ? input : input instanceof URL ? input.href : null;
   const policyHeaders = new Headers(init?.headers as HeadersInit | undefined);
@@ -611,7 +612,7 @@ export function safeFetchBytes(
     return Promise.reject(new TrackerBlockedError(new URL(target).hostname));
   }
   return withDeadline(
-    tauriHarborFetch(target, init, "base64", timeoutMs, maxResponseBytes),
+    tauriHarborFetch(target, init, "base64", timeoutMs, maxResponseBytes, allowLocalNetwork),
     init?.signal,
     timeoutMs + 5_000,
   );

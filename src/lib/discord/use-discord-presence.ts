@@ -107,6 +107,7 @@ export function useDiscordPresence(): void {
       showTimestamp: settings.discordShowTimestamp,
       showPartyJoin: settings.discordShowPartyJoin,
       showMusic: settings.discordMusicPresence,
+      hideMusicWhenPaused: settings.discordHideMusicWhenPaused,
     });
   }, [
     settings.discordRichPresence,
@@ -117,6 +118,7 @@ export function useDiscordPresence(): void {
     settings.discordShowTimestamp,
     settings.discordShowPartyJoin,
     settings.discordMusicPresence,
+    settings.discordHideMusicWhenPaused,
   ]);
 
   useEffect(() => startMusicPresence(), []);

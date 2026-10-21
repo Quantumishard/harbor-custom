@@ -1,6 +1,35 @@
 import type { PlayEpisode } from "@/lib/view";
+import { splitAnimeStreamCoordinates } from "./anime-identity-core";
 
 const ANIME_SCHEME_RX = /^(kitsu|mal|anilist|anidb):/;
+
+export function hasAnimeStreamIds(ids: readonly string[]): boolean {
+  return ids.some((id) => ANIME_SCHEME_RX.test(id));
+}
+
+export function preferredAnimeImdbStreamId(
+  metaId: string,
+  episode: PlayEpisode | undefined,
+  imdbId: string | null,
+  imdbIdVerified: boolean,
+  streamIds: readonly string[],
+): string | undefined {
+  if (!hasAnimeStreamIds(streamIds)) return undefined;
+  const verifiedId = /^tt\d+$/.test(metaId) ? metaId : imdbIdVerified ? imdbId : null;
+  const id = episode ? (episode.imdbId ?? verifiedId) : verifiedId;
+  if (!id || !/^tt\d+$/.test(id)) return undefined;
+  let candidate = id;
+  if (episode) {
+    const { imdbSeason, imdbEpisode } = episode;
+    if (
+      typeof imdbSeason !== "number" || !Number.isInteger(imdbSeason) || imdbSeason < 0 ||
+      typeof imdbEpisode !== "number" || !Number.isInteger(imdbEpisode) || imdbEpisode < 1
+    ) return undefined;
+    candidate = `${id}:${imdbSeason}:${imdbEpisode}`;
+  }
+  // Only prefer identities already emitted by the episode-aware candidate builder.
+  return streamIds.includes(candidate) ? candidate : undefined;
+}
 
 export function unverifiedAnimeSeasonId(
   metaId: string,
@@ -135,5 +164,10 @@ export function buildStreamIds(
 
   if (unverifiedAnimeId) push(unverifiedAnimeId);
 
+  // The shared provider's S17 belongs to Bleach (2004), not TYBW's own
+  // catalog entry. Keep its numbering as a result alias, never a show query.
+  if (splitAnimeStreamCoordinates(episode?.kitsuStreamId) && (episode?.imdbSeason ?? 0) >= 17) {
+    return out.filter((id) => !id.startsWith("tt") && !id.startsWith("tmdb:"));
+  }
   return out;
 }

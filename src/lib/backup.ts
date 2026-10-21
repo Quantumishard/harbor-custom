@@ -346,6 +346,24 @@ export async function downloadBackup(selected?: BackupSectionKey[]): Promise<boo
   return downloadText(`harbor-backup-${stamp}.harbx`, text, ["harbx"], "Harbor backup");
 }
 
+/**
+ * Opens the native picker and returns the backup file's text, or null when the
+ * user cancels. The web `<input type="file">` builds its filter from known MIME
+ * types, which hides `.harbx` files in the Linux file chooser, so restoring must
+ * use the native dialog with an extension filter.
+ */
+export async function pickBackupFile(): Promise<string | null> {
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const path = await open({
+    multiple: false,
+    directory: false,
+    filters: [{ name: "Harbor backup", extensions: ["harbx", "json"] }],
+  });
+  if (typeof path !== "string") return null;
+  const { readTextFile } = await import("@tauri-apps/plugin-fs");
+  return readTextFile(path);
+}
+
 export type BackupValidationError =
   | "That file is not valid JSON."
   | "Unrecognized file."

@@ -57,6 +57,43 @@ pub async fn music_spotify_connect(
 }
 
 #[tauri::command]
+pub async fn music_spotify_device_start(
+    state: tauri::State<'_, MusicState>,
+) -> Result<spotify::DevicePrompt, String> {
+    state.spotify.begin_device_pairing().await
+}
+
+#[tauri::command]
+pub async fn music_spotify_device_poll(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, MusicState>,
+) -> Result<spotify::DevicePoll, String> {
+    let result = state.spotify.poll_device_pairing(app).await;
+    if let Some(connector) = state.registry.get("spotify") {
+        connector.set_health(match &result {
+            Ok(spotify::DevicePoll::Connected { .. }) => connector::ConnectorHealth::Healthy,
+            Err(_) => connector::ConnectorHealth::Degraded,
+            _ => connector::ConnectorHealth::Unknown,
+        });
+    }
+    result
+}
+
+#[tauri::command]
+pub fn music_spotify_device_cancel(state: tauri::State<'_, MusicState>) {
+    state.spotify.cancel_device_pairing();
+}
+
+#[tauri::command]
+pub async fn music_spotify_browse_connect(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, MusicState>,
+    client_id: Option<String>,
+) -> Result<spotify::SpotifyStatus, String> {
+    state.spotify.connect_browsing_interactive(app, client_id).await
+}
+
+#[tauri::command]
 pub async fn music_spotify_devices(
     state: tauri::State<'_, MusicState>,
 ) -> Result<Vec<spotify::devices::SpotifyDevice>, String> {

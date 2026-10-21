@@ -1,4 +1,4 @@
-use super::super::{audio::MusicAudioSettings, MusicState};
+use super::super::{audio::MusicAudioSettings, MusicState, ACTIVE_SPOTIFY};
 
 #[tauri::command]
 pub async fn music_audio_devices(
@@ -27,6 +27,10 @@ pub async fn music_audio_meter_set_enabled(
     state: tauri::State<'_, MusicState>,
     enabled: bool,
 ) -> Result<(), String> {
+    if state.active_engine() == ACTIVE_SPOTIFY {
+        state.spotify.set_meter_enabled(enabled).await;
+        return Ok(());
+    }
     state.engine.set_meter_enabled(enabled).await
 }
 
@@ -34,6 +38,9 @@ pub async fn music_audio_meter_set_enabled(
 pub async fn music_audio_meter_snapshot(
     state: tauri::State<'_, MusicState>,
 ) -> Result<Option<super::super::engine::MusicMeterSnapshot>, String> {
+    if state.active_engine() == ACTIVE_SPOTIFY {
+        return Ok(state.spotify.meter_snapshot().await);
+    }
     Ok(state.engine.meter_snapshot().await)
 }
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import type { PlayerBridge, PlayerSnapshot } from "@/lib/player/bridge";
 import { getPlaybackPosition, usePlaybackFlag } from "@/lib/player/playback-clock";
+import { isLivePlaybackSrc } from "@/lib/player/live-src";
 import { pinPickerCache, unpinPickerCache } from "@/lib/picker-cache";
 import { readResumeMs } from "@/lib/resume";
 import { SHORT_PLAYBACK_SEC } from "@/lib/dead-streams";
@@ -141,10 +142,13 @@ export function useStreamSwitcher(params: {
           url: playUrl,
           subtitles: r.data.subtitles,
           notWebReady: r.data.notWebReady,
+          // The bridge no longer infers liveness from notWebReady, so the swap has
+          // to classify the stream it is about to load the same way the picker does.
+          isLive: isLivePlaybackSrc({ meta: src.meta, streamRef: { addonId: stream.addonId } }),
           startAtSec: resumeAt > 5 ? resumeAt : undefined,
           startupProfile: playbackStartupProfile(stream),
         });
-        await b.play().catch(() => {});
+        await b.play({ reason: "stream-switch" }).catch(() => {});
       } catch (e) {
         if (nextProxySessionId) void unregisterStreamProxy(nextProxySessionId).catch(() => {});
         console.warn("[player] stream swap failed", e);
@@ -167,11 +171,14 @@ export function useStreamSwitcher(params: {
         infoHash: stream.infoHash ?? null,
         fileIdx: r.data.fileIdx ?? stream.fileIdx ?? null,
         addonId: stream.addonId ?? null,
+        name: stream.name ?? null,
+        addonName: stream.addonName ?? null,
         title: stream.title ?? null,
         parsedTitle: stream.parsedTitle ?? null,
         resolution: stream.resolution ?? null,
         releaseGroup: stream.releaseGroupNormalized ?? null,
         source: stream.source ?? null,
+        audioLanguages: stream.audioLanguages ?? null,
         size: stream.size ?? null,
         bingeGroup: stream.behaviorHints?.bingeGroup ?? null,
         cachedSlugs: Object.entries(stream.cached ?? {})
@@ -191,6 +198,7 @@ export function useStreamSwitcher(params: {
             resolution: stream.resolution ?? null,
             releaseGroup: stream.releaseGroupNormalized ?? null,
             source: stream.source ?? null,
+            audioLanguages: stream.audioLanguages ?? null,
             size: stream.size ?? null,
             bingeGroup: stream.behaviorHints?.bingeGroup ?? null,
             cachedSlugs: Object.entries(stream.cached ?? {})

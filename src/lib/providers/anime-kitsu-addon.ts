@@ -25,6 +25,12 @@ export type AnimeKitsuVideo = {
   imdbEpisode?: number;
 };
 
+export type AnimeKitsuLink = {
+  name: string;
+  category: string;
+  url: string;
+};
+
 export type AnimeKitsuMeta = {
   id: string;
   type: "series" | "movie";
@@ -37,6 +43,7 @@ export type AnimeKitsuMeta = {
   imdbRating?: string;
   imdb_id?: string;
   videos: AnimeKitsuVideo[];
+  links?: AnimeKitsuLink[];
 };
 
 type AddonMetaResponse = {
@@ -52,11 +59,17 @@ type AddonMetaResponse = {
     imdbRating?: string;
     imdb_id?: string;
     videos?: AnimeKitsuVideo[];
+    links?: AnimeKitsuLink[];
   };
 };
 
 export async function animeKitsuMeta(metaId: string): Promise<AnimeKitsuMeta | null> {
-  if (!metaId.startsWith("kitsu:") && !metaId.startsWith("mal:") && !metaId.startsWith("anilist:") && !metaId.startsWith("anidb:")) {
+  if (
+    !metaId.startsWith("kitsu:") &&
+    !metaId.startsWith("mal:") &&
+    !metaId.startsWith("anilist:") &&
+    !metaId.startsWith("anidb:")
+  ) {
     return null;
   }
   const key = metaId;
@@ -96,6 +109,7 @@ export async function animeKitsuMeta(metaId: string): Promise<AnimeKitsuMeta | n
         imdbRating: m.imdbRating,
         imdb_id: m.imdb_id,
         videos: m.videos ?? [],
+        links: m.links ?? [],
       };
       lruSet(cache, key, { v: out, t: Date.now() }, CACHE_MAX);
       return out;

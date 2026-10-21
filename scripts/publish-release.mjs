@@ -1,7 +1,8 @@
 import { readFileSync, readdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { join, basename } from 'node:path';
+import { verifyMacAppArchive } from './macos-verify-artifact.mjs';
 
-const BASE = process.env.HARBOR_OPS_BASE || 'https://harbor.elfhosted.com/themes/api';
+const BASE = process.env.HARBOR_OPS_BASE || 'https://harborcommunity.site/themes/api';
 const FNAME = /^Harbor_\d+\.\d+\.\d+_(x64-setup\.exe|x64-installer\.exe|aarch64\.app\.tar\.gz|aarch64\.dmg|aarch64_legacy\.app\.tar\.gz)$/;
 const SEMVER = /^\d+\.\d+\.\d+$/;
 const needsSig = (n) => /\.exe$|\.app\.tar\.gz$/.test(n);
@@ -76,6 +77,12 @@ function readSlice(path, start, length) {
   }
 }
 
+async function verifyArtifact(path, name) {
+  if (!/\.app\.tar\.gz$/.test(name)) return;
+  const checked = await verifyMacAppArchive(path);
+  console.log(`   macOS check: ${checked.frameworks} bundled libraries, ${checked.binaries} Mach-O binaries, none machine-local`);
+}
+
 async function upload(path) {
   const name = basename(path);
   const size = statSync(path).size;
@@ -88,6 +95,7 @@ async function upload(path) {
     if (!sig) throw new Error(`${name}.sig is empty`);
   }
   console.log(`\n-> ${name}  ${fmt(size)}${sig ? ' (+sig)' : ''}`);
+  await verifyArtifact(path, name);
   if (dry) { console.log('   --dry, not uploaded'); return; }
 
   const init = await api('/ops/releases/artifact/chunk/init', { method: 'POST', body: { filename: name } });
@@ -137,8 +145,15 @@ if (!publishOnly) {
     process.exit(1);
   }
   console.log(`Artifacts for ${version}: ${found.join(', ')}`);
+  if (found.some((f) => f.endsWith('.dmg'))) {
+    console.log('note: dmgs are not inspected here; package them from the same .app as the checked .app.tar.gz.');
+  }
   for (const f of found) {
-    if (skipUpload) { console.log(`\n-> ${f} (skip-upload)`); continue; }
+    if (skipUpload) {
+      console.log(`\n-> ${f} (skip-upload)`);
+      await verifyArtifact(join(dir, f), f);
+      continue;
+    }
     await upload(join(dir, f));
   }
 }

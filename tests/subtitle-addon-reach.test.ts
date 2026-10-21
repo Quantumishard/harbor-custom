@@ -4,7 +4,11 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 // @ts-expect-error Node test types are intentionally outside the browser-only tsconfig.
 import test from "node:test";
-import { filterTracksByPreferredLanguage, isKnownLanguage } from "../src/lib/subtitles/language.ts";
+import {
+  filterTracksByPreferredLanguage,
+  isKnownLanguage,
+  isPlausibleLang,
+} from "../src/lib/subtitles/language.ts";
 import { subtitleLanguage } from "../src/lib/local-library/player-src.ts";
 
 const src = readFileSync(
@@ -159,6 +163,18 @@ test("release suffixes are not mistaken for subtitle language tags", () => {
   assert.equal(subtitleLanguage(video, "/movies/The.Imitation.Game.2014-Pahe.in.srt"), undefined);
   assert.equal(subtitleLanguage(video, "/movies/The.Imitation.Game.2014-Pahe.in.en.srt"), "en");
   assert.equal(subtitleLanguage(video, "/movies/The.Imitation.Game.2014-Pahe.in.in.srt"), "id");
+});
+
+test("a long generated translation offer survives the addon language filter", () => {
+  // SubMaker's target list includes labels far beyond the short-label cap
+  // ("Spanish (Latin America) (SPN)"); dropping them hid the offer entirely.
+  assert.equal(isPlausibleLang("Make Spanish (Latin America) (SPN)"), true);
+  assert.equal(isPlausibleLang("Make Spanish (Latin America)"), true);
+  assert.equal(isPlausibleLang("Make Chinese (Simplified)"), true);
+  assert.equal(isPlausibleLang("Make Portuguese (Brazil)"), true);
+  assert.equal(isPlausibleLang("Make Spanish (ESP)"), true);
+  assert.equal(isPlausibleLang("Translation failed, try again"), false);
+  assert.equal(isPlausibleLang("x".repeat(65)), false);
 });
 
 test("the configured languages reach the separate subtitle popup", () => {

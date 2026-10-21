@@ -147,8 +147,7 @@ export function MusicNowPlaying({
       player.phase !== "resolving" &&
       (appearance.levels || panel === "signal") &&
       !isMusicVideoActive() &&
-      !speaker.active &&
-      current.connectorId !== "spotify",
+      !speaker.active,
     ),
   );
   const artMenu = useMusicTrackContextMenu(display, {

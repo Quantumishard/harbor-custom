@@ -1,4 +1,6 @@
 const coverage: Record<string, string> = {
+  "Waiting for {name}…": "{name} 대기 중…",
+  "Keeping the source you were watching.": "시청 중이던 소스를 유지합니다.",
   "Sound descriptions": "소리 설명",
   "Hide sound effects and speaker names": "효과음과 화자 이름 숨기기",
   "Removes bracketed descriptions like [door creaks] and shouted speaker labels like JOHN: while subtitles play, so a release that only ships an SDH track still reads as plain dialogue. Song lyrics, ordinary parentheses and non-Latin scripts are left alone. Skipped on forced and picture-based tracks.": "재생 중인 자막에서 [문이 삐걱거린다] 같은 대괄호 설명과 JOHN: 처럼 대문자로 쓴 화자 이름을 지웁니다. SDH 자막만 들어 있는 릴리스도 일반 대사처럼 읽을 수 있습니다. 가사, 일반 괄호, 라틴 문자가 아닌 문자는 그대로 둡니다. 강제 자막과 이미지 자막에는 적용되지 않습니다.",
@@ -443,8 +445,8 @@ const coverage: Record<string, string> = {
   Dismiss: "닫기",
   "Download installer": "설치 프로그램 다운로드",
   "Install and reopen": "설치 후 다시 열기",
-  "Harbor is closing. Harbor Setup will finish and reopen it.":
-    "Harbor를 종료하는 중입니다. Harbor Setup이 설치를 완료한 뒤 다시 엽니다.",
+  "Harbor is closing. Harbor Shipyard will finish and reopen it.":
+    "Harbor를 종료하는 중입니다. Harbor Shipyard이 설치를 완료한 뒤 다시 엽니다.",
   "Most Popular": "최고 인기작",
   "What everyone is reading": "지금 모두가 읽는 작품",
   "Critically Acclaimed": "평단의 찬사를 받은 작품",

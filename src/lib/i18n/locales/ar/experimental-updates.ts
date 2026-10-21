@@ -77,6 +77,6 @@ export default {
     "تعذّر التحقق من الإصدارات التجريبية المبكرة. تحقّق من اتصالك وحاول مجددًا.",
   "Couldn't verify your Harbor account access. Check your connection and try again.":
     "تعذّر التحقق من صلاحية حساب Harbor. تحقّق من اتصالك وحاول مجددًا.",
-  "Harbor Setup did not finish updating Harbor. Check for updates to try again.":
+  "Harbor Shipyard did not finish updating Harbor. Check for updates to try again.":
     "لم يُكمل مثبّت Harbor التحديث. تحقّق من التحديثات للمحاولة مجددًا.",
 };

@@ -1,4 +1,5 @@
 import { Check, Eye } from "lucide-react";
+import { EpisodeReleaseCountdown } from "@/components/episode-release-countdown";
 import { Play } from "@/components/icons/play-filled";
 import { HoverTooltip } from "@/components/hover-tooltip";
 import { useEffect, useMemo, useState } from "react";
@@ -13,6 +14,7 @@ import { SPOILER_TEXT_CLASS, SPOILER_THUMB_CLASS, type SpoilerMask } from "@/lib
 import { useView } from "@/lib/view";
 import { useLocalAwareSeriesPlay } from "@/lib/local-library/use-series-play";
 import { useT } from "@/lib/i18n";
+import { bidiIsolate } from "@/lib/bidi";
 import { prefetchSegments } from "@/lib/skip-intro";
 import { NewBadge, UpcomingBadge } from "./badges";
 import { EpisodeDownloadButton } from "./episode-download-button";
@@ -65,7 +67,9 @@ export function EpisodeRow({
   const still = candidates[imgIdx];
   const watchedAgo = progress.startedAt > 0 ? formatRelativeWatched(progress.startedAt) : "";
   const resolvedImdbId = useMemo(() => {
-    const v = cinemetaVideos?.find((x) => x.season === ep.seasonNumber && x.episode === ep.episodeNumber);
+    const v = cinemetaVideos?.find(
+      (x) => x.season === ep.seasonNumber && x.episode === ep.episodeNumber,
+    );
     return v?.id ?? undefined;
   }, [cinemetaVideos, ep.seasonNumber, ep.episodeNumber]);
   const playEpisode = {
@@ -92,7 +96,10 @@ export function EpisodeRow({
           playEpisodeLocalAware({
             meta,
             episode: playEpisode,
-            opts: { autoPlay: settings.instantPlay || settings.seasonSourceLock, resume: !progress.watched && progress.ratio > 0.01 },
+            opts: {
+              autoPlay: settings.instantPlay || settings.seasonSourceLock,
+              resume: !progress.watched && progress.ratio > 0.01,
+            },
             imdbId: seriesImdbId,
             videos: cinemetaVideos,
           })
@@ -151,7 +158,8 @@ export function EpisodeRow({
                 ep.runtime ? t("{n} min", { n: ep.runtime }) : null,
                 formatAirDate(ep.airDate) || null,
               ]
-                .filter(Boolean)
+                .filter((part): part is string => Boolean(part))
+                .map(bidiIsolate)
                 .join("  ·  ")}
             </span>
             {progress.watched && watchedAgo && (
@@ -163,8 +171,10 @@ export function EpisodeRow({
               </span>
             )}
           </p>
-          {ep.overview && (
+          <EpisodeReleaseCountdown date={ep.airDate} />
+          {settings.showEpisodeDescription && ep.overview && (
             <p
+              dir="auto"
               className={`line-clamp-2 text-[13.5px] leading-relaxed text-ink-muted ${
                 spoiler?.desc ? SPOILER_TEXT_CLASS : ""
               }`}

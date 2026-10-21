@@ -186,7 +186,7 @@ export function useMusicAudioMeter(
   enabled = false,
 ): MusicAudioMeterState {
   const state = useSyncExternalStore(monitor.subscribe, monitor.getSnapshot, monitor.getSnapshot);
-  const allowed = enabled && !!track && track.connectorId !== "spotify";
+  const allowed = enabled && !!track;
   useEffect(() => {
     if (!allowed) return;
     let release: (() => void) | undefined;

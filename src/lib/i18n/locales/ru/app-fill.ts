@@ -795,16 +795,16 @@ const appFill: Record<string, string> = {
   "Use Cinemeta for title metadata": "Использовать Cinemeta для метаданных названий",
   "Turn this off to take Cinemeta out entirely and use only your own metadata addons, such as AIOMetadata or AIOStreams. Cinemeta can go stale and show already released episodes as TBA. Leave it on unless you have a metadata addon installed, or titles will have no details.":
     "Выключите, чтобы полностью убрать Cinemeta и использовать только свои дополнения с метаданными, например AIOMetadata или AIOStreams. Данные Cinemeta устаревают, и уже вышедшие серии могут отображаться как TBA. Оставьте включённым, если у вас не установлено дополнение с метаданными, иначе у названий не будет подробностей.",
-  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Setup. Harbor closes, the installer finishes, then Harbor reopens.":
-    "Это обновление также заменяет встроенные в Harbor плееры и инструменты, поэтому оно устанавливается через Harbor Setup. Harbor закроется, установщик завершит работу, затем Harbor откроется снова.",
-  "This one installs through Harbor Setup, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
-    "Это обновление устанавливается через Harbor Setup, но в манифесте обновления нет подписи для него. Harbor не запускает установщик, который не может проверить. Скачайте его и запустите сами.",
+  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Shipyard. Harbor closes, the installer finishes, then Harbor reopens.":
+    "Это обновление также заменяет встроенные в Harbor плееры и инструменты, поэтому оно устанавливается через Harbor Shipyard. Harbor закроется, установщик завершит работу, затем Harbor откроется снова.",
+  "This one installs through Harbor Shipyard, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
+    "Это обновление устанавливается через Harbor Shipyard, но в манифесте обновления нет подписи для него. Harbor не запускает установщик, который не может проверить. Скачайте его и запустите сами.",
   "Download installer": "Скачать установщик",
   "Install and reopen": "Установить и открыть заново",
-  "Harbor is closing. Harbor Setup will finish and reopen it.":
-    "Harbor закрывается. Harbor Setup завершит установку и откроет его снова.",
-  "Harbor Setup did not finish updating Harbor. Nothing was changed.":
-    "Harbor Setup не завершил обновление Harbor. Ничего не изменилось.",
+  "Harbor is closing. Harbor Shipyard will finish and reopen it.":
+    "Harbor закрывается. Harbor Shipyard завершит установку и откроет его снова.",
+  "Harbor Shipyard did not finish updating Harbor. Nothing was changed.":
+    "Harbor Shipyard не завершил обновление Harbor. Ничего не изменилось.",
   "Dismiss": "Скрыть",
 };
 

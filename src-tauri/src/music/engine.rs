@@ -24,7 +24,7 @@ mod deck_audio;
 mod broadcast;
 pub use broadcast::{BroadcastStatus, BroadcastTargets};
 pub use deck_audio::MusicDeckState;
-pub use telemetry::MusicMeterSnapshot;
+pub use telemetry::{MusicMeterChannel, MusicMeterSnapshot};
 pub(super) use deck_events::{listened_increment, should_scrobble};
 
 // MPV_FORMAT_FLAG writes a C int. libmpv2 4.1's GetData for bool uses

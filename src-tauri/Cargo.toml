@@ -1,6 +1,6 @@
 [package]
 name = "harbor"
-version = "0.9.132"
+version = "1.0.1"
 description = "A Stremio client built for adventure"
 edition = "2021"
 
@@ -13,6 +13,7 @@ tauri-build = { version = "2", features = [] }
 
 [features]
 default = []
+context-review = []
 silero-vad = ["dep:ort", "dep:ndarray"]
 asr-whisper = ["dep:whisper-rs"]
 chromaprint = []
@@ -125,6 +126,7 @@ lofty = "0.22"
 # Spotify Premium playback. Keep librespot component crates in lockstep.
 parking_lot = "0.12"
 librespot-core = "0.8"
+librespot-metadata = "0.8"
 librespot-playback = "0.8"
 librespot-oauth = "0.8"
 
@@ -138,6 +140,7 @@ windows = { version = "0.62", features = [
   "Win32_Security_Cryptography",
   "Win32_UI_WindowsAndMessaging",
   "Win32_UI_Shell",
+  "Win32_Graphics_Dwm",
   "Win32_Graphics_Gdi",
   "Win32_Graphics_Dxgi",
   "Win32_Graphics_Dxgi_Common",

@@ -713,16 +713,16 @@ const appFill: Record<string, string> = {
   "Use Cinemeta for title metadata": "Dùng Cinemeta cho siêu dữ liệu phim",
   "Turn this off to take Cinemeta out entirely and use only your own metadata addons, such as AIOMetadata or AIOStreams. Cinemeta can go stale and show already released episodes as TBA. Leave it on unless you have a metadata addon installed, or titles will have no details.":
     "Tắt tùy chọn này để loại bỏ hoàn toàn Cinemeta và chỉ dùng các tiện ích bổ sung siêu dữ liệu của riêng bạn, như AIOMetadata hoặc AIOStreams. Dữ liệu của Cinemeta có thể lỗi thời và hiển thị các tập đã phát hành là TBA. Hãy để bật trừ khi bạn đã cài tiện ích bổ sung siêu dữ liệu, nếu không phim sẽ không có thông tin chi tiết.",
-  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Setup. Harbor closes, the installer finishes, then Harbor reopens.":
-    "Bản này cũng thay thế các trình phát và công cụ đi kèm Harbor, nên sẽ được cài đặt qua Harbor Setup. Harbor sẽ đóng, trình cài đặt hoàn tất rồi Harbor mở lại.",
-  "This one installs through Harbor Setup, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
-    "Bản này được cài đặt qua Harbor Setup, nhưng tệp kê khai cập nhật không có chữ ký cho bản này. Harbor sẽ không chạy trình cài đặt không thể xác minh. Hãy tải xuống và tự chạy.",
+  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Shipyard. Harbor closes, the installer finishes, then Harbor reopens.":
+    "Bản này cũng thay thế các trình phát và công cụ đi kèm Harbor, nên sẽ được cài đặt qua Harbor Shipyard. Harbor sẽ đóng, trình cài đặt hoàn tất rồi Harbor mở lại.",
+  "This one installs through Harbor Shipyard, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
+    "Bản này được cài đặt qua Harbor Shipyard, nhưng tệp kê khai cập nhật không có chữ ký cho bản này. Harbor sẽ không chạy trình cài đặt không thể xác minh. Hãy tải xuống và tự chạy.",
   "Download installer": "Tải trình cài đặt",
   "Install and reopen": "Cài đặt rồi mở lại",
-  "Harbor is closing. Harbor Setup will finish and reopen it.":
-    "Harbor đang đóng. Harbor Setup sẽ hoàn tất cài đặt rồi mở lại ứng dụng.",
-  "Harbor Setup did not finish updating Harbor. Nothing was changed.":
-    "Harbor Setup chưa hoàn tất cập nhật Harbor. Không có gì thay đổi.",
+  "Harbor is closing. Harbor Shipyard will finish and reopen it.":
+    "Harbor đang đóng. Harbor Shipyard sẽ hoàn tất cài đặt rồi mở lại ứng dụng.",
+  "Harbor Shipyard did not finish updating Harbor. Nothing was changed.":
+    "Harbor Shipyard chưa hoàn tất cập nhật Harbor. Không có gì thay đổi.",
   "Dismiss": "Bỏ qua",
 };
 

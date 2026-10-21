@@ -1,3 +1,6 @@
+import { LiveTvRow } from "./live-tv-row";
+import { MusicRow } from "./music-row";
+import { EBookRow } from "./ebook-row";
 import { X, Loader2, CornerDownLeft, CalendarRange, Tag } from "lucide-react";
 import { Search } from "@/components/icons/search-icon";
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -10,9 +13,8 @@ import type { Meta } from "@/lib/cinemeta";
 import { useSearch } from "@/lib/search-context";
 import { useView } from "@/lib/view";
 import { MOVIE_GENRES, TV_GENRES } from "@/lib/feed/tags";
-import { metaLooksAnime } from "@/lib/anime-detect";
+import { warmAnimeResolution } from "@/lib/anime-detect";
 import { AnimeRow } from "./anime-row";
-import { AnimeRelations } from "./anime-relations";
 import { MangaRow } from "./manga-row";
 import { SportsRow } from "./sports-row";
 import { CharacterGroup } from "./character-group";
@@ -41,6 +43,7 @@ import { useExitPresence } from "@/lib/use-exit-presence";
 import { useWindowFullscreen } from "@/lib/use-window-fullscreen";
 import { isMagnetInput, isDirectVideoUrl } from "@/lib/torrent/magnet";
 import { useProfiles } from "@/lib/profiles";
+import { useInstallFeatures } from "@/lib/features/install";
 import { steamStoreQuery } from "@/lib/games/steam-store-search";
 const SteamStoreSearch = lazy(() =>
   import("./steam-store-search").then((module) => ({ default: module.SteamStoreSearch })),
@@ -74,16 +77,17 @@ export function SearchOverlay() {
   const [mediaFilter, setMediaFilter] = useState<SearchFilter>("all");
   const { activeProfile } = useProfiles();
   const { settings, update } = useSettings();
-  const storeQuery = activeProfile?.kid
-    ? null
-    : steamStoreQuery(query, settings.steamSearchShortcut);
+  const gamesEnabled = useInstallFeatures().games;
+  const storeQuery =
+    activeProfile?.kid || !gamesEnabled
+      ? null
+      : steamStoreQuery(query, settings.steamSearchShortcut);
   useEffect(() => {
     setMediaFilter("all");
   }, [query]);
   const { mounted, closing } = useExitPresence(open, 150);
   const fullscreen = useWindowFullscreen();
-  // Closing removes the panel after its exit animation. Keep the last position
-  // outside that DOM so both reopening and navigation back restore the same view.
+  // The exit animation unmounts the panel; retain its position outside that DOM.
   const scrollKey = JSON.stringify([activeProfile?.id, query, mediaFilter, aiMode, explore]);
   useLayoutEffect(() => {
     if (scrollMemory.current.key !== scrollKey) {
@@ -98,6 +102,15 @@ export function SearchOverlay() {
     () => () => backdropGesture.current?.(),
     [open, closing, settings.dragAnywhere, fullscreen],
   );
+
+  // Warm the anime identity resolution for the top match only — one resolution
+  // per search, for the result the user is most likely to open.
+  const topMatchId = results?.topMatch?.meta.id ?? "";
+  useEffect(() => {
+    const top = results?.topMatch?.meta;
+    if (top) warmAnimeResolution(top);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [topMatchId]);
 
   const close = () => {
     backdropGesture.current?.();
@@ -145,6 +158,7 @@ export function SearchOverlay() {
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
+      if (document.activeElement?.closest("[data-harbor-context-layer]")) return;
       if (e.key !== "Escape") return;
       e.preventDefault();
       e.stopPropagation();
@@ -310,12 +324,6 @@ export function SearchOverlay() {
     (group) => !addonFilter || group.id === addonFilter,
   );
   const personMatch = matchPersonForQuery(currentResults?.people, trimmed);
-  const topMatchIsAnime =
-    !personMatch &&
-    !!currentResults?.topMatch &&
-    currentResults.anime.length > 0 &&
-    metaLooksAnime(currentResults.topMatch.meta);
-  const topAnime = topMatchIsAnime && currentResults ? currentResults.anime[0] : null;
   const magnetInput = !!trimmed && isMagnetInput(trimmed);
   const urlInput = !!trimmed && !magnetInput && isDirectVideoUrl(trimmed);
   const directInput = magnetInput || urlInput;
@@ -598,9 +606,10 @@ export function SearchOverlay() {
                           />
                         )
                       )}
-                      {showKind("anime") && topAnime && (
-                        <AnimeRelations anime={topAnime} onClose={commit} />
-                      )}
+                      <LiveTvRow
+                        items={showKind("live") ? currentResults.liveTv : []}
+                        onClose={commit}
+                      />
                       <AddonHits hits={currentResults.addons} onClose={commit} />
                       <PeopleRow
                         people={
@@ -652,6 +661,14 @@ export function SearchOverlay() {
                       />
                       <MangaRow
                         items={showKind("manga") ? currentResults.manga : []}
+                        onClose={commit}
+                      />
+                      <MusicRow
+                        items={showKind("music") ? currentResults.music : []}
+                        onClose={commit}
+                      />
+                      <EBookRow
+                        items={showKind("ebooks") ? currentResults.ebooks : []}
                         onClose={commit}
                       />
                       <SportsRow

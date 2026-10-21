@@ -41,6 +41,9 @@ pub(super) fn apply_network_cache(mpv: &Mpv) {
     let _ = mpv.set_property("cache", "yes");
     let _ = mpv.set_property("cache-secs", "30");
     let _ = mpv.set_property("cache-pause", "yes");
+    // mpv waits three seconds of cache before starting a stream by default. A music stream
+    // fills that window almost instantly, so the default only delays the first note.
+    let _ = mpv.set_property("cache-pause-wait", "1");
     let _ = mpv.set_property("network-timeout", "30");
 }
 

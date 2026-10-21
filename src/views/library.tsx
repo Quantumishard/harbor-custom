@@ -10,15 +10,18 @@ import {
   Star,
 } from "lucide-react";
 import { UiIcon } from "@/components/ui-icon";
+import { Profiled } from "@/components/profiled";
 import { useEffect, useMemo, useRef, useState } from "react";
 import traktLogo from "@/assets/trakt.svg";
 import anilistLogo from "@/assets/anilist.png";
 import simklLogo from "@/assets/simkl.png";
+import publicmetadbLogo from "@/assets/publicmetadb.svg";
 import letterboxdLogo from "@/assets/addon-logos/letterboxd.png";
 import { MalLogo } from "@/components/icons/mal-logo";
 import { useAnilist } from "@/lib/anilist/provider";
 import { useMal } from "@/lib/mal/provider";
 import { useSimkl } from "@/lib/simkl/provider";
+import { usePublicMetaDb } from "@/lib/publicmetadb/provider";
 import { useTrakt } from "@/lib/trakt/provider";
 import { useScrollMemory, useView } from "@/lib/view";
 import { useSettings } from "@/lib/settings";
@@ -31,9 +34,11 @@ import { HistoryTab } from "./library/history-tab";
 import { LocalTab } from "./library/local-tab";
 import { MalTab } from "./library/mal-tab";
 import { MyListsTab } from "./library/my-lists-tab";
+import { MyGroupsTab } from "./library/my-groups-tab";
 import { FavoritesTab } from "./library/favorites-tab";
 import { TabBtn, type Tab } from "./library/shared";
 import { SimklTab } from "./library/simkl-tab";
+import { PublicMetaDbTab } from "./library/publicmetadb-tab";
 import { TraktTab } from "./library/trakt-tab";
 import { WatchlistTab } from "./library/watchlist-tab";
 import { LetterboxdTab } from "./library/letterboxd-tab";
@@ -66,10 +71,12 @@ function readSavedTab(): Tab {
       v === "media-servers" ||
       v === "torbox" ||
       v === "lists" ||
+      v === "groups" ||
       v === "favorites" ||
       v === "trakt" ||
       v === "anilist" ||
       v === "simkl" ||
+      v === "publicmetadb" ||
       v === "letterboxd" ||
       v === "mal"
     )
@@ -85,10 +92,16 @@ export function LibraryView({ active }: { active: boolean }) {
   const { isConnected: anilistConnected } = useAnilist();
   const { isConnected: malConnected } = useMal();
   const { isConnected: simklConnected } = useSimkl();
+  const { isConnected: pmdbConnected } = usePublicMetaDb();
   const lb = useLetterboxd();
   const scrollRef = useRef<HTMLElement>(null);
   useScrollMemory("library", scrollRef, active);
   const contentDrag = useContentDrag();
+  useEffect(() => {
+    const openGroup = () => setTab("groups");
+    window.addEventListener("harbor:open-library-group", openGroup);
+    return () => window.removeEventListener("harbor:open-library-group", openGroup);
+  }, []);
 
   useEffect(() => {
     try {
@@ -107,6 +120,10 @@ export function LibraryView({ active }: { active: boolean }) {
   useEffect(() => {
     if (tab === "simkl" && !simklConnected) setTab("library");
   }, [tab, simklConnected]);
+
+  useEffect(() => {
+    if (tab === "publicmetadb" && !pmdbConnected) setTab("library");
+  }, [tab, pmdbConnected]);
 
   useEffect(() => {
     if (tab === "letterboxd" && !lb.isActive) setTab("library");
@@ -140,10 +157,11 @@ export function LibraryView({ active }: { active: boolean }) {
   return (
     <main
       ref={scrollRef}
+      data-harbor-library
       className="flex-1 overflow-y-auto px-5 pt-24 pb-14 sm:px-8 lg:px-12 lg:pt-28"
     >
       <LibraryFeaturedProvider>
-        <div {...contentDrag} className="flex flex-col gap-7">
+        <div {...contentDrag} data-context-page-background className="flex flex-col gap-7">
           {settings.libraryHero && <LibraryHero tabKey={tab} />}
           <Header
             tab={tab}
@@ -152,19 +170,34 @@ export function LibraryView({ active }: { active: boolean }) {
             anilistConnected={anilistConnected}
             malConnected={malConnected}
             simklConnected={simklConnected}
+            pmdbConnected={pmdbConnected}
             lbConnected={lb.isActive}
           />
-          {tab === "library" && <WatchlistTab mode="library" scrollRef={scrollRef} />}
-          {tab === "watchlist" && <WatchlistTab mode="watchlist" scrollRef={scrollRef} />}
-          {tab === "history" && <HistoryTab />}
+          {tab === "library" && (
+            <Profiled id="library.collection">
+              <WatchlistTab mode="library" scrollRef={scrollRef} />
+            </Profiled>
+          )}
+          {tab === "watchlist" && (
+            <Profiled id="library.watchlist">
+              <WatchlistTab mode="watchlist" scrollRef={scrollRef} />
+            </Profiled>
+          )}
+          {tab === "history" && (
+            <Profiled id="library.history">
+              <HistoryTab />
+            </Profiled>
+          )}
           {tab === "local" && <LocalTab scrollRef={scrollRef} />}
           {tab === "media-servers" && <MediaServersTab scrollRef={scrollRef} />}
           {tab === "torbox" && <TorboxTab />}
           {tab === "lists" && <MyListsTab />}
+          {tab === "groups" && <MyGroupsTab />}
           {tab === "favorites" && <FavoritesTab />}
           {tab === "trakt" && traktConnected && <TraktTab />}
           {tab === "anilist" && anilistConnected && <AnilistTab />}
           {tab === "simkl" && simklConnected && <SimklTab />}
+          {tab === "publicmetadb" && pmdbConnected && <PublicMetaDbTab />}
           {tab === "letterboxd" && lb.isActive && <LetterboxdTab />}
           {tab === "mal" && malConnected && <MalTab />}
         </div>
@@ -195,6 +228,7 @@ function Header({
   anilistConnected,
   malConnected,
   simklConnected,
+  pmdbConnected,
   lbConnected,
 }: {
   tab: Tab;
@@ -203,6 +237,7 @@ function Header({
   anilistConnected: boolean;
   malConnected: boolean;
   simklConnected: boolean;
+  pmdbConnected: boolean;
   lbConnected: boolean;
 }) {
   const t = useT();
@@ -252,7 +287,7 @@ function Header({
           )}
         </div>
       </div>
-      <div className="flex items-center gap-1 border-b border-edge-soft">
+      <div className="flex items-center gap-1 overflow-x-auto border-b border-edge-soft [&>button]:shrink-0">
         <TabBtn active={tab === "library"} onClick={() => onTab("library")}>
           <Library size={14} strokeWidth={2.2} />
           {t("Library")}
@@ -281,6 +316,10 @@ function Header({
           <UiIcon name="list" className="h-3.5 w-3.5" />
           {t("My Lists")}
         </TabBtn>
+        <TabBtn active={tab === "groups"} onClick={() => onTab("groups")}>
+          <UiIcon name="list" className="h-3.5 w-3.5" />
+          {t("My Groups")}
+        </TabBtn>
         <TabBtn active={tab === "favorites"} onClick={() => onTab("favorites")}>
           <Star size={14} strokeWidth={2.2} />
           {t("Favorites")}
@@ -307,6 +346,16 @@ function Header({
           <TabBtn active={tab === "simkl"} onClick={() => onTab("simkl")}>
             <img src={simklLogo} alt="" className="h-3.5 w-3.5 object-contain" />
             Simkl
+          </TabBtn>
+        )}
+        {pmdbConnected && (
+          <TabBtn active={tab === "publicmetadb"} onClick={() => onTab("publicmetadb")}>
+            <img
+              src={publicmetadbLogo}
+              alt=""
+              className="h-3.5 w-3.5 rounded-[3px] object-contain"
+            />
+            PMDB
           </TabBtn>
         )}
         {lbConnected && (

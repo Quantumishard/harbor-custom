@@ -1,3 +1,5 @@
+import { isNuvioProviderActive, getNuvioActiveSlot } from "./active-profile-id";
+import { useSyncExternalStore } from "react";
 import { persistCritical } from "./storage-recovery";
 
 const KEY_PREFIX = "harbor.moviewatched.v1.";
@@ -44,11 +46,16 @@ function primaryProfileId(): string {
 }
 
 function storeKey(): string {
+  if (isNuvioProviderActive()) {
+    const slot = getNuvioActiveSlot();
+    return `harbor.moviewatched.nuvio.v1.${slot}`;
+  }
   const id = activeProfileId();
   return id ? KEY_PREFIX + id : LEGACY_KEY;
 }
 
 function migrateLegacy(): void {
+  if (isNuvioProviderActive()) return;
   try {
     const legacy = localStorage.getItem(LEGACY_KEY);
     if (!legacy) return;
@@ -62,11 +69,15 @@ function migrateLegacy(): void {
   }
 }
 
+let currentScope = "";
+
 function load(): Set<string> {
-  if (cache) return cache;
+  const sk = storeKey();
+  if (cache && currentScope === sk) return cache;
+  currentScope = sk;
   migrateLegacy();
   try {
-    const arr = JSON.parse(localStorage.getItem(storeKey()) ?? "[]");
+    const arr = JSON.parse(localStorage.getItem(sk) ?? "[]");
     cache = new Set(
       Array.isArray(arr) ? arr.filter((x): x is string => typeof x === "string") : [],
     );
@@ -77,9 +88,11 @@ function load(): Set<string> {
 }
 
 function persist(next: Set<string>): void {
+  const sk = storeKey();
+  currentScope = sk;
   cache = next;
   version += 1;
-  persistCritical(storeKey(), JSON.stringify([...next]));
+  persistCritical(sk, JSON.stringify([...next]));
   for (const fn of subs) fn();
 }
 
@@ -91,6 +104,12 @@ export function movieWatchedIds(): Set<string> {
   return load();
 }
 
+const EMPTY_MOVIE_WATCHED_IDS: Set<string> = new Set();
+
+export function useMovieWatchedIds(): Set<string> {
+  return useSyncExternalStore(subscribeMovieWatched, load, () => EMPTY_MOVIE_WATCHED_IDS);
+}
+
 export function setMovieWatchedLocal(metaId: string, watched: boolean): void {
   const cur = load();
   if (cur.has(metaId) === watched) return;
@@ -98,6 +117,16 @@ export function setMovieWatchedLocal(metaId: string, watched: boolean): void {
   if (watched) next.add(metaId);
   else next.delete(metaId);
   persist(next);
+}
+
+export function setMovieWatchedLocalAcknowledged(metaId: string, watched: boolean): void {
+  const next = new Set(load());
+  if (watched) next.add(metaId);
+  else next.delete(metaId);
+  localStorage.setItem(storeKey(), JSON.stringify([...next]));
+  cache = next;
+  version += 1;
+  for (const fn of subs) fn();
 }
 
 export function subscribeMovieWatched(fn: () => void): () => void {
@@ -112,15 +141,18 @@ export function movieWatchedVersion(): number {
 }
 
 if (typeof window !== "undefined") {
-  let lastProfile = activeProfileId();
-  const onProfileChange = () => {
-    const p = activeProfileId();
-    if (p === lastProfile) return;
-    lastProfile = p;
+  let lastScope = storeKey();
+  const onScopeChange = () => {
+    const nextScope = storeKey();
+    if (nextScope === lastScope) return;
+    lastScope = nextScope;
     cache = null;
     version += 1;
     for (const fn of subs) fn();
   };
-  window.addEventListener("harbor:active-profile-changed", onProfileChange);
-  window.addEventListener("harbor:profiles-updated", onProfileChange);
+  window.addEventListener("harbor:active-profile-changed", onScopeChange);
+  window.addEventListener("harbor:profiles-updated", onScopeChange);
+  window.addEventListener("harbor:account-provider-changed", onScopeChange);
+  window.addEventListener("harbor:nuvio-profile-changed", onScopeChange);
+  window.addEventListener("harbor:nuvio-state-changed", onScopeChange);
 }

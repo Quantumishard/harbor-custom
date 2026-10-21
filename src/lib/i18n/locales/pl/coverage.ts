@@ -1,4 +1,6 @@
 const coverage: Record<string, string> = {
+  "Waiting for {name}…": "Oczekiwanie na {name}…",
+  "Keeping the source you were watching.": "Zachowuję źródło, które właśnie oglądasz.",
   "Sound descriptions": "Opisy dźwięków",
   "Hide sound effects and speaker names": "Ukryj efekty dźwiękowe i imiona mówiących",
   "Removes bracketed descriptions like [door creaks] and shouted speaker labels like JOHN: while subtitles play, so a release that only ships an SDH track still reads as plain dialogue. Song lyrics, ordinary parentheses and non-Latin scripts are left alone. Skipped on forced and picture-based tracks.":
@@ -536,8 +538,8 @@ const coverage: Record<string, string> = {
   Dismiss: "Zamknij",
   "Download installer": "Pobierz instalator",
   "Install and reopen": "Zainstaluj i otwórz ponownie",
-  "Harbor is closing. Harbor Setup will finish and reopen it.":
-    "Harbor jest zamykany. Harbor Setup dokończy instalację i otworzy go ponownie.",
+  "Harbor is closing. Harbor Shipyard will finish and reopen it.":
+    "Harbor jest zamykany. Harbor Shipyard dokończy instalację i otworzy go ponownie.",
   "Most Popular": "Najpopularniejsze",
   "What everyone is reading": "Co czytają wszyscy",
   "Critically Acclaimed": "Docenione przez krytyków",

@@ -1,10 +1,18 @@
 import { useSyncExternalStore } from "react";
+import { noteNotify } from "./render-cause";
 import { clearResume, readResumeEntry } from "./resume";
 import { setItemWithRecovery } from "./storage-recovery";
 import { episodeFromVideoId, libraryGetOneStrict, type LibraryItem } from "./stremio";
 import { withItemLock } from "./stremio-item-lock";
 import { cloudLibraryPut } from "./stremio-write-queue";
 import { privateCwProfileId } from "./cw-profile";
+import { isNuvioSignedIn } from "./nuvio/nuvio-client";
+import {
+  deleteWatchProgressFromNuvio,
+  isNuvioProviderActive,
+  resolveNuvioProfileIndex,
+} from "./nuvio/nuvio-sync";
+import { clearLocalCw } from "./local-cw";
 
 const SIMKL_KEY = "harbor.cw.dismissed.simkl";
 const DISMISS_KEY = "harbor.cw.dismissed.v1";
@@ -112,15 +120,20 @@ function loadDismissed(): void {
   if (legacy) persistDismissed();
 }
 
-function persistDismissed(): void {
+function persistDismissed(
+  times = dismissed,
+  videos = dismissedVid,
+  acknowledged = false,
+  positions = dismissedPos,
+): void {
   try {
     const out: Record<
       string,
       number | { t: number; v?: string; s?: number; e?: number; p?: number }
     > = {};
-    for (const [k, t] of dismissed) {
-      const v = dismissedVid.get(k);
-      const pos = dismissedPos.get(k);
+    for (const [k, t] of times) {
+      const v = videos.get(k);
+      const pos = positions.get(k);
       if (v || pos) {
         out[k] = { t };
         if (v) out[k].v = v;
@@ -133,12 +146,19 @@ function persistDismissed(): void {
         out[k] = t;
       }
     }
-    setItemWithRecovery(loadedKey ?? DISMISS_KEY, JSON.stringify(out));
-  } catch {}
+    const saved = setItemWithRecovery(loadedKey ?? DISMISS_KEY, JSON.stringify(out));
+    if (acknowledged && !saved) throw new Error("Storage could not save this dismissal.");
+  } catch (error) {
+    if (acknowledged)
+      throw new Error("Could not save the change. Check available storage and try again.", {
+        cause: error,
+      });
+  }
 }
 
 function emit(): void {
   version += 1;
+  noteNotify("store:cw-dismiss");
   listeners.forEach((l) => l());
 }
 
@@ -202,11 +222,29 @@ function isEpisodeAhead(
   return ce > de;
 }
 
+// A title can arrive with more than one provider id; a dismissal of any of them
+// must keep the same card hidden when the source changes.
+function itemIds(item: LibraryItem): string[] {
+  const ids = [item._id];
+  for (const id of item.altIds ?? []) {
+    if (typeof id === "string" && id && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
 export function isCwDismissed(item: LibraryItem): boolean {
   loadDismissed();
-  const plain = dismissed.get(item._id);
-  const ext = item.external ? dismissed.get(`${item.external}|${item._id}`) : undefined;
-  const dismissedAt = Math.max(plain ?? -1, ext ?? -1);
+  let dismissedAt = -1;
+  let dismissedId = item._id;
+  for (const id of itemIds(item)) {
+    const plain = dismissed.get(id);
+    const ext = item.external ? dismissed.get(`${item.external}|${id}`) : undefined;
+    const at = Math.max(plain ?? -1, ext ?? -1);
+    if (at > dismissedAt) {
+      dismissedAt = at;
+      dismissedId = id;
+    }
+  }
   if (dismissedAt < 0) return false;
   // Newer progress from any source (Harbor resume, Stremio cloud _mtime/lastWatched,
   // Trakt paused_at, Simkl watched_at) un-dismisses even when the video_id is unchanged.
@@ -218,20 +256,16 @@ export function isCwDismissed(item: LibraryItem): boolean {
   );
   // Library maintenance also changes _mtime. Only playback can undo a
   // checkpoint dismissal; legacy timestamp-only records retain their behavior.
-  if (dismissedPos.has(item._id) ? playbackActivity > dismissedAt : activity > dismissedAt)
+  if (dismissedPos.has(dismissedId) ? playbackActivity > dismissedAt : activity > dismissedAt)
     return false;
-  const vid = dismissedVid.get(item._id);
+  const vid = dismissedVid.get(dismissedId);
   const curVid = item.state?.video_id;
-  const pos = dismissedPos.get(item._id);
+  const pos = dismissedPos.get(dismissedId);
   // Further-ahead position on the same episode un-dismisses even when its timestamp
   // predates the dismissal (e.g. dismissed after watching elsewhere).
   if (pos != null && progressRatio(item) > pos.p + 0.01) {
-    if (vid && typeof curVid === "string" && curVid) {
-      if (vid === curVid) return false;
-    } else {
-      const { season, episode } = resolveEpisode(item);
-      if (season === pos.s && episode === pos.e) return false;
-    }
+    const { season, episode } = resolveEpisode(item);
+    if (season === pos.s && episode === pos.e) return false;
   }
   if (vid && typeof curVid === "string" && curVid) {
     if (vid !== curVid) {
@@ -245,71 +279,152 @@ export function isCwDismissed(item: LibraryItem): boolean {
       if (ahead === null || ahead) return false;
     }
   }
-  if (dismissedPos.has(item._id)) return true;
+  if (dismissedPos.has(dismissedId)) return true;
   if (activity > 0) return activity <= dismissedAt;
   return true;
 }
 
-export function dismissCw(item: LibraryItem, authKey: string | null): void {
+export type CwDismissResult = { sync: "not-required" | "synced" | "queued" };
+
+export function dismissCw(item: LibraryItem, authKey: string | null): void;
+export function dismissCw(
+  item: LibraryItem,
+  authKey: string | null,
+  options: { acknowledged: true },
+): Promise<CwDismissResult>;
+export function dismissCw(
+  item: LibraryItem,
+  authKey: string | null,
+  options: { acknowledged?: boolean } = {},
+): void | Promise<CwDismissResult> {
   loadDismissed();
   const id = item._id;
   const now = new Date().toISOString();
-  const nowMs = Math.max(Date.parse(now), itemActivity(item), dismissed.get(id) ?? 0);
-  dismissed.set(id, nowMs);
-  const previousPos = dismissedPos.get(id);
-  const previousVid = dismissedVid.get(id);
+  const nowMs = Math.max(
+    Date.parse(now),
+    itemActivity(item),
+    ...itemIds(item).map((key) => dismissed.get(key) ?? 0),
+  );
+  const times = new Map(dismissed);
+  const videos = new Map(dismissedVid);
+  const ids = itemIds(item);
+  for (const entryId of ids) times.set(entryId, nowMs);
   const dismissVid = item.state?.video_id;
-  if (typeof dismissVid === "string" && dismissVid) dismissedVid.set(id, dismissVid);
-  else dismissedVid.delete(id);
+  for (const entryId of ids) {
+    if (typeof dismissVid === "string" && dismissVid) videos.set(entryId, dismissVid);
+    else videos.delete(entryId);
+  }
+  const positions = new Map(dismissedPos);
   if (item.state) {
     const { season, episode } = resolveEpisode(item);
-    const pos = { s: season, e: episode, p: progressRatio(item) };
-    const previousAhead = previousPos
-      ? isEpisodeAhead({ season: previousPos.s, episode: previousPos.e }, { season, episode })
-      : null;
-    const sameEpisode =
-      previousPos &&
-      ((previousVid && previousVid === dismissVid) ||
-        (previousPos.s === season && previousPos.e === episode));
-    // Source copies can be dismissed in any order. A stale copy must not
-    // lower the checkpoint and expose the more advanced one underneath it.
-    if (previousPos && (previousAhead === true || (sameEpisode && previousPos.p > pos.p))) {
-      dismissedPos.set(id, previousPos);
-      if (previousVid) dismissedVid.set(id, previousVid);
-    } else {
-      dismissedPos.set(id, pos);
+    const checkpoint = { s: season, e: episode, p: progressRatio(item) };
+    for (const entryId of ids) {
+      const previous = positions.get(entryId);
+      const previousVid = dismissedVid.get(entryId);
+      const ahead = previous
+        ? isEpisodeAhead({ season: previous.s, episode: previous.e }, { season, episode })
+        : null;
+      const same =
+        previous &&
+        ((previousVid && previousVid === dismissVid) ||
+          (previous.s === season && previous.e === episode));
+      if (previous && (ahead === true || (same && previous.p > checkpoint.p))) {
+        if (previousVid) videos.set(entryId, previousVid);
+      } else positions.set(entryId, checkpoint);
     }
   } else {
-    dismissedPos.delete(id);
+    for (const entryId of ids) positions.delete(entryId);
+  }
+  if (item.external === "nuvio" || (isNuvioSignedIn() && isNuvioProviderActive())) {
+    for (const entryId of ids) times.set(`nuvio|${entryId}`, nowMs);
+  } else if (item.external) {
+    for (const entryId of ids) times.set(`${item.external}|${entryId}`, nowMs);
+  }
+  persistDismissed(times, videos, options.acknowledged, positions);
+  dismissed.clear();
+  dismissedVid.clear();
+  dismissedPos.clear();
+  for (const [key, value] of times) dismissed.set(key, value);
+  for (const [key, value] of videos) dismissedVid.set(key, value);
+  for (const [key, value] of positions) dismissedPos.set(key, value);
+  emit();
+  if (item.external === "nuvio" || (isNuvioSignedIn() && isNuvioProviderActive())) {
+    const { season, episode } = resolveEpisode(item);
+    try {
+      clearResume(id, season, episode, options);
+    } catch {
+      throw new Error(
+        "Removed from Continue Watching, but the saved position could not be cleared.",
+      );
+    }
+    try {
+      const slot = resolveNuvioProfileIndex();
+      clearLocalCw(id, `nuvio-${slot}`);
+      void deleteWatchProgressFromNuvio(slot, id, undefined, season, episode);
+    } catch {}
+    return options.acknowledged ? Promise.resolve({ sync: "not-required" }) : undefined;
   }
   if (item.external) {
-    dismissed.set(`${item.external}|${id}`, nowMs);
     const { season, episode } = resolveEpisode(item);
-    clearResume(id, season, episode);
-    persistDismissed();
-    emit();
-    return;
+    try {
+      clearResume(id, season, episode, options);
+    } catch {
+      throw new Error(
+        "Removed from Continue Watching, but the saved position could not be cleared.",
+      );
+    }
   }
-  persistDismissed();
-  emit();
-  if (!authKey || !item.state || privateCwProfileId()) return;
+  if (item.external || !authKey || !item.state || privateCwProfileId()) {
+    return options.acknowledged ? Promise.resolve({ sync: "not-required" }) : undefined;
+  }
   const vid = item.state.video_id ?? "";
   const kitsuThreeSeg = /^(kitsu|mal|anilist|anidb):/.test(id) && vid.split(":").length === 3;
   const se = kitsuThreeSeg ? null : episodeFromVideoId(item.state.video_id);
-  clearResume(
-    id,
-    item.state.season ?? (kitsuThreeSeg ? 1 : se?.season),
-    item.state.episode ?? (kitsuThreeSeg ? Number(vid.split(":")[2]) : se?.episode),
+  try {
+    clearResume(
+      id,
+      item.state.season ?? (kitsuThreeSeg ? 1 : se?.season),
+      item.state.episode ?? (kitsuThreeSeg ? Number(vid.split(":")[2]) : se?.episode),
+      options,
+    );
+  } catch {
+    throw new Error("Removed from Continue Watching, but the saved position could not be cleared.");
+  }
+  const write = withItemLock(id, async () => {
+    let fresh: LibraryItem | null;
+    try {
+      fresh = await libraryGetOneStrict(authKey, id);
+    } catch {
+      throw new Error("The current bookmark state could not be read for synchronization.");
+    }
+    const current = fresh ?? { ...item, removed: true, temp: true };
+    return cloudLibraryPut(
+      authKey,
+      {
+        ...current,
+        state: {
+          ...item.state!,
+          ...current.state,
+          duration: current.state?.duration ?? item.state!.duration,
+          timeOffset: 0,
+        },
+        _mtime: now,
+      },
+      options,
+    );
+  });
+  if (!options.acknowledged) {
+    void write.catch(() => {});
+    return;
+  }
+  return write.then(
+    (synced) => ({ sync: synced ? "synced" : "queued" }),
+    () => {
+      throw new Error(
+        "Removed from Continue Watching on this device, but synchronization could not be saved.",
+      );
+    },
   );
-  void withItemLock(id, async () => {
-    const fresh = await libraryGetOneStrict(authKey, id);
-    if (!fresh?.state) return;
-    await cloudLibraryPut(authKey, {
-      ...fresh,
-      state: { ...fresh.state, timeOffset: 0 },
-      _mtime: now,
-    });
-  }).catch(() => {});
 }
 
 function subscribe(cb: () => void): () => void {
@@ -334,4 +449,7 @@ if (typeof window !== "undefined") {
   };
   window.addEventListener("harbor:active-profile-changed", refresh);
   window.addEventListener("harbor:profiles-updated", refresh);
+  window.addEventListener("harbor:nuvio-profile-changed", refresh);
+  window.addEventListener("harbor:nuvio-state-changed", refresh);
+  window.addEventListener("harbor:account-provider-changed", refresh);
 }

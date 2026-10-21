@@ -79,6 +79,6 @@ export default {
     "Не удалось проверить экспериментальные сборки. Проверьте подключение и повторите попытку.",
   "Couldn't verify your Harbor account access. Check your connection and try again.":
     "Не удалось проверить доступ аккаунта Harbor. Проверьте подключение и повторите попытку.",
-  "Harbor Setup did not finish updating Harbor. Check for updates to try again.":
+  "Harbor Shipyard did not finish updating Harbor. Check for updates to try again.":
     "Установщик Harbor не завершил обновление. Проверьте обновления, чтобы повторить попытку.",
 };

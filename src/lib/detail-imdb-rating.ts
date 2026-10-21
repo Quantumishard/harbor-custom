@@ -31,13 +31,15 @@ export function detailImdbRating(input: {
   harbor?: unknown;
 }): string | undefined {
   const imdbId = input.id.startsWith("tt") ? input.id : input.detailId;
+  // Services first, matching the order the shared src/lib/imdb-rating.ts uses for the hero cards, so
+  // one title cannot show two different IMDb numbers. The metadata terms stay as fallbacks.
   const candidates = [
+    input.harbor,
+    input.omdb,
+    input.cinemeta,
     input.id.startsWith("tt") ? input.inline : undefined,
     imdbId && input.fullId === imdbId ? input.full : undefined,
     imdbId && input.detailSource === "imdb" && input.detailId === imdbId ? input.detail : undefined,
-    input.cinemeta,
-    input.omdb,
-    input.harbor,
   ];
   for (const value of candidates) {
     const rating = validImdbRating(value);

@@ -1,5 +1,6 @@
 import { cachedCatalogRow, type CatalogLoad } from "@/lib/addon-catalog-cache";
 import { runLanes } from "@/lib/run-lanes";
+import { addonConfigurationKey } from "@/lib/addon-configuration-key";
 import { allowDirectHost, safeFetch as fetch } from "@/lib/safe-fetch";
 import type { AddonOrigin, Meta } from "./cinemeta";
 import { fetchManifestAt, filterEnabled, loadInstalled } from "./addon-store";
@@ -50,6 +51,15 @@ export function addonBasesForOrigin(addons: Addon[], origin: AddonOrigin | undef
   if (!origin) return [];
   const bases = new Set<string>();
   if (origin.base) bases.add(origin.base.replace(/\/manifest\.json$/, ""));
+  // Catalogue keys do not always equal manifest IDs. Match the original configuration first,
+  // without persisting its authenticated URL in library metadata.
+  if (origin.configurationKey) {
+    for (const addon of addons) {
+      if (addonConfigurationKey(addon.transportUrl) === origin.configurationKey) {
+        bases.add(addon.transportUrl.replace(/\/manifest\.json$/, ""));
+      }
+    }
+  }
   for (const addon of addons) {
     if (addon.manifest.id !== origin.id) continue;
     bases.add(addon.transportUrl.replace(/\/manifest\.json$/, ""));
@@ -305,22 +315,6 @@ export function torrentioBareAddon(): Addon {
       resources: ["stream"],
       types: ["movie", "series"],
       idPrefixes: ["tt", "kitsu"],
-    },
-  };
-}
-
-export function torboxAddonFor(tbKey: string): Addon | null {
-  const k = tbKey.trim();
-  if (!k) return null;
-  return {
-    transportUrl: `https://stremio.torbox.app/${k}/manifest.json`,
-    manifest: {
-      id: "app.torbox.stremio",
-      name: "TorBox",
-      logo: "https://torbox.app/android-chrome-512x512.png",
-      resources: ["stream"],
-      types: ["movie", "series", "anime"],
-      idPrefixes: ["tt", "kitsu", "mal", "tmdb", "anidb", "anilist", "anime-planet"],
     },
   };
 }

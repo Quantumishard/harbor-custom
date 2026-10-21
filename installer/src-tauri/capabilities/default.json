@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "Harbor Setup",
+  "description": "Harbor Shipyard",
   "windows": [
     "main"
   ],

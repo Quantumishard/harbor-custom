@@ -46,14 +46,19 @@ fn build_leveldb(snappy_prefix: Option<PathBuf>) {
         cmake::Config::new(Path::new("deps").join(format!("leveldb-{}", LEVELDB_VERSION)));
     config
         .define("CMAKE_POLICY_VERSION_MINIMUM", "3.10")
+        // Skip leveldb's Clang-only -Wthread-safety probe. Predefining the cache
+        // variable stops check_cxx_source_compiles from running, avoiding a CMake
+        // 4.4 error where the leaked flag is rejected as an unknown warning
+        // category. The check is meaningless for MSVC and GCC builds anyway.
+        .define("HAVE_CLANG_THREAD_SAFETY", "OFF")
         .define("LEVELDB_BUILD_TESTS", "OFF")
         .define("LEVELDB_BUILD_BENCHMARKS", "OFF")
         .define("CMAKE_INSTALL_LIBDIR", &libdir);
     if let Some(snappy_prefix) = snappy_prefix {
         #[cfg(target_env = "msvc")]
-        let ldflags = format!("/LIBPATH:{}", snappy_prefix.join(LIBDIR).display());
+        let ldflags = format!("/LIBPATH:\"{}\"", snappy_prefix.join(LIBDIR).display());
         #[cfg(not(target_env = "msvc"))]
-        let ldflags = format!("-L{}", snappy_prefix.join(LIBDIR).display());
+        let ldflags = format!("-L\"{}\"", snappy_prefix.join(LIBDIR).display());
     
         env::set_var(
             "LDFLAGS",
@@ -62,8 +67,8 @@ fn build_leveldb(snappy_prefix: Option<PathBuf>) {
 
         config
             .define("HAVE_SNAPPY", "ON")
-            .cflag(format!("-I{}", snappy_prefix.join("include").display()))
-            .cxxflag(format!("-I{}", snappy_prefix.join("include").display()));
+            .cflag(format!("-I\"{}\"", snappy_prefix.join("include").display()))
+            .cxxflag(format!("-I\"{}\"", snappy_prefix.join("include").display()));
     } else {
         config.define("HAVE_SNAPPY", "OFF");
     }

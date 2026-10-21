@@ -51,6 +51,7 @@ import { suwayomiBaseForSource } from "@/lib/manga/sources/suwayomi/auth-registr
 import { cachedSuwayomiSources } from "./manga-browse/langs";
 import { sourceDisplayName } from "./manga-browse/all-extensions";
 import { pushActivityHint } from "@/lib/discord/activity-hint";
+import { useMangaContext } from "@/lib/use-manga-context";
 
 const GRADIENT_SIDE =
   "bg-gradient-to-r from-[var(--color-canvas)] from-0% via-[color-mix(in_oklch,var(--color-canvas),transparent_45%)] via-55% to-[color-mix(in_oklch,var(--color-canvas),transparent_88%)] to-100%";
@@ -174,6 +175,7 @@ export function MangaDetail({
   onOpenManga,
   onOpenDownloads,
   scrollRoot,
+  downloadRequest,
 }: {
   mangaId: string;
   onRead: (
@@ -186,6 +188,7 @@ export function MangaDetail({
   onOpenManga: (id: string) => void;
   onOpenDownloads?: () => void;
   scrollRoot?: React.RefObject<HTMLElement | null>;
+  downloadRequest?: number;
 }) {
   const t = useT();
   const [detail, setDetail] = useState<MangaSummary | null>(null);
@@ -193,12 +196,36 @@ export function MangaDetail({
   const [detailPending, setDetailPending] = useState(true);
   const [chaptersPending, setChaptersPending] = useState(true);
   const [retryTick, setRetryTick] = useState(0);
+  const [chapterRefreshTick, setChapterRefreshTick] = useState(0);
+  const chaptersMangaId = useRef<string | null>(null);
   const langInitRef = useRef(false);
   const [selectedLang, setSelectedLang] = useState("en");
   const [backdrop, setBackdrop] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [topMangaOpen, setTopMangaOpen] = useState(false);
   const [extInfo, setExtInfo] = useState<{ name: string; icon?: string } | null>(null);
+  const chaptersRef = useRef<HTMLDivElement>(null);
+  const focusedDownloadRequest = useRef<number | undefined>(undefined);
+  const focusChapters = () => {
+    chaptersRef.current?.scrollIntoView({ block: "start" });
+    chaptersRef.current?.focus({ preventScroll: true });
+  };
+  const mangaMeta = { id: mangaId, title: detail?.title ?? "", cover: detail?.cover };
+  const context = useMangaContext<HTMLDivElement>(mangaMeta, {
+    resume: onResume,
+    download: focusChapters,
+  });
+
+  useEffect(() => {
+    if (
+      downloadRequest &&
+      focusedDownloadRequest.current !== downloadRequest &&
+      chaptersRef.current
+    ) {
+      focusChapters();
+      focusedDownloadRequest.current = downloadRequest;
+    }
+  }, [downloadRequest, detailPending, detail, chapters.length, mangaId]);
 
   const favorites = useMangaFavorites();
   const isFavorite = useIsMangaFavorite(mangaId);
@@ -226,9 +253,7 @@ export function MangaDetail({
   useEffect(() => {
     let cancelled = false;
     setDetail(null);
-    setChapters([]);
     setDetailPending(true);
-    setChaptersPending(true);
     setBackdrop(null);
     setExpanded(false);
     langInitRef.current = false;
@@ -242,15 +267,34 @@ export function MangaDetail({
         if (!cancelled) setDetailPending(false);
       });
 
-    streamChapters(mangaId, (chunk) => {
-      if (cancelled || chunk.length === 0) return;
-      setChapters((prev) => [...prev, ...chunk]);
-      if (!langInitRef.current) {
-        langInitRef.current = true;
-        const ls = chapterLanguages(chunk);
-        setSelectedLang(ls.find((l) => l.code === "en")?.code ?? ls[0]?.code ?? "en");
-      }
-    })
+    return () => {
+      cancelled = true;
+    };
+  }, [mangaId, retryTick]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let received = false;
+    if (chaptersMangaId.current !== mangaId) {
+      chaptersMangaId.current = mangaId;
+      setChapters([]);
+    }
+    setChaptersPending(true);
+    streamChapters(
+      mangaId,
+      (chunk) => {
+        if (cancelled || chunk.length === 0) return;
+        const first = !received;
+        received = true;
+        setChapters((prev) => (first ? chunk : [...prev, ...chunk]));
+        if (!langInitRef.current) {
+          langInitRef.current = true;
+          const ls = chapterLanguages(chunk);
+          setSelectedLang(ls.find((l) => l.code === "en")?.code ?? ls[0]?.code ?? "en");
+        }
+      },
+      { refresh: true },
+    )
       .catch(() => {})
       .finally(() => {
         if (!cancelled) setChaptersPending(false);
@@ -259,7 +303,7 @@ export function MangaDetail({
     return () => {
       cancelled = true;
     };
-  }, [mangaId, retryTick]);
+  }, [mangaId, retryTick, chapterRefreshTick]);
 
   useEffect(() => {
     if (!detail?.title) return;
@@ -277,6 +321,8 @@ export function MangaDetail({
     return pushActivityHint({
       details: `Browsing ${detail.title}`,
       state: "Manga",
+      kind: "manga",
+      id: mangaId,
       largeImage: detail.cover,
       largeText: detail.title,
     });
@@ -334,7 +380,6 @@ export function MangaDetail({
   const descMaxWidth = awardArtCount
     ? `min(48rem, calc(100% - ${awardArtCount * 84 + (awardArtCount - 1) * 8 + 24}px))`
     : "48rem";
-  const mangaMeta = { id: mangaId, title: detail?.title ?? "", cover: detail?.cover };
   const resumeLabel = progress
     ? (progress.chapterNumber
         ? t("Resume Ch. {n}", { n: progress.chapterNumber })
@@ -373,7 +418,7 @@ export function MangaDetail({
 
   return (
     <div className="flex flex-col gap-10 pb-4">
-      <div className="relative -mx-12 -mt-24 min-h-[360px] overflow-hidden">
+      <div ref={context.ref} className="relative -mx-12 -mt-24 min-h-[360px] overflow-hidden">
         <div className="absolute inset-0 z-0">
           {bannerSrc && (
             <CoverImg
@@ -522,7 +567,12 @@ export function MangaDetail({
                   aria-label={isFavorite ? t("Remove favorite") : t("Add favorite")}
                   onClick={() =>
                     detail &&
-                    favorites.toggle({ id: mangaId, title: detail.title, cover: detail.cover })
+                    favorites.toggle({
+                      id: mangaId,
+                      title: detail.title,
+                      altTitle: detail.altTitle,
+                      cover: detail.cover,
+                    })
                   }
                   className={`group flex h-12 w-12 shrink-0 items-center justify-center rounded-full transition-[transform,background-color] duration-200 active:scale-[0.94] ${
                     isFavorite
@@ -548,6 +598,7 @@ export function MangaDetail({
                 <MangaAddToListButton
                   mangaId={mangaId}
                   title={detail?.title ?? ""}
+                  altTitle={detail?.altTitle}
                   cover={detail?.cover}
                 />
                 {onOpenDownloads && (
@@ -607,19 +658,27 @@ export function MangaDetail({
         />
       )}
 
-      <ChapterList
-        chapters={langFiltered}
-        langs={langs}
-        selectedLang={selectedLang}
-        onSelectLang={setSelectedLang}
-        onRead={(chs, i) => onRead(chs, i, mangaMeta)}
-        mangaId={mangaId}
-        mangaTitle={detail?.title}
-        mangaCover={detail?.cover}
-        animeEndChapter={coverage?.endChapter}
-        pending={chaptersPending}
-        scrollRoot={scrollRoot}
-      />
+      <div
+        ref={chaptersRef}
+        tabIndex={-1}
+        aria-label={t("Chapters")}
+        className="scroll-mt-24 outline-none"
+      >
+        <ChapterList
+          chapters={langFiltered}
+          langs={langs}
+          selectedLang={selectedLang}
+          onSelectLang={setSelectedLang}
+          onRead={(chs, i) => onRead(chs, i, mangaMeta)}
+          mangaId={mangaId}
+          mangaTitle={detail?.title}
+          mangaCover={detail?.cover}
+          animeEndChapter={coverage?.endChapter}
+          pending={chaptersPending}
+          onRefresh={() => setChapterRefreshTick((n) => n + 1)}
+          scrollRoot={scrollRoot}
+        />
+      </div>
 
       {detail?.title && <MangaRecommendedRail title={detail.title} onOpen={onOpenManga} />}
 

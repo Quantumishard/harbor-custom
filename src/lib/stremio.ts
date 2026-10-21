@@ -13,7 +13,7 @@ export type User = {
   avatar?: string;
 };
 
-export type ExternalCwSource = "simkl" | "trakt";
+export type ExternalCwSource = "simkl" | "trakt" | "nuvio" | "publicmetadb";
 
 export type LibraryItem = {
   _id: string;
@@ -38,6 +38,8 @@ export type LibraryItem = {
   _ctime: string;
   _mtime: string;
   external?: ExternalCwSource;
+  /** Other canonical ids for the same title, used to merge and dismiss CW entries. */
+  altIds?: string[];
   isAnime?: boolean;
   upNext?: boolean;
   local?: boolean;
@@ -284,12 +286,14 @@ export async function saveStremioBookmark(
   authKey: string,
   id: string,
   input: { type?: string; name?: string; poster?: string },
+  strict = false,
 ): Promise<void> {
   const now = new Date().toISOString();
   let existing: LibraryItem | null;
   try {
     existing = await libraryGetOneStrict(authKey, id);
-  } catch {
+  } catch (error) {
+    if (strict) throw error;
     return;
   }
   if (existing) {
@@ -326,7 +330,11 @@ export async function saveStremioBookmark(
   await libraryPut(authKey, item as unknown as LibraryItem);
 }
 
-export async function removeStremioBookmark(authKey: string, id: string): Promise<void> {
+export async function removeStremioBookmark(
+  authKey: string,
+  id: string,
+  _strict = true,
+): Promise<void> {
   const existing = await libraryGetOneStrict(authKey, id);
   if (!existing || existing.removed) return;
   await libraryPut(authKey, {

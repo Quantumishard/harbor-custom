@@ -22,10 +22,20 @@ export function mikuEnergy(state: MusicAudioMeterState, trackId: string, connect
   const channels = data.channels.map(c => c.rmsDb).filter(Number.isFinite);
   if (!channels.length) return 0;
   const rms = Math.max(...channels);
-  if (rms < -55) return 0;
-  const bass = data.spectrumDb?.slice(0, 3).filter(db => Number.isFinite(db) && db > -119) ?? [];
+  const bands = data.spectrumDb?.filter(db => Number.isFinite(db) && db > -119) ?? [];
+  const bass = bands.slice(0, 3);
   const bassDb = bass.length ? bass.reduce((a, b) => a + b, 0) / bass.length : rms;
-  return Math.max(0, Math.min(1, ((rms + 55) / 45) * 0.65 + ((bassDb + 60) / 50) * 0.35));
+  // The per-channel RMS arrives with the decode-ahead stream (measured ~0.12 s early on
+  // Spotify, ~0.26 s on mpv), while the octave bands are re-timed to the playback clock
+  // on both paths: Spotify now holds its windows back, mpv slices its spectrum history
+  // by time-pos. Rebuild the broadband level from the bands so the nod follows what is
+  // audible. +9 dB covers an octave band averaging ~6 dB under the full band and a mono
+  // spectrum reading ~3 dB under the loudest channel, which is what this level matches.
+  const level = bands.length
+    ? 10 * Math.log10(bands.reduce((sum, db) => sum + 10 ** (db / 10), 0) / bands.length) + 9
+    : rms;
+  if (level < -55) return 0;
+  return Math.max(0, Math.min(1, ((level + 55) / 45) * 0.65 + ((bassDb + 60) / 50) * 0.35));
 }
 
 export const MIKU_ATLAS = { columns: 18, rows: 29, frames: 516, reachFrames: 41, tilts: 19 } as const;

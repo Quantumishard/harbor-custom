@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Eye, EyeOff } from "lucide-react";
-import { getViewedSeason } from "@/lib/season-view-pref";
 import { EpisodeJumper } from "@/components/episode-jumper";
 import { providerForModel } from "@/lib/ai-models";
 import { CrossSeasonResults } from "./series-episodes/cross-season-results";
@@ -18,10 +17,11 @@ import type { Meta } from "@/lib/cinemeta";
 import { episodeSearchVideos } from "@/lib/episode-search";
 import { getEpisodeProgress, resumeDefaultSeason } from "@/lib/episode-progress";
 import { scrollToDataEp } from "@/lib/episode-scroll";
+import { getViewedSeason } from "@/lib/season-view-pref";
 import { tmdbSeasonEpisodes, type Episode, type Season } from "@/lib/providers/tmdb";
-import { tmdbLanguageIso } from "@/lib/providers/tmdb/tmdb-client";
+import { effectiveTmdbLanguage, tmdbLanguageIso } from "@/lib/providers/tmdb/tmdb-client";
 import type { OrderedEpisode } from "@/lib/providers/tvdb-order";
-import { pickLocalizedText } from "@/lib/localized-text";
+import { pickPreferredEpisodeOverview, pickPreferredEpisodeTitle } from "@/lib/localized-text";
 import {
   PREFERRED_TEXT_SCORE,
   preferredVideoName,
@@ -31,6 +31,7 @@ import { useSettings } from "@/lib/settings";
 import { effectiveOrderProvider, tvdbPanelEnabled } from "@/lib/settings/episode-order";
 import { useTrakt } from "@/lib/trakt/provider";
 import { useSimkl } from "@/lib/simkl/provider";
+import { usePublicMetaDb } from "@/lib/publicmetadb/provider";
 import { useT } from "@/lib/i18n";
 import { EpisodeGridControls } from "./episode-grid-controls";
 import { EpisodeLayoutToggle } from "./episode-layout-toggle";
@@ -51,12 +52,15 @@ import { useEpisodeProgressMap } from "./series-episodes/use-episode-progress-ma
 import { useTvdbSeasonTypes } from "./series-episodes/use-tvdb-season-types";
 import { useSeriesTvdbStills } from "./series-episodes/use-series-tvdb-stills";
 import { TvdbOrderPanel } from "./series-episodes/tvdb-order-panel";
+import { SeasonExplorer } from "./season-explorer";
+import { useSeasonExplorerView } from "./use-season-explorer";
 
 export function SeriesEpisodes({
   meta,
   tvId,
   imdbId,
   seasons,
+  seasonPosters,
   lastEpisodeAir,
   scrollRef,
   cinemetaVideos,
@@ -68,6 +72,7 @@ export function SeriesEpisodes({
   tvId: number;
   imdbId: string | null;
   seasons: Season[];
+  seasonPosters?: Record<number, string>;
   lastEpisodeAir?: { seasonNumber: number; airDate: string | null };
   scrollRef: React.RefObject<HTMLElement | null>;
   cinemetaVideos?: NonNullable<Meta["videos"]>;
@@ -77,8 +82,11 @@ export function SeriesEpisodes({
 }) {
   const t = useT();
   const { settings, update } = useSettings();
+  const metadataLanguage = tmdbLanguageIso();
+  const seasonCacheKey = (season: number) => `${tvId}:${metadataLanguage}:${season}`;
   const { isConnected: traktConnected } = useTrakt();
   const { isConnected: simklConnected } = useSimkl();
+  const { isConnected: pmdbConnected } = usePublicMetaDb();
   const mwVersion = useSyncExternalStore(subscribeManualWatched, manualWatchedVersion);
   const [watchedMenu, setWatchedMenu] = useState<WatchedMenuTarget | null>(null);
   const [epSearch, setEpSearch] = useState("");
@@ -94,7 +102,14 @@ export function SeriesEpisodes({
     watched: boolean,
   ) => {
     e.preventDefault();
-    setWatchedMenu({ x: e.clientX, y: e.clientY, season, episode, watched });
+    setWatchedMenu({
+      x: e.clientX,
+      y: e.clientY,
+      season,
+      episode,
+      watched,
+      origin: e.currentTarget instanceof HTMLElement ? e.currentTarget : null,
+    });
   };
   const userPickedRef = useRef(false);
   const scrolledRef = useRef(false);
@@ -105,15 +120,21 @@ export function SeriesEpisodes({
   );
   const [episodes, setEpisodes] = useState<Episode[]>([]);
   const [loading, setLoading] = useState(true);
-  const { traktWatched, simklWatched } = useWatchedSets({
+  const { traktWatched, simklWatched, pmdbWatched } = useWatchedSets({
     traktConnected,
     simklConnected,
+    pmdbConnected,
     imdbId,
     metaId: meta.id,
   });
   const combinedWatched = useMemo(() => {
     const s = new Set<string>(stremioWatched ?? []);
     for (const k of simklWatched) s.add(k);
+    for (const k of pmdbWatched) {
+      if (!k.includes(":")) {
+        s.add(k);
+      }
+    }
     // Trakt answers with the whole account's history, not this show's.
     const mine = new Set<string>();
     if (imdbId) mine.add(`imdb:${imdbId}`);
@@ -126,12 +147,21 @@ export function SeriesEpisodes({
       if (!mine.has(k.slice(0, se))) continue;
       s.add(k.slice(se + 1));
     }
+    for (const k of pmdbWatched) {
+      if (k.includes(":")) {
+        const e = k.lastIndexOf(":");
+        const se = e > 0 ? k.lastIndexOf(":", e - 1) : -1;
+        if (se >= 0 && mine.has(k.slice(0, se))) {
+          s.add(k.slice(se + 1));
+        }
+      }
+    }
     const manual = manualEpisodeKeys(meta.id);
     for (const k of manual.watched) s.add(k);
     for (const k of manual.unwatched) s.delete(k);
     return s;
-  }, [stremioWatched, simklWatched, traktWatched, meta.id, imdbId, mwVersion]);
-  const cache = useRef<Map<number, Episode[]>>(new Map());
+  }, [stremioWatched, simklWatched, traktWatched, pmdbWatched, meta.id, imdbId, mwVersion]);
+  const cache = useRef<Map<string, Episode[]>>(new Map());
 
   const traktKey = imdbId ?? meta.id;
 
@@ -173,7 +203,13 @@ export function SeriesEpisodes({
     metaId: meta.id,
     preferCustomMeta: settings.preferCustomMetaAddon,
   });
-  const tvdbStills = useSeriesTvdbStills(imdbId, enrichedBase.length, settings.tvdbSeasonType);
+  const tvdbStills = useSeriesTvdbStills(
+    imdbId,
+    enrichedBase.length,
+    settings.tvdbSeasonType,
+    false,
+    !!settings.tvdbKey,
+  );
   const enrichedEpisodes = useMemo(() => {
     if (Object.keys(tvdbStills).length === 0) return enrichedBase;
     return enrichedBase.map((ep) => {
@@ -194,8 +230,13 @@ export function SeriesEpisodes({
     setSearchLoading(false);
   }, [meta.id, tvId]);
   useEffect(() => {
-    if (!(searchOpen && searching) && !(aiMode && !cinemetaVideos?.length)) return;
-    if (!settings.tmdbKey) return;
+    const wantsCatalog = (searchOpen && searching) || (aiMode && !cinemetaVideos?.length);
+    if (!wantsCatalog || !settings.tmdbKey) {
+      // Closing the search mid-fetch must not leave the AI form waiting on a
+      // catalog that nobody is loading any more.
+      setSearchLoading(false);
+      return;
+    }
     const pending = seasons
       .map((season) => season.seasonNumber)
       .filter((season) => season >= 1 && !searchedSeasonCache.current.has(season));
@@ -231,10 +272,33 @@ export function SeriesEpisodes({
     seasons,
     settings.tmdbKey,
   ]);
-  const searchVideos = useMemo(
-    () => episodeSearchVideos(cinemetaVideos, searchedEpisodes, enrichedEpisodes),
-    [cinemetaVideos, searchedEpisodes, enrichedEpisodes],
-  );
+  const searchVideos = useMemo(() => {
+    // The catalog has to index the titles the grid shows for those seasons, and
+    // that name is the preferred-language choice, not the raw TMDB string.
+    const localized = searchedEpisodes.map((ep) => {
+      const pref = preferredVideos.get(`${ep.seasonNumber}:${ep.episodeNumber}`);
+      const name =
+        pickPreferredEpisodeTitle(
+          [
+            { text: preferredVideoName(pref), score: PREFERRED_TEXT_SCORE },
+            { text: ep.name, language: ep.nameLanguage },
+          ],
+          [],
+          metadataLanguage,
+        ) ?? ep.name;
+      const overview =
+        pickPreferredEpisodeOverview(
+          [
+            { text: preferredVideoOverview(pref), score: PREFERRED_TEXT_SCORE },
+            { text: ep.overview, language: ep.overviewLanguage },
+          ],
+          [],
+          metadataLanguage,
+        ) ?? ep.overview;
+      return name === ep.name && overview === ep.overview ? ep : { ...ep, name, overview };
+    });
+    return episodeSearchVideos(cinemetaVideos, localized, enrichedEpisodes);
+  }, [cinemetaVideos, searchedEpisodes, enrichedEpisodes, preferredVideos, metadataLanguage]);
 
   const hiddenSet = useHiddenEpisodes(meta.id);
   const hideActive = settings.episodeHiding && !showHidden;
@@ -261,7 +325,7 @@ export function SeriesEpisodes({
     imdbId,
     meta.id,
     settings.tvdbKey,
-    tvdbPanelEnabled(settings),
+    tvdbPanelEnabled(settings) && !!settings.tvdbKey,
   );
   const orderTypesEff =
     settings.tmdbKey && orderTypes.length > 0
@@ -293,6 +357,9 @@ export function SeriesEpisodes({
     setActive,
     setOrderSeason,
     userPickedRef,
+    tmdbSeasonNameFallback:
+      settings.tvdbSeasonType === "aired" || settings.tvdbSeasonType === "official",
+    seasonPosters,
   });
   useEffect(() => {
     let cancelled = false;
@@ -300,8 +367,8 @@ export function SeriesEpisodes({
       tmdbSeasonEpisodes(settings.tmdbKey, tvId, season).then((eps) => {
         if (cancelled || eps.length === 0) return [];
         const m = cache.current;
-        m.delete(season);
-        m.set(season, eps);
+        m.delete(seasonCacheKey(season));
+        m.set(seasonCacheKey(season), eps);
         while (m.size > 2) {
           const oldest = m.keys().next().value;
           if (oldest === undefined) break;
@@ -309,7 +376,7 @@ export function SeriesEpisodes({
         }
         return eps;
       });
-    const cached = cache.current.get(active);
+    const cached = cache.current.get(seasonCacheKey(active));
     if (cached) {
       setEpisodes(cached);
       setLoading(false);
@@ -321,13 +388,17 @@ export function SeriesEpisodes({
         setLoading(false);
       });
     }
-    if (orderActive && orderSeasonEff !== active && !cache.current.has(orderSeasonEff)) {
+    if (
+      orderActive &&
+      orderSeasonEff !== active &&
+      !cache.current.has(seasonCacheKey(orderSeasonEff))
+    ) {
       void load(orderSeasonEff);
     }
     return () => {
       cancelled = true;
     };
-  }, [tvId, active, settings.tmdbKey, orderActive, orderSeasonEff]);
+  }, [tvId, active, settings.tmdbKey, orderActive, orderSeasonEff, metadataLanguage]);
   const orderedEpsRaw: OrderedEpisode[] = arcActive
     ? arc.episodes
     : ordering
@@ -335,13 +406,13 @@ export function SeriesEpisodes({
       : [];
   const orderedEps = useMemo(() => {
     // pickLocalizedText keys script tests by ISO-1 ("ko"), not TVDB codes ("kor").
-    const lang = tmdbLanguageIso();
+    const lang = metadataLanguage;
     const airedLike =
       orderActive &&
       (settings.tvdbSeasonType === "aired" || settings.tvdbSeasonType === "official");
     const tmdbByKey = new Map<string, Episode>();
     if (airedLike) {
-      for (const e of cache.current.get(orderSeasonEff) ?? []) {
+      for (const e of cache.current.get(seasonCacheKey(orderSeasonEff)) ?? []) {
         tmdbByKey.set(`${e.seasonNumber}:${e.episodeNumber}`, e);
       }
     }
@@ -351,26 +422,46 @@ export function SeriesEpisodes({
         : undefined;
       const pref = preferredVideos.get(`${ep.seasonNumber}:${ep.episodeNumber}`);
       const name =
-        pickLocalizedText(
+        pickPreferredEpisodeTitle(
           [
             { text: preferredVideoName(pref), score: PREFERRED_TEXT_SCORE },
-            { text: ep.name },
-            { text: ep.nameEn ?? "" },
-            { text: tmdbEp?.name ?? "" },
+            { text: ep.name, language: ep.nameLanguage },
+            { text: ep.nameEn, language: ep.nameEnLanguage },
           ],
-          { forName: true, lang },
+          [{ text: tmdbEp?.name, language: tmdbEp?.nameLanguage }],
+          lang,
         ) ?? ep.name;
       const overview =
-        pickLocalizedText(
+        pickPreferredEpisodeOverview(
           [
             { text: preferredVideoOverview(pref), score: PREFERRED_TEXT_SCORE },
-            { text: ep.overview },
-            { text: ep.overviewEn ?? "" },
-            { text: tmdbEp?.overview ?? "" },
+            { text: ep.overview, language: ep.overviewLanguage },
+            { text: ep.overviewEn, language: ep.overviewEnLanguage },
           ],
-          { lang },
+          [{ text: tmdbEp?.overview, language: tmdbEp?.overviewLanguage }],
+          lang,
         ) ?? ep.overview;
-      let next = { ...ep, name, overview };
+      let next = {
+        ...ep,
+        name,
+        overview,
+        nameLanguage:
+          name === ep.name
+            ? ep.nameLanguage
+            : name === tmdbEp?.name
+              ? tmdbEp.nameLanguage
+              : name === ep.nameEn
+                ? ep.nameEnLanguage
+                : "und",
+        overviewLanguage:
+          overview === ep.overview
+            ? ep.overviewLanguage
+            : overview === tmdbEp?.overview
+              ? tmdbEp.overviewLanguage
+              : overview === ep.overviewEn
+                ? ep.overviewEnLanguage
+                : "und",
+      };
       if (ep.imdbRating == null) {
         const r = imdbRatings.get(`${ep.seasonNumber}:${ep.episodeNumber}`);
         if (r != null && r > 0) next = { ...next, imdbRating: r };
@@ -384,6 +475,8 @@ export function SeriesEpisodes({
     orderSeasonEff,
     settings.tvdbSeasonType,
     preferredVideos,
+    metadataLanguage,
+    tvId,
   ]);
   const visibleOrderedEps = useMemo(
     () =>
@@ -411,6 +504,7 @@ export function SeriesEpisodes({
     traktWatched,
     stremioWatched,
     simklWatched,
+    pmdbWatched,
     mwVersion,
     settings,
   });
@@ -426,8 +520,40 @@ export function SeriesEpisodes({
     [enrichedEpisodes],
   );
 
+  const explorerType = orderActive ? settings.tvdbSeasonType : "aired";
+  const showExplorer =
+    settings.tvdbSeasonExplorer !== false &&
+    !arcActive &&
+    picker.items.length > 0 &&
+    !["absolute", "tvdbabsolute"].includes(explorerType);
+
+  const explorer = useSeasonExplorerView({
+    metaId: meta.id,
+    imdbId,
+    tvdbKey: settings.tvdbKey,
+    tmdbKey: settings.tmdbKey,
+    tmdbTvId: tvId,
+    seasonPosters,
+    titlePoster: meta.poster,
+    seasonType: explorerType === "aired" ? "official" : explorerType,
+    lang: effectiveTmdbLanguage(),
+    items: picker.items,
+    activeKey: picker.activeKey,
+    enabled: showExplorer,
+    allowProxy: false,
+  });
+
   return (
     <div data-episodes className="flex scroll-mt-24 flex-col gap-6">
+      {showExplorer && (
+        <SeasonExplorer
+          key={`${meta.id}:${source}:${settings.tvdbSeasonType}`}
+          data={explorer}
+          background={meta.background}
+          activeKey={picker.activeKey}
+          onSelect={picker.onSelect}
+        />
+      )}
       <div className="flex items-start justify-between gap-4">
         <h3 className="shrink-0 pt-1 text-[22px] font-medium tracking-tight text-ink">
           {t("Episodes")}
@@ -483,7 +609,7 @@ export function SeriesEpisodes({
           />
           {panelActive ? (
             <TvdbOrderPanel
-              items={picker.items}
+              items={explorer.items}
               activeKey={picker.activeKey}
               onSelect={picker.onSelect}
               orderTypes={orderTypesEff}
@@ -493,7 +619,7 @@ export function SeriesEpisodes({
           ) : (
             (picker.items.length > 1 || arcAvailable) && (
               <SeasonArcPicker
-                items={picker.items}
+                items={explorer.items}
                 activeKey={picker.activeKey}
                 onSelect={picker.onSelect}
                 mode={arcAvailable ? mode : undefined}
@@ -535,6 +661,7 @@ export function SeriesEpisodes({
               traktWatched={traktWatched}
               stremioWatched={stremioWatched}
               simklWatched={simklWatched}
+              pmdbWatched={pmdbWatched}
               cinemetaVideos={cinemetaVideos}
               seriesImdbId={imdbId}
               onContextMenu={openWatchedMenu}
@@ -583,6 +710,10 @@ export function SeriesEpisodes({
                       stremioWatched,
                       undefined,
                       simklWatched,
+                      undefined,
+                      undefined,
+                      undefined,
+                      pmdbWatched,
                     )
                   }
                   thumbnailFor={(ep) =>

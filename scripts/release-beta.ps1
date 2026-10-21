@@ -5,6 +5,19 @@
     pwsh -File scripts/release-beta.ps1                  # build + verify + sign + stage
     pwsh -File scripts/release-beta.ps1 -Publish         # ... and publish to the beta channel
     pwsh -File scripts/release-beta.ps1 -SkipApp         # reuse the existing harbor.exe
+    pwsh -File scripts/release-beta.ps1 -Channel stable -Publish   # publish to the stable channel
+
+  Or through pnpm for a plain run:  pnpm release:beta  /  pnpm release:stable.
+  For -Publish or other switches call the script directly, so no literal "--" can reach
+  PowerShell:  pwsh -File scripts/release-beta.ps1 -Publish
+
+  If the updater key is protected by a password, set TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+  first; without it the signer stops and prompts interactively, which hangs a script.
+
+  The Shipyard installer is staged twice: as Harbor_<version>_x64-installer.exe, the name the
+  release API parses, and as harbor-shipyard-v<version>-<channel>.exe for identification.
+  installer/changelog/<version>-changelog.json must exist with this channel's notes, or the
+  script refuses to build the release.
 
   Mac artifacts are optional. Drop Harbor_<version>_aarch64.app.tar.gz(.sig) and
   Harbor_<version>_aarch64.dmg into the staging folder before -Publish to include them.
@@ -21,6 +34,27 @@ $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
 
+# No staged extension runtime means this release ships without extension support. The layer's
+# sources are tracked while its jars are gitignored, so a jarless checkout looks "present but
+# broken" to capstan-stage and it stops when sh cannot fetch the jars. Point it at a path that
+# does not exist so the build takes the documented no-layer path instead.
+if (-not (Test-Path -LiteralPath 'src-tauri/resources/capstan/capstan.jar')) {
+  if (-not $env:HARBOR_CAPSTAN_OPTIONAL) {
+    Write-Host 'No extension runtime staged; building without extension support (HARBOR_CAPSTAN_OPTIONAL=1).' -ForegroundColor Yellow
+    $env:HARBOR_CAPSTAN_OPTIONAL = '1'
+  }
+  $noLayer = Join-Path $env:TEMP 'harbor-no-capstan-layer'
+  Remove-Item -LiteralPath $noLayer -Recurse -Force -ErrorAction SilentlyContinue
+  $env:HARBOR_CAPSTAN_SRC = $noLayer
+}
+
+# No staged game engine means this build ships tab-only games, which the payload script would
+# otherwise refuse. Mirror the capstan fallback.
+if (-not (Test-Path -LiteralPath 'src-tauri/resources/pokemon-engine/Harbor.PokemonEngine.exe') -and -not $env:HARBOR_POKEMON_OPTIONAL) {
+  Write-Host 'No game engine staged; shipping tab-only games (HARBOR_POKEMON_OPTIONAL=1).' -ForegroundColor Yellow
+  $env:HARBOR_POKEMON_OPTIONAL = '1'
+}
+
 function Step($text) { Write-Host "`n=== $text ===" -ForegroundColor Cyan }
 function Fail($text) { throw $text }
 function Run($file, $arguments) {
@@ -30,6 +64,7 @@ function Run($file, $arguments) {
 
 $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
 if ($version -notmatch '^\d+\.\d+\.\d+$') { Fail "Bad version in tauri.conf.json: $version" }
+$nameChannel = if ($Channel -eq 'stable') { 'stable' } else { 'beta' }
 Step "Harbor $version -> $Channel"
 
 Step 'Version consistency'
@@ -48,7 +83,7 @@ foreach ($check in $checks) {
   if ($found.Groups[1].Value -ne $version) { Fail "$($check.File) is $($found.Groups[1].Value), expected $version" }
   Write-Host "  ok  $($check.File)"
 }
-foreach ($lock in @(@{ File = 'src-tauri/Cargo.lock'; Name = 'harbor' }, @{ File = 'installer/src-tauri/Cargo.lock'; Name = 'harbor-setup' })) {
+foreach ($lock in @(@{ File = 'src-tauri/Cargo.lock'; Name = 'harbor' }, @{ File = 'installer/src-tauri/Cargo.lock'; Name = 'harbor-shipyard' })) {
   $raw = Get-Content $lock.File -Raw
   $found = [regex]::Match($raw, "(?ms)name\s*=\s*""$($lock.Name)""\s*\r?\nversion\s*=\s*""([^""]+)""")
   if (-not $found.Success) { Fail "No $($lock.Name) entry in $($lock.File)" }
@@ -56,9 +91,26 @@ foreach ($lock in @(@{ File = 'src-tauri/Cargo.lock'; Name = 'harbor' }, @{ File
   Write-Host "  ok  $($lock.File) ($($lock.Name))"
 }
 
+Step 'Installer changelog'
+$changelogFile = "installer/changelog/$version-changelog.json"
+if (-not (Test-Path -LiteralPath $changelogFile)) {
+  Fail "No $changelogFile. Add the patch notes for $version before releasing."
+}
+$changelog = Get-Content -LiteralPath $changelogFile -Raw | ConvertFrom-Json
+$note = $changelog.notes.PSObject.Properties[$version]
+$changelogChannel = if ($changelog.channel) { $changelog.channel } else { 'stable' }
+if (-not $note -or $changelogChannel -ne $nameChannel -or -not $note.Value.title -or -not $note.Value.sections) {
+  Fail "$changelogFile must hold notes for $version, channel $nameChannel, with a title and sections."
+}
+Write-Host "  ok  $changelogFile"
+
 if (-not $SkipApp) {
   Step 'App build'
-  Run 'pnpm' @('tauri', 'build')
+  # The frontend reads HARBOR_CHANNEL at build time; only "stable" clears the Beta label the
+  # app shows in About. Tie the stamp to the channel this release is cut for.
+  $env:HARBOR_CHANNEL = $Channel
+  Write-Host "  channel stamp: $Channel"
+  Run 'pnpm' @('tauri', 'build', '--no-bundle')
 } else {
   Step 'App build skipped'
 }
@@ -73,14 +125,19 @@ Run 'node' @('scripts/verify-managed-payload.mjs')
 
 Step 'Managed installer'
 Run 'cargo' @('build', '--manifest-path', 'installer/src-tauri/Cargo.toml', '--release',
-  '--features', 'tauri/custom-protocol', '--bin', 'harbor-setup', '--locked')
+  '--features', 'tauri/custom-protocol', '--bin', 'harbor-shipyard', '--locked')
 Run 'node' @('scripts/verify-managed-payload.mjs', '--embedded')
+
+Step 'Name the build'
+$namedShipyard = "installer/src-tauri/target/release/harbor-shipyard-v${version}-${nameChannel}.exe"
+Copy-Item -LiteralPath 'installer/src-tauri/target/release/harbor-shipyard.exe' -Destination $namedShipyard -Force
+Write-Host "  $namedShipyard"
 
 Step 'Executable versions'
 $exes = @(
   'src-tauri/target/release/harbor.exe',
   'installer/src-tauri/target/release/harbor-uninstall.exe',
-  'installer/src-tauri/target/release/harbor-setup.exe'
+  'installer/src-tauri/target/release/harbor-shipyard.exe'
 )
 foreach ($exe in $exes) {
   if (-not (Test-Path -LiteralPath $exe)) { Fail "Missing $exe" }
@@ -92,11 +149,14 @@ foreach ($exe in $exes) {
 Step 'Stage artifacts'
 $stage = Join-Path $StageRoot $version
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
-$setup = "src-tauri/target/release/bundle/nsis/Harbor_${version}_x64-setup.exe"
-if (-not (Test-Path -LiteralPath $setup)) { Fail "Missing NSIS bundle $setup" }
+$shipyard = 'installer/src-tauri/target/release/harbor-shipyard.exe'
+if (-not (Test-Path -LiteralPath $shipyard)) { Fail "Missing $shipyard" }
 $staged = @{
-  "Harbor_${version}_x64-setup.exe"     = $setup
-  "Harbor_${version}_x64-installer.exe" = 'installer/src-tauri/target/release/harbor-setup.exe'
+  # The release API reads version and platform from this name, so the upload keeps it.
+  "Harbor_${version}_x64-installer.exe"            = $shipyard
+  # The channel-named copy marks the channel the folder was cut for and names the GitHub
+  # asset. publish-release.mjs only uploads the Harbor_<version>_* name.
+  "harbor-shipyard-v${version}-${nameChannel}.exe" = $namedShipyard
 }
 foreach ($name in $staged.Keys) {
   Copy-Item -LiteralPath $staged[$name] -Destination (Join-Path $stage $name) -Force
@@ -107,11 +167,20 @@ Step 'Sign (each exe gets its own signature)'
 $keyPath = Join-Path $env:USERPROFILE '.tauri\harbor-updater.key'
 if (-not (Test-Path -LiteralPath $keyPath)) { Fail "No updater signing key at $keyPath" }
 $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content -LiteralPath $keyPath -Raw).Trim()
-if (-not $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) { $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = '' }
+# PowerShell 5.1 drops empty arguments and removes empty environment variables, so a
+# passwordless key can never reach the signer as "no password given": it prompts
+# interactively and a script hangs. "--password=" carries an explicit empty password.
+# A key protected by a real password must have TAURI_SIGNING_PRIVATE_KEY_PASSWORD set;
+# without it the signer hangs at the same prompt.
+$signArgs = if ($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) {
+  @('tauri', 'signer', 'sign')
+} else {
+  @('tauri', 'signer', 'sign', '--password=')
+}
 foreach ($name in $staged.Keys) {
   $target = Join-Path $stage $name
   Remove-Item -LiteralPath "$target.sig" -Force -ErrorAction SilentlyContinue
-  Run 'pnpm' @('tauri', 'signer', 'sign', $target)
+  Run 'pnpm' @($signArgs + $target)
   if (-not (Test-Path -LiteralPath "$target.sig")) { Fail "Signing produced no $name.sig" }
   Write-Host "  signed $name"
 }

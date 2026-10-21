@@ -1,5 +1,6 @@
 use super::super::MusicTrack;
 use super::{devices, player, Account, SpotifyState};
+use librespot_core::SpotifyUri;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -36,6 +37,32 @@ impl SpotifyState {
         self.paused.store(false, Ordering::SeqCst);
         self.paused_for_video.store(false, Ordering::SeqCst);
         Ok(())
+    }
+
+    /// Warm the next track's decoder while the current one is still playing. librespot plays a
+    /// preloaded track without a load gap, so the queue advance stops waiting on the network.
+    pub async fn preload(&self, track: MusicTrack) -> Result<bool, String> {
+        if self.remote_device().is_some() {
+            return Ok(false);
+        }
+        if track.connector_id.as_deref() != Some("spotify") {
+            return Ok(false);
+        }
+        let Some(source_id) = track.source_id.as_deref() else {
+            return Ok(false);
+        };
+        let Ok(uri) = SpotifyUri::from_uri(source_id) else {
+            return Ok(false);
+        };
+        let slot = self.runtime.lock().await;
+        let Some(runtime) = slot
+            .as_ref()
+            .filter(|runtime| !runtime.session.is_invalid())
+        else {
+            return Ok(false);
+        };
+        runtime.audio.player.preload(uri);
+        Ok(true)
     }
 
     pub async fn set_paused(&self, paused: bool) -> Result<(), String> {
@@ -136,6 +163,7 @@ impl SpotifyState {
         let slot = self.runtime.lock().await;
         if let Some(runtime) = slot.as_ref() {
             runtime.audio.player.stop();
+            runtime.audio.meter.reset();
             *runtime.audio.current.write() = None;
         }
         self.paused.store(true, Ordering::SeqCst);

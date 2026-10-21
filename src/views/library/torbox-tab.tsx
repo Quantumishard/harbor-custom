@@ -1,6 +1,6 @@
 import { isPlayableVideoPath } from "@/lib/media-file";
 import { ChevronLeft, Folder, LoaderCircle, Play, RefreshCw } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import torboxLogo from "@/assets/addon-logos/torbox.png";
 import {
   listTorboxCloud,
@@ -24,10 +24,14 @@ export function TorboxTab() {
   const [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
   const key = settings.tbKey?.trim() || "";
+  const playRequest = useRef<AbortController | null>(null);
 
   useEffect(() => {
     setItems([]);
     setSelected(null);
+    setQuery("");
+    setError("");
+    setPlaying(null);
     if (!key) {
       setLoading(false);
       return;
@@ -46,7 +50,11 @@ export function TorboxTab() {
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
       });
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      playRequest.current?.abort();
+      playRequest.current = null;
+    };
   }, [key, revision]);
 
   const files = useMemo(
@@ -62,11 +70,14 @@ export function TorboxTab() {
   );
   const play = async (item: CloudItem, file: CloudFile) => {
     const id = `${item.kind}:${item.id}:${file.id}`;
+    playRequest.current?.abort();
     const controller = new AbortController();
+    playRequest.current = controller;
     setPlaying(id);
     setError("");
     try {
       const url = await torboxCloudLink(key, item, file, controller.signal);
+      if (controller.signal.aborted) return;
       openPlayer({
         meta: { id: `torbox:${id}`, type: "movie", name: file.name },
         url,
@@ -77,9 +88,13 @@ export function TorboxTab() {
         suppressCloudSync: true,
       });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not play this file");
+      if (!controller.signal.aborted)
+        setError(cause instanceof Error ? cause.message : "Could not play this file");
     } finally {
-      setPlaying(null);
+      if (playRequest.current === controller) {
+        playRequest.current = null;
+        setPlaying(null);
+      }
     }
   };
 
@@ -130,7 +145,7 @@ export function TorboxTab() {
           title="Refresh TorBox cloud"
           className="rounded-full bg-elevated p-2.5 text-ink"
         >
-          <RefreshCw size={17} className={loading ? "harbor-functional-spin" : ""} />
+          <RefreshCw size={17} className={loading ? "animate-spin" : ""} />
         </button>
       </div>
       <input
@@ -147,7 +162,7 @@ export function TorboxTab() {
       )}
       {loading && (
         <div className="flex items-center gap-2 text-ink-muted">
-          <LoaderCircle size={18} className="harbor-functional-spin" />
+          <LoaderCircle size={18} className="animate-spin" />
           Loading TorBox cloud…
         </div>
       )}
@@ -163,22 +178,17 @@ export function TorboxTab() {
           const playable = selected
             ? []
             : item.files.filter((candidate) => isPlayableVideoPath(candidate.name));
+          const target = file ?? (playable.length === 1 ? playable[0] : null);
           return (
             <button
               key={selected ? file!.id : `${item.kind}:${item.id}`}
               type="button"
-              onClick={() =>
-                file
-                  ? void play(item, file)
-                  : playable.length === 1
-                    ? void play(item, playable[0])
-                    : (setSelected(item), setQuery(""))
-              }
+              onClick={() => (target ? void play(item, target) : (setSelected(item), setQuery("")))}
               className="flex items-center gap-4 rounded-xl bg-elevated/40 px-4 py-3 text-left text-ink transition-colors hover:bg-elevated"
             >
-              {playing === `${item.kind}:${item.id}:${file?.id}` ? (
-                <LoaderCircle size={20} className="shrink-0 harbor-functional-spin" />
-              ) : file || playable.length === 1 ? (
+              {playing === `${item.kind}:${item.id}:${target?.id}` ? (
+                <LoaderCircle size={20} className="shrink-0 animate-spin" />
+              ) : target ? (
                 <Play size={20} className="shrink-0" />
               ) : (
                 <Folder size={20} className="shrink-0" />

@@ -60,10 +60,17 @@ export type AnilistFranchiseNode = {
 };
 
 const edgeCache = new Map<number, RawEdge[]>();
+// A failed fetch is a miss, not an answer. Caching it in `edgeCache` would make
+// a transient 429 look like "this title has no relations" for the whole session,
+// so failures get a short retry window and then the next caller tries again.
+const edgeFailures = new Map<number, number>();
+const EDGE_FAILURE_TTL_MS = 60_000;
 
 async function fetchEdges(anilistId: number): Promise<RawEdge[]> {
   const cached = edgeCache.get(anilistId);
   if (cached) return cached;
+  const failedAt = edgeFailures.get(anilistId);
+  if (failedAt != null && Date.now() - failedAt < EDGE_FAILURE_TTL_MS) return [];
   try {
     const data = await anilistRequest<RelationsResponse>(
       RELATIONS_QUERY,
@@ -73,9 +80,10 @@ async function fetchEdges(anilistId: number): Promise<RawEdge[]> {
     );
     const edges = data?.Media?.relations?.edges ?? [];
     edgeCache.set(anilistId, edges);
+    edgeFailures.delete(anilistId);
     return edges;
   } catch {
-    edgeCache.set(anilistId, []);
+    edgeFailures.set(anilistId, Date.now());
     return [];
   }
 }

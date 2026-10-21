@@ -125,7 +125,7 @@ function normalize(s: string): string {
   return s
     .toLowerCase()
     .normalize("NFKD")
-    .replace(/[\s\.\-_\(\)\[\]:;,!?'"‘’“”–—]+/g, "");
+    .replace(/[\s.\-_(\)[\]:;,!?'"‘’“”–—]+/g, "");
 }
 
 function buildLibraryStream(slug: DebridSlug, entry: LibraryEntry, m: MatchInfo): Stream {

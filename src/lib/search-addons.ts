@@ -4,6 +4,9 @@ import { safeFetch } from "./safe-fetch";
 
 const CAP_PER_CATALOG = 20;
 const MAX_CATALOGS = 24;
+// AIOMetadata caps its own search at 12-30 per catalog (TMDB and TVDB 25, Kitsu and Simkl 20, IMDb
+// suggestions and LumiereDB 12). A group merges every search catalog of the addon before the cap is
+// applied, so this is a ceiling for that aggregate rather than a size any single response reaches.
 const AIOMETADATA_SEARCH_CAP = 100;
 
 function isAioMetadataAddon(id: string | undefined): boolean {
@@ -227,7 +230,10 @@ export async function searchAddonGroups(
   }
   const startedAt = Date.now();
   const remainingBudget = () => ALL_GROUPS_BUDGET_MS - (Date.now() - startedAt);
-  const groups = await mapLimit(entries, GROUP_CONCURRENCY, async ({ addon, targets }): Promise<AddonResultGroup> => {
+  const groups = await mapLimit(
+    entries,
+    GROUP_CONCURRENCY,
+    async ({ addon, targets }): Promise<AddonResultGroup> => {
       const origin = addonOrigin(addon);
       const cap = isAioMetadataAddon(origin.id) ? AIOMETADATA_SEARCH_CAP : CAP_PER_GROUP;
       const base = origin.base;
@@ -290,6 +296,7 @@ export async function searchAddonGroups(
         metas,
       });
       return group;
-  });
+    },
+  );
   return groups.filter((g) => g.metas.length > 0);
 }

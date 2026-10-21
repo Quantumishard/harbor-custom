@@ -81,3 +81,23 @@ export function applySuwayomiSourceOrder<T extends { id: string }>(
   });
   return out;
 }
+
+/** A comparator that sorts items by a persisted source order: ids named in
+ *  `order` come first, in that order, and everything else falls back to the
+ *  given name comparison (alphabetical). Used where the sources arrive as
+ *  groups rather than a list, e.g. the per-source search results. */
+export function bySuwayomiSourceOrder<T>(
+  order: string[],
+  idOf: (item: T) => string,
+  nameOf: (item: T) => string,
+): (a: T, b: T) => number {
+  const rank = new Map(order.map((id, i) => [id, i]));
+  return (a, b) => {
+    const ra = rank.get(idOf(a));
+    const rb = rank.get(idOf(b));
+    if (ra != null && rb != null) return ra - rb;
+    if (ra != null) return -1;
+    if (rb != null) return 1;
+    return nameOf(a).localeCompare(nameOf(b));
+  };
+}

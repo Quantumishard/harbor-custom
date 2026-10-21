@@ -59,7 +59,7 @@ test("unmount cancels state updates and avoids starting unneeded enrichment", as
 test("offscreen rails do not fetch until near the scroll viewport", () => {
   const fixture = railFixture(railSource);
   assert.deepEqual(fixture.requests, []);
-  assert.equal(fixture.options().rootMargin, "1000px 0px");
+  assert.equal(fixture.options().rootMargin, "2400px 0px");
   fixture.intersect(true);
   assert.deepEqual(fixture.requests, ["fixture"]);
   fixture.cleanup();
@@ -69,7 +69,7 @@ test("parked Discover does not fetch or paginate rails", () => {
   const fixture = railFixture(railSource, false);
   fixture.intersect(true);
   assert.deepEqual(fixture.requests, []);
-  const tree = fixture.render({ deduped: { fixture: [{ id: "one" }] } });
+  const tree = fixture.render({ items: [{ id: "one" }] });
   assert.equal(tree.props.children.props.onEndReached, undefined);
   fixture.cleanup();
 });
@@ -80,7 +80,7 @@ test("focus activates a row; leaving the viewport does not discard its items", (
   fixture.render();
   assert.deepEqual(fixture.requests, ["fixture"]);
   const items = [{ id: "one" }];
-  fixture.render({ deduped: { fixture: items } });
+  fixture.render({ items });
   fixture.intersect(false);
   const tree = fixture.render();
   assert.equal(tree.props.children.props.items, items);

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 
-const RELAY = "https://app.harbor.site";
+const RELAY = "https://app.harborcommunity.site";
 const DISCORD_URL_LIMIT = 512;
 
 function loadDeepLink() {
@@ -95,6 +95,21 @@ test("a watch party keeps its own activity instead of the listening one", () => 
   assert.ok(
     presenceSource.includes("if (music && config.showMusic && !party &&"),
     "the music branch must yield to an active watch party",
+  );
+});
+
+test("a paused song clears its presence after a short grace period", () => {
+  assert.ok(
+    presenceSource.includes("MUSIC_PAUSED_HIDE_MS"),
+    "the paused presence must expire instead of persisting",
+  );
+  assert.ok(
+    presenceSource.includes("config.hideMusicWhenPaused"),
+    "the expiry must be controlled by the hideMusicWhenPaused setting",
+  );
+  assert.ok(
+    presenceSource.includes("musicHideTimer"),
+    "a timer must clear the presence without another state change",
   );
 });
 

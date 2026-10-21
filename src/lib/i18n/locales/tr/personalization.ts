@@ -1248,10 +1248,10 @@ const personalization: Record<string, string> = {
   "This list is full ({max} items)": "Bu liste dolu ({max} öğe)",
   "This member has hidden their showcase, activity and friends from public view.":
     "Bu üye; vitrinini, etkinliğini ve arkadaşlarını herkese kapattı.",
-  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Setup. Harbor closes, the installer finishes, then Harbor reopens.":
-    "Bu güncelleme Harbor'ın yerleşik oynatıcılarını ve araçlarını da değiştirdiğinden Harbor Setup üzerinden yüklenir. Harbor kapanır, yükleyici işlemi tamamlar ve ardından Harbor yeniden açılır.",
-  "This one installs through Harbor Setup, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
-    "Bu güncelleme Harbor Setup üzerinden yüklenir, ancak güncelleme manifestinde buna ait imza yok. Harbor doğrulayamadığı bir yükleyiciyi çalıştırmaz. İndirip kendiniz çalıştırın.",
+  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Shipyard. Harbor closes, the installer finishes, then Harbor reopens.":
+    "Bu güncelleme Harbor'ın yerleşik oynatıcılarını ve araçlarını da değiştirdiğinden Harbor Shipyard üzerinden yüklenir. Harbor kapanır, yükleyici işlemi tamamlar ve ardından Harbor yeniden açılır.",
+  "This one installs through Harbor Shipyard, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
+    "Bu güncelleme Harbor Shipyard üzerinden yüklenir, ancak güncelleme manifestinde buna ait imza yok. Harbor doğrulayamadığı bir yükleyiciyi çalıştırmaz. İndirip kendiniz çalıştırın.",
   "This replaces your current Harbor setup (theme, home layout, settings, addons, profiles, and more) with the {n} saved entries in this file. Your Stremio sign-in stays as is. Harbor reloads when it finishes.":
     "Bu işlem mevcut Harbor kurulumunuzu (tema, ana sayfa düzeni, ayarlar, eklentiler, profiller ve daha fazlası) bu dosyadaki {n} kayıtlı öğeyle değiştirir. Stremio oturumunuz değişmez. İşlem tamamlandığında Harbor yeniden yüklenir.",
   "This score only appears on cards.": "Bu puan yalnızca kartlarda görünür.",
@@ -1729,7 +1729,7 @@ const personalization: Record<string, string> = {
   "https:// API or site URL": "https:// API veya site URL'si",
   "https://posters.example.com or a pattern with {id}":
     "https://posters.example.com veya {id} içeren bir desen",
-  "https://sync.harbor.site": "https://sync.harbor.site",
+  "https://sync.harborcommunity.site": "https://sync.harborcommunity.site",
   "in Harbor settings.": "alanına yazılır.",
   "in {time}": "{time} sonra",
   "jina_...": "jina_...",

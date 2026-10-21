@@ -99,3 +99,17 @@ export function pickDesiredSubtitleTrack<T extends SelectableSubtitleTrack>(
   });
   return eligible[0];
 }
+
+/**
+ * True when the track preferences land on an embedded track. Autoloaded external
+ * candidates must then not replace it automatically, even when they measure better.
+ */
+export function desiredSubtitleIsEmbedded<T extends SelectableSubtitleTrack>(
+  tracks: readonly T[],
+  preferredLanguages: string[],
+  preferEmbedded: boolean,
+): boolean {
+  if (!preferEmbedded) return false;
+  const desired = pickDesiredSubtitleTrack([...tracks], preferredLanguages, preferEmbedded);
+  return desired != null && desired.external !== true;
+}

@@ -1,5 +1,5 @@
 import { Bookmark, RefreshCw } from "lucide-react";
-import type { RefObject } from "react";
+import { memo, useCallback, type RefObject } from "react";
 import { type Meta } from "@/lib/cinemeta";
 import { useSettings } from "@/lib/settings";
 import { useT } from "@/lib/i18n";
@@ -17,14 +17,16 @@ export type Tab =
   | "media-servers"
   | "torbox"
   | "lists"
+  | "groups"
   | "favorites"
   | "trakt"
   | "anilist"
   | "simkl"
+  | "publicmetadb"
   | "letterboxd"
   | "mal";
 
-export type TypeKey = "all" | "movie" | "series";
+export type TypeKey = "all" | "movie" | "series" | "collections";
 
 export type WatchlistMerged = {
   key: string;
@@ -69,6 +71,7 @@ export function FilterBar({
   counts,
   trailing,
   hideTypePills,
+  collections,
 }: {
   type: TypeKey;
   setType: (t: TypeKey) => void;
@@ -77,6 +80,8 @@ export function FilterBar({
   counts: { all: number; movie: number; series: number };
   trailing?: React.ReactNode;
   hideTypePills?: boolean;
+  /** When set, a Collections pill is shown with this count. */
+  collections?: number;
 }) {
   const t = useT();
   return (
@@ -92,6 +97,12 @@ export function FilterBar({
           <FilterPill active={type === "series"} onClick={() => setType("series")}>
             {t("Shows")} <span className="ms-1 text-ink-subtle">{counts.series}</span>
           </FilterPill>
+          {collections != null && (
+            <FilterPill active={type === "collections"} onClick={() => setType("collections")}>
+              {t("Collections")}
+              {collections > 0 && <span className="ms-1 text-ink-subtle">{collections}</span>}
+            </FilterPill>
+          )}
         </div>
       )}
       <input
@@ -252,11 +263,15 @@ export function GroupedGrid<
   onRemove,
   onRemoveLocal,
   scrollRef,
+  removeLabel,
+  removeOpensDialog,
 }: {
   groups: Array<{ label: string; items: T[] }>;
   onRemove?: (stremioId: string) => void;
   onRemoveLocal?: (localId: string) => void;
   scrollRef?: RefObject<HTMLElement | null>;
+  removeLabel?: string;
+  removeOpensDialog?: boolean;
 }) {
   const t = useT();
   return (
@@ -276,31 +291,29 @@ export function GroupedGrid<
               estimateRowHeight={300}
               getKey={(it) => it.key}
               renderItem={(it) => (
-                <WatchlistCard
+                <GroupedWatchlistCard
+                  removeLabel={removeLabel}
+                  removeOpensDialog={removeOpensDialog}
                   meta={it.meta}
-                  onRemove={
-                    onRemove && it.stremioId
-                      ? () => onRemove(it.stremioId as string)
-                      : onRemoveLocal && it.localId
-                        ? () => onRemoveLocal(it.localId as string)
-                        : undefined
-                  }
+                  stremioId={it.stremioId}
+                  localId={it.localId}
+                  onRemove={onRemove}
+                  onRemoveLocal={onRemoveLocal}
                 />
               )}
             />
           ) : (
             <Grid>
               {g.items.map((it) => (
-                <WatchlistCard
+                <GroupedWatchlistCard
                   key={it.key}
+                  removeLabel={removeLabel}
+                  removeOpensDialog={removeOpensDialog}
                   meta={it.meta}
-                  onRemove={
-                    onRemove && it.stremioId
-                      ? () => onRemove(it.stremioId as string)
-                      : onRemoveLocal && it.localId
-                        ? () => onRemoveLocal(it.localId as string)
-                        : undefined
-                  }
+                  stremioId={it.stremioId}
+                  localId={it.localId}
+                  onRemove={onRemove}
+                  onRemoveLocal={onRemoveLocal}
                 />
               ))}
             </Grid>
@@ -310,6 +323,38 @@ export function GroupedGrid<
     </div>
   );
 }
+
+const GroupedWatchlistCard = memo(function GroupedWatchlistCard({
+  meta,
+  stremioId,
+  localId,
+  onRemove,
+  onRemoveLocal,
+  removeLabel,
+  removeOpensDialog,
+}: {
+  meta: Meta;
+  stremioId?: string;
+  localId?: string;
+  onRemove?: (id: string) => void;
+  onRemoveLocal?: (id: string) => void;
+  removeLabel?: string;
+  removeOpensDialog?: boolean;
+}) {
+  const canRemove = !!((onRemove && stremioId) || (onRemoveLocal && localId));
+  const remove = useCallback(() => {
+    if (onRemove && stremioId) onRemove(stremioId);
+    else if (onRemoveLocal && localId) onRemoveLocal(localId);
+  }, [onRemove, onRemoveLocal, stremioId, localId]);
+  return (
+    <WatchlistCard
+      meta={meta}
+      onRemove={canRemove ? remove : undefined}
+      removeLabel={removeLabel}
+      removeOpensDialog={removeOpensDialog}
+    />
+  );
+});
 
 export function EmptyWatchlist({ connected }: { connected: boolean }) {
   const t = useT();

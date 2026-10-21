@@ -260,6 +260,11 @@ test("moviehash enrichment is independent of timing autosync and uses the late-u
   assert.match(autoloadSource, /error instanceof Error \? error\.name : "unknown"/);
 });
 
+test("autoloaded external candidates cannot override the embedded preference", () => {
+  assert.match(autoloadSource, /desiredSubtitleIsEmbedded\(/);
+  assert.match(autoloadSource, /!keepEmbedded\s*&&/);
+});
+
 test("delayed candidate preflight blocks structural autosync and an aligned result keeps it blocked", () => {
   const inferior = {
     external: true,
@@ -334,4 +339,13 @@ test("mpv autosync reuses retained prepared cues and paths", () => {
     mpvSource,
     /if \(sel\.prepared && sel\.externalFilename\) return sel\.externalFilename/,
   );
+});
+
+test("finished translations stay automatic and cannot take over a manual choice", () => {
+  // The deferred completion of a translating addon must not claim manual ownership,
+  // or it re-selects subtitles the viewer just turned off. Both engines re-add the
+  // finished file from their translation queue as automatic work.
+  for (const source of [mpvSource, html5Source]) {
+    assert.match(source, /attemptPendingTranslation = async[\s\S]{0,260}?["']automatic["']/);
+  }
 });

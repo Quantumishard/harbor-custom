@@ -771,10 +771,10 @@ const catalog10: Record<string, string> = {
   "This member has hidden their showcase, activity and friends from public view.":
     "이 회원은 쇼케이스, 활동 및 친구 목록을 공개하지 않습니다.",
   "This month": "이번 달",
-  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Setup. Harbor closes, the installer finishes, then Harbor reopens.":
-    "이 항목은 Harbor에 포함된 플레이어와 도구도 교체하므로 Harbor Setup을 통해 설치됩니다. Harbor가 종료되고 설치 프로그램이 작업을 마치면 다시 열립니다.",
-  "This one installs through Harbor Setup, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
-    "이 항목은 Harbor Setup을 통해 설치되지만 업데이트 매니페스트에 서명이 없습니다. Harbor는 확인할 수 없는 설치 프로그램을 실행하지 않습니다. 다운로드한 후 직접 실행하세요.",
+  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Shipyard. Harbor closes, the installer finishes, then Harbor reopens.":
+    "이 항목은 Harbor에 포함된 플레이어와 도구도 교체하므로 Harbor Shipyard을 통해 설치됩니다. Harbor가 종료되고 설치 프로그램이 작업을 마치면 다시 열립니다.",
+  "This one installs through Harbor Shipyard, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
+    "이 항목은 Harbor Shipyard을 통해 설치되지만 업데이트 매니페스트에 서명이 없습니다. Harbor는 확인할 수 없는 설치 프로그램을 실행하지 않습니다. 다운로드한 후 직접 실행하세요.",
   "This only takes a moment the first time.": "처음 한 번만 잠시 걸립니다.",
   "This opens Harbor to devices on your Wi-Fi. You can turn it off again in Settings.":
     "Wi-Fi의 다른 기기에서 Harbor에 접속할 수 있게 합니다. 설정에서 다시 끌 수 있습니다.",

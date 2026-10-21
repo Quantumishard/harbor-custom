@@ -9,6 +9,7 @@ const BASE = `${HARBOR_API_BASE}/api/imdb`;
 export type ParentalCategory = { category: string; severity: string };
 
 const titleCache = new Map<string, number | null>();
+const titleInflight = new Map<string, Promise<number | null>>();
 const parentalCache = new Map<string, ParentalCategory[]>();
 const parentalInflight = new Map<string, Promise<ParentalCategory[]>>();
 const EPISODE_RATINGS_TTL_MS = 60 * 60_000;
@@ -77,6 +78,14 @@ export function harborImdbEpisodesCached(seriesTt: string): Map<string, number> 
 export async function harborImdbTitle(tt: string): Promise<number | null> {
   if (!tt.startsWith("tt")) return null;
   if (titleCache.has(tt)) return titleCache.get(tt) ?? null;
+  const pending = titleInflight.get(tt);
+  if (pending) return pending;
+  const request = fetchTitleRating(tt).finally(() => titleInflight.delete(tt));
+  titleInflight.set(tt, request);
+  return request;
+}
+
+async function fetchTitleRating(tt: string): Promise<number | null> {
   try {
     const res = await fetch(`${BASE}/title/${tt}`);
     if (!res.ok) {

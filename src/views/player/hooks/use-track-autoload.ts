@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { PlayerBridge, PlayerSnapshot } from "@/lib/player/bridge";
 import { langScore, pickBestTrack, normalizeLang } from "@/lib/subtitles/language";
@@ -7,6 +7,8 @@ import { subtitleStreamDescriptor } from "@/lib/subtitles/provider-label";
 import { publishSubtitleSearch } from "@/components/player/subtitle-menu/subtitle-search-store";
 import { publishSubtitleContext } from "@/components/player/subtitle-menu/subtitle-context-store";
 import { readPlayerPrefs, type PerShowPrefs } from "@/lib/player-prefs";
+import { playbackSourceKey, readActualPlaybackFor } from "@/lib/playback-history";
+import { playbackAudioChoice, selectPlaybackAudio } from "@/lib/player/audio-choice";
 import { tmdbImdbId } from "@/lib/providers/tmdb";
 import { originalLanguageSubtitlePolicy } from "@/lib/player/original-language-subtitles";
 import {
@@ -27,6 +29,7 @@ import {
 } from "@/lib/subtitles/autoload-run";
 import { resolveAnimeSearchCoords } from "@/lib/subtitles/anime-numbering";
 import {
+  desiredSubtitleIsEmbedded,
   isAutoSelectableSubtitleTrack,
   pickDesiredSubtitleTrack,
   subtitleAutoSelectionSignature,
@@ -51,6 +54,14 @@ export function useTrackAutoload(params: {
   authKey: string | null;
 }) {
   const { bridgeRef, src, snap, engine, settings, authKey } = params;
+  const sourceKey = playbackSourceKey(src);
+  const rememberedAudio = useMemo(
+    () =>
+      src.continuation?.sourceKey === sourceKey
+        ? src.continuation.audioTrack
+        : readActualPlaybackFor(src)?.audioTrack,
+    [sourceKey, src.meta.id, src.episode?.season, src.episode?.episode, src.continuation],
+  );
   const snapRef = useRef(snap);
   snapRef.current = snap;
   const selectedSubtitleId = snap.subtitleTracks.find((track) => track.selected)?.id ?? null;
@@ -380,10 +391,23 @@ export function useTrackAutoload(params: {
             currentSelectionIsAutomatic,
             autoUpgradeEnabled: settings.subtitleAutoUpgrade,
           });
+        const prefs = readPlayerPrefs(src.meta.id);
+        const selectionLangs = prefs?.subLang
+          ? [prefs.subLang, ...langs.filter((lang) => lang !== prefs.subLang)]
+          : langs;
+        // The embedded-source preference must gate downloaded candidates too, or a
+        // prepared external track would replace the embedded track Harbor selected
+        // from the same preferences moments earlier.
+        const keepEmbedded = desiredSubtitleIsEmbedded(
+          snapRef.current.subtitleTracks,
+          selectionLangs,
+          settings.preferEmbeddedSubs,
+        );
         return (
           isActive() &&
+          !keepEmbedded &&
           !src.subtitlePreselect &&
-          !subsOffFor(readPlayerPrefs(src.meta.id), settings) &&
+          !subsOffFor(prefs, settings) &&
           !rememberedSubAppliesToStream(
             readRememberedSub(
               subtitleMediaKey(src.meta.id, src.episode?.season, src.episode?.episode),
@@ -782,7 +806,7 @@ export function useTrackAutoload(params: {
   useEffect(() => {
     const subIdSig = subtitleAutoSelectionSignature(snap.subtitleTracks);
     const audioIdSig = JSON.stringify(
-      snap.audioTracks.map((t) => [t.id, t.lang, t.title, t.label, t.default]),
+      snap.audioTracks.map((track) => [playbackAudioChoice(track), track.label, track.default]),
     );
     const preferenceSig = JSON.stringify([
       settings.preferredAudioLangs,
@@ -847,10 +871,14 @@ export function useTrackAutoload(params: {
       if (userPicked) {
         effAudio = cur;
       } else {
-        const want = pickBestTrack(allow(snap.audioTracks), audioLangs);
+        const want =
+          // A known choice is explicit user intent, even if its title matches
+          // an automatic-selection exclusion such as "commentary".
+          selectPlaybackAudio(snap.audioTracks, rememberedAudio) ??
+          pickBestTrack(allow(snap.audioTracks), audioLangs);
         effAudio = want ?? cur;
-        if (want && (!cur || cur.id !== want.id)) {
-          bridgeRef.current?.setAudioTrack(want.id);
+        if (want) {
+          if (!cur || cur.id !== want.id) bridgeRef.current?.setAudioTrack(want.id);
           autoAudioIdRef.current = want.id;
         }
       }
@@ -931,6 +959,7 @@ export function useTrackAutoload(params: {
     snap.rate,
     settings,
     originalAudioLanguage,
+    rememberedAudio,
   ]);
 
   useEffect(() => {

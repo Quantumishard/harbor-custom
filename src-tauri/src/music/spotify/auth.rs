@@ -8,12 +8,12 @@ use tauri::AppHandle;
 pub const EXPIRED: &str = "Spotify sign in expired";
 pub const REJECTED_CLIENT: &str = "Spotify rejected that client id";
 pub const MISSING_CLIENT_ID: &str = "Spotify needs your own client id";
-pub const BRING_YOUR_OWN: &str = "Bring your own Spotify app";
+pub const BRING_YOUR_OWN: &str = "Pair this device or use your own Spotify app";
 
 const REDIRECT_PORT: u16 = 8898;
 const OAUTH_TIMEOUT: Duration = Duration::from_secs(90);
 const CANCEL_TIMEOUT: Duration = Duration::from_secs(2);
-const SCOPES: &[&str] = &[
+pub(super) const SCOPES: &[&str] = &[
     "streaming",
     "user-read-email",
     "user-read-private",
@@ -76,8 +76,10 @@ pub async fn authorize(app: &AppHandle) -> Result<Authorization, String> {
     }
 }
 
-pub async fn refresh(app: &AppHandle, refresh_token: &str) -> Result<Authorization, String> {
-    let client_id = client_id(app)?;
+/// Refreshes with an explicit client id; a token issued to one client cannot be refreshed
+/// by another, and device-flow tokens belong to librespot's desktop client.
+pub async fn refresh_with(client_id: &str, refresh_token: &str) -> Result<Authorization, String> {
+    let client_id = client_id.to_string();
     let refresh_token = refresh_token.to_string();
     tokio::task::spawn_blocking(move || {
         client(&client_id)?

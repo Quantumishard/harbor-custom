@@ -1,4 +1,5 @@
 import { MusicPlaylistToolbar } from "@/components/music/music-playlist-toolbar";
+import { MusicPlaylistDuplicateConfirm } from "@/components/music/music-playlist-duplicate-confirm";
 import { MusicPlaylistLoading } from "@/components/music/music-skeletons";
 import { usePlaylistFilters } from "@/lib/music/use-playlist-filters";
 import { useCallback, useEffect, useRef, useState, useMemo } from "react";
@@ -23,7 +24,7 @@ import {
   reorderMusicPlaylist,
 } from "@/lib/music/library";
 import { useT } from "@/lib/i18n";
-import { musicTrackIdentity } from "@/lib/music/track-identity";
+import { musicTrackIdentity, sameMusicTrack } from "@/lib/music/track-identity";
 import type { MusicPlaylist, MusicTrack } from "@/lib/music/types";
 import "./music-playlist-page.css";
 
@@ -65,6 +66,7 @@ export function MusicPlaylistPage({
   const [notice, setNotice] = useState<string | null>(null);
   const [revision, setRevision] = useState(0);
   const [adding, setAdding] = useState(false);
+  const [duplicateTrack, setDuplicateTrack] = useState<MusicTrack | null>(null);
   // The tray adds tracks TO this playlist, so the count must be what is still missing,
   // not the playlist's own length, and the title must not repeat the playlist name.
   const addable = useMemo(() => {
@@ -137,7 +139,17 @@ export function MusicPlaylistPage({
   };
 
   const addTrack = (track: MusicTrack) => {
-    if (!playlist || working) return;
+    if (!playlist || working || duplicateTrack) return;
+    if (playlist.tracks.some((existing) => sameMusicTrack(existing, track))) {
+      setDuplicateTrack(track);
+      return;
+    }
+    mutate(addTrackToMusicPlaylist(playlist.id, track));
+  };
+  const addDuplicateTrack = () => {
+    if (!playlist || !duplicateTrack || working) return;
+    const track = duplicateTrack;
+    setDuplicateTrack(null);
     mutate(addTrackToMusicPlaylist(playlist.id, track));
   };
   const removeTrack = (track: MusicTrack) => {
@@ -217,6 +229,15 @@ export function MusicPlaylistPage({
               <span>{t("music.card.trackCount", { count: playlist.tracks.length })}</span>
             </div>
           </div>
+          {duplicateTrack && (
+            <MusicPlaylistDuplicateConfirm
+              title={duplicateTrack.title}
+              playlistName={playlist.name}
+              busy={working}
+              onCancel={() => setDuplicateTrack(null)}
+              onContinue={addDuplicateTrack}
+            />
+          )}
           <MusicPlaylistToolbar controller={collection} loading={loading} />
           <LibraryTrackList
             showControls={false}

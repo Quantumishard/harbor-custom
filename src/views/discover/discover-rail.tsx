@@ -1,16 +1,19 @@
-import { useContext, useEffect, useRef, useState } from "react";
+import { memo, useContext, useEffect, useRef, useState } from "react";
 import type { Meta } from "@/lib/cinemeta";
 import type { RailDef } from "@/lib/feed";
 import { FeedShelf } from "@/components/feed-shelf";
 import { ScrollRootContext } from "@/components/row";
 import { useT } from "@/lib/i18n";
-import { useView } from "@/lib/view";
+import { useViewActions } from "@/lib/view";
+import { observeWithin } from "@/lib/visibility";
 
-export function Rail({
+// Memoized, and it takes only its own items rather than the whole deduped map. With the map, one
+// rail finishing its load gave every rail a new prop and re-rendered all of them.
+export const Rail = memo(function Rail({
   active = true,
   railId,
   allRails,
-  deduped,
+  items,
   loadMore,
   ensureLoaded,
   titleOverride,
@@ -18,12 +21,12 @@ export function Rail({
   active?: boolean;
   railId: string;
   allRails: RailDef[];
-  deduped: Record<string, Meta[] | null>;
+  items: Meta[] | null;
   loadMore: (id: string) => void;
   ensureLoaded?: (id: string) => void;
   titleOverride?: string;
 }) {
-  const { openGrid } = useView();
+  const { openGrid } = useViewActions();
   const t = useT();
   const root = useContext(ScrollRootContext);
   const element = useRef<HTMLDivElement>(null);
@@ -34,12 +37,12 @@ export function Rail({
       setNear(true);
       return;
     }
-    const observer = new IntersectionObserver(([entry]) => setNear(entry.isIntersecting), {
+    return observeWithin(
+      element.current,
+      "2400px 0px",
+      (entry) => setNear(entry.isIntersecting),
       root,
-      rootMargin: "1000px 0px",
-    });
-    observer.observe(element.current);
-    return () => observer.disconnect();
+    );
   }, [active, root]);
   useEffect(() => {
     if (!active || !near) return;
@@ -54,7 +57,6 @@ export function Rail({
   }, [active, near, railId, ensureLoaded]);
   const def = allRails.find((r) => r.id === railId);
   if (!def) return null;
-  const items = deduped[railId] ?? null;
   const shelf = {
     ...def.shelf,
     title: titleOverride === undefined ? t(def.shelf.title) : titleOverride,
@@ -82,4 +84,4 @@ export function Rail({
       />
     </div>
   );
-}
+});

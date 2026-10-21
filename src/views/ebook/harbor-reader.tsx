@@ -28,6 +28,9 @@ import {
   X,
 } from "lucide-react";
 import { useT } from "@/lib/i18n";
+import { useSettings } from "@/lib/settings";
+import { useWindowFullscreen } from "@/lib/use-window-fullscreen";
+import { copyText } from "@/lib/clipboard-text";
 import type { EBookChapter, EBookChapterContent } from "@/lib/ebook/providers";
 import { ebookTextIdentity } from "@/lib/ebook/chapter-locations";
 import { createEBookFlipPages, type EBookFlipPages } from "@/lib/ebook/book-pages";
@@ -521,6 +524,11 @@ export function HarborReader({
   onClose,
 }: Props) {
   const t = useT();
+  const { settings } = useSettings();
+  const fullscreen = useWindowFullscreen();
+  const customTitleBar =
+    "__TAURI_INTERNALS__" in window && !settings.useNativeTitleBar && !fullscreen;
+  const titleBarInset = customTitleBar ? (settings.hybridTitleBar ? 36 : 80) : 0;
   const formatEtaLabel = (milliseconds: number) => {
     const eta = etaParts(milliseconds);
     return eta.unit === "seconds"
@@ -648,6 +656,7 @@ export function HarborReader({
   const flipLayerSequence = useRef(0);
   const [activeFlipLayerId, setActiveFlipLayerId] = useState<number | null>(null);
   const activeFlipLayerIdRef = useRef<number | null>(null);
+  const [flipFailed, setFlipFailed] = useState(false);
   const flipLayerRetireTimer = useRef<number | undefined>(undefined);
   const flipGeneration = useRef(0);
   const [flipPage, setFlipPage] = useState(0);
@@ -667,7 +676,8 @@ export function HarborReader({
     (chapter.volume ? t("Volume {volume}", { volume: chapter.volume }) : undefined);
   const persistReadingPosition = useCallback(
     (line: number) => {
-      if (!paragraphs.length || (!chapter.legacy && chapterIndex < 0) || !bookChapters.length) return;
+      if (!paragraphs.length || (!chapter.legacy && chapterIndex < 0) || !bookChapters.length)
+        return;
       const safeLine = Math.max(0, Math.min(paragraphs.length - 1, line));
       const chapterProgress =
         paragraphs.length <= 1 ? 100 : Math.round((safeLine / (paragraphs.length - 1)) * 100);
@@ -760,6 +770,7 @@ export function HarborReader({
     setFlipLayers([]);
     activeFlipLayerIdRef.current = null;
     setActiveFlipLayerId(null);
+    setFlipFailed(false);
     bookApi.current = null;
     flipPagesRef.current = { urls: [], paragraphStarts: [] };
     setFlipPages({ urls: [], paragraphStarts: [] });
@@ -779,6 +790,7 @@ export function HarborReader({
 
   useEffect(() => {
     if (prefs.mode !== "book") return;
+    setFlipFailed(false);
     const controller = new AbortController();
     const generation = ++flipGeneration.current;
     const active = flipPagesRef.current;
@@ -811,8 +823,10 @@ export function HarborReader({
             });
           })
           .catch((error) => {
-            if (!(error instanceof DOMException) || error.name !== "AbortError")
+            if (!(error instanceof DOMException) || error.name !== "AbortError") {
               console.warn("[ebook/book-pages]", error);
+              if (generation === flipGeneration.current) setFlipFailed(true);
+            }
           });
       },
       active.urls.length ? 180 : 0,
@@ -1720,6 +1734,7 @@ export function HarborReader({
     <div
       className="fixed inset-0 z-[90] overflow-hidden transition-colors duration-300"
       style={{
+        top: titleBarInset,
         background: colors.desk,
         color: colors.ink,
         filter: `brightness(${prefs.brightness}%)`,
@@ -1835,6 +1850,9 @@ export function HarborReader({
                   resumePage={layer.resumePage}
                   soundEnabled={isActive}
                   onReady={(api) => activateFlipLayer(layer.id, api)}
+                  onError={() => {
+                    if (flipLayersRef.current.at(-1)?.id === layer.id) setFlipFailed(true);
+                  }}
                   onProgress={(page) => {
                     if (activeFlipLayerIdRef.current !== layer.id) return;
                     const paragraph = layer.pages.paragraphStarts[page] ?? 0;
@@ -1848,8 +1866,24 @@ export function HarborReader({
             );
           })}
           {activeFlipLayerId == null && (
-            <div className="grid h-full place-items-center text-sm" style={{ color: colors.muted }}>
-              {t("Preparing book…")}
+            <div
+              className="grid h-full place-items-center px-6 text-center text-sm"
+              style={{ color: colors.muted }}
+            >
+              {flipFailed ? (
+                <div>
+                  <p>{t("This chapter could not be loaded.")}</p>
+                  <button
+                    type="button"
+                    onClick={() => patchPrefs({ mode: "harbor" })}
+                    className="mt-4 rounded-xl bg-raised px-4 py-2 text-sm text-ink"
+                  >
+                    {t("Harbor")}
+                  </button>
+                </div>
+              ) : (
+                t("Preparing book…")
+              )}
             </div>
           )}
         </div>
@@ -1959,7 +1993,9 @@ export function HarborReader({
                 : draftAnnotation(true),
             )
           }
-          onCopy={() => navigator.clipboard.writeText(selection.text)}
+          onCopy={async () => {
+            if (!(await copyText(selection.text))) throw new Error("Could not copy selected text.");
+          }}
           onHoverStart={cancelAnnotationDismiss}
           onHoverEnd={() =>
             selection.annotationId && scheduleAnnotationDismiss(selection.annotationId)

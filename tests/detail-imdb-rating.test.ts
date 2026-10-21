@@ -41,8 +41,9 @@ test("a TMDB score must not be presented as an IMDb score", () => {
     undefined,
   );
 });
-test("valid inline ratings survive unavailable services and invalid values fall through", () => {
-  assert.equal(detailImdbRating({ id: "tt1", inline: "8.1", harbor: "9.0" }), "8.1");
+test("a service rating wins and inline metadata fills in only when services are unavailable", () => {
+  assert.equal(detailImdbRating({ id: "tt1", inline: "8.1", harbor: "9.0" }), "9.0");
+  assert.equal(detailImdbRating({ id: "tt1", inline: "8.1" }), "8.1");
   assert.equal(detailImdbRating({ id: "tt1", inline: "N/A", cinemeta: "", omdb: "7.9" }), "7.9");
   assert.equal(detailImdbRating({ id: "tt1", inline: 11, harbor: 0 }), undefined);
 });

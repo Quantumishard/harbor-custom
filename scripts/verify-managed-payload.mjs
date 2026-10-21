@@ -19,7 +19,7 @@ for (const [name, path] of [
   assert.equal(hash(entries[name]), hash(read(path)), "Stale payload entry: " + name);
 }
 if (process.argv.includes("--embedded")) {
-  const installer = read("installer/src-tauri/target/release/harbor-setup.exe");
+  const installer = read("installer/src-tauri/target/release/harbor-shipyard.exe");
   assert.ok(installer.indexOf(payload) >= 0, "Installer does not embed the verified payload");
 }
 console.log("Managed payload verified for " + version + "; SHA-256 " + hash(payload));

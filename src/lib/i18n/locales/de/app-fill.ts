@@ -348,8 +348,8 @@ const appFill: Record<string, string> = {
   "Grown-ups only": "Nur für Erwachsene",
   "HDR to SDR: Off": "HDR zu SDR: Aus",
   "HDR to SDR: On": "HDR zu SDR: Ein",
-  "Harbor Setup did not finish updating Harbor. Nothing was changed.":
-    "Harbor Setup konnte die Aktualisierung von Harbor nicht abschließen. Es wurde nichts geändert.",
+  "Harbor Shipyard did not finish updating Harbor. Nothing was changed.":
+    "Harbor Shipyard konnte die Aktualisierung von Harbor nicht abschließen. Es wurde nichts geändert.",
   "Harbor Voyages": "Harbor-Reisen",
   "Harbor account": "Harbor-Konto",
   "Harbor checks a few times a day while it's open and lets you know here.":
@@ -362,8 +362,8 @@ const appFill: Record<string, string> = {
     "Harbor hostet weder Manga noch Quellen. Verbinde einen selbst gehosteten Server, den du betreibst, installiere ein Quellen-Plug-in aus einem vertrauenswürdigen Repository oder öffne einen bereits vorhandenen Ordner.",
   "Harbor does not host any manga. Add a source plugin from a repository you trust, connect your own server, or open a local folder. You can turn this off anytime in Settings.":
     "Harbor hostet keine Manga. Füge ein Quellen-Plug-in aus einem vertrauenswürdigen Repository hinzu, verbinde deinen eigenen Server oder öffne einen lokalen Ordner. Du kannst dies jederzeit in den Einstellungen deaktivieren.",
-  "Harbor is closing. Harbor Setup will finish and reopen it.":
-    "Harbor wird geschlossen. Harbor Setup schließt den Vorgang ab und öffnet Harbor erneut.",
+  "Harbor is closing. Harbor Shipyard will finish and reopen it.":
+    "Harbor wird geschlossen. Harbor Shipyard schließt den Vorgang ab und öffnet Harbor erneut.",
   "Harbor {version} downloaded but did not install on its own.":
     "Harbor {version} wurde heruntergeladen, aber nicht automatisch installiert.",
   "Heads up: most IPTV providers cap how many streams an account can run at the same time. If other devices or players are using these credentials, close them and try again.":
@@ -914,10 +914,10 @@ const appFill: Record<string, string> = {
   "This is in your local library": "Dies befindet sich in deiner lokalen Mediathek",
   "This is the primary profile": "Dies ist das Hauptprofil",
   "This list is full ({max} items)": "Diese Liste ist voll ({max} Elemente)",
-  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Setup. Harbor closes, the installer finishes, then Harbor reopens.":
-    "Diese Aktualisierung ersetzt auch die in Harbor enthaltenen Player und Werkzeuge und wird daher über Harbor Setup installiert. Harbor wird geschlossen, das Installationsprogramm schließt die Installation ab und Harbor wird anschließend wieder geöffnet.",
-  "This one installs through Harbor Setup, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
-    "Diese Version wird über Harbor Setup installiert, aber das Update-Manifest enthält keine Signatur dafür. Harbor führt kein Installationsprogramm aus, das nicht verifiziert werden kann. Lade es herunter und führe es selbst aus.",
+  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Shipyard. Harbor closes, the installer finishes, then Harbor reopens.":
+    "Diese Aktualisierung ersetzt auch die in Harbor enthaltenen Player und Werkzeuge und wird daher über Harbor Shipyard installiert. Harbor wird geschlossen, das Installationsprogramm schließt die Installation ab und Harbor wird anschließend wieder geöffnet.",
+  "This one installs through Harbor Shipyard, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
+    "Diese Version wird über Harbor Shipyard installiert, aber das Update-Manifest enthält keine Signatur dafür. Harbor führt kein Installationsprogramm aus, das nicht verifiziert werden kann. Lade es herunter und führe es selbst aus.",
   "This server is too old to add repos from Harbor":
     "Dieser Server ist zu alt, um Repositories über Harbor hinzuzufügen.",
   "This server lists no extensions": "Dieser Server listet keine Add-ons auf",

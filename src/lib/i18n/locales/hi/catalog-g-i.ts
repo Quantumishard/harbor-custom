@@ -200,8 +200,8 @@ const catalogGI: Record<string, string> = {
   "Harbor Relay": "Harbor Relay",
   "Harbor Relay Documentation": "Harbor Relay दस्तावेज़",
   "Harbor Relay docs": "Harbor Relay दस्तावेज़",
-  "Harbor Setup did not finish updating Harbor. Nothing was changed.":
-    "Harbor Setup Harbor का अपडेट पूरा नहीं कर पाया। कुछ भी नहीं बदला गया।",
+  "Harbor Shipyard did not finish updating Harbor. Nothing was changed.":
+    "Harbor Shipyard Harbor का अपडेट पूरा नहीं कर पाया। कुछ भी नहीं बदला गया।",
   "Harbor Staff": "Harbor स्टाफ़",
   "Harbor Voyages": "Harbor की यात्राएँ",
   "Harbor accepted that but returned no session. Try again.":
@@ -227,10 +227,10 @@ const catalogGI: Record<string, string> = {
   "Harbor checks a few times a day while it's open and lets you know here.":
     "Harbor खुला रहने के दौरान दिन में कुछ बार जाँच करता है और आपको यहाँ सूचित करता है।",
   "Harbor checks automatically every few hours.": "Harbor हर कुछ घंटों में अपने आप जाँच करता है।",
-  "Harbor checks harbor.site for new versions and installs them in place.":
-    "Harbor नए वर्ज़न के लिए harbor.site की जाँच करता है और उन्हें सीधे इंस्टॉल कर देता है।",
-  "Harbor checks harbor.site for new versions and installs them in place. Nothing installs until you choose to, and a dismissed update never nags you again.":
-    "Harbor नए वर्ज़न के लिए harbor.site की जाँच करता है और उन्हें सीधे इंस्टॉल कर देता है। आपके चुने बिना कुछ भी इंस्टॉल नहीं होता और खारिज किया गया अपडेट आपको फिर कभी परेशान नहीं करता।",
+  "Harbor checks harborcommunity.site for new versions and installs them in place.":
+    "Harbor नए वर्ज़न के लिए harborcommunity.site की जाँच करता है और उन्हें सीधे इंस्टॉल कर देता है।",
+  "Harbor checks harborcommunity.site for new versions and installs them in place. Nothing installs until you choose to, and a dismissed update never nags you again.":
+    "Harbor नए वर्ज़न के लिए harborcommunity.site की जाँच करता है और उन्हें सीधे इंस्टॉल कर देता है। आपके चुने बिना कुछ भी इंस्टॉल नहीं होता और खारिज किया गया अपडेट आपको फिर कभी परेशान नहीं करता।",
   "Harbor could not find these": "Harbor इन्हें नहीं ढूँढ पाया",
   "Harbor could not open its web server. Try again, or set this up on the TV.":
     "Harbor अपना वेब सर्वर नहीं खोल पाया। फिर से कोशिश करें या इसे TV पर सेट अप करें।",
@@ -282,8 +282,8 @@ const catalogGI: Record<string, string> = {
   "Harbor in your browser": "आपके ब्राउज़र में Harbor",
   "Harbor is an independent client. It is not affiliated with or endorsed by Stremio.":
     "Harbor एक स्वतंत्र क्लाइंट है। यह Stremio से संबद्ध नहीं है और न ही उसके द्वारा अनुमोदित है।",
-  "Harbor is closing. Harbor Setup will finish and reopen it.":
-    "Harbor बंद हो रहा है। Harbor Setup प्रक्रिया पूरी करके इसे फिर से खोलेगा।",
+  "Harbor is closing. Harbor Shipyard will finish and reopen it.":
+    "Harbor बंद हो रहा है। Harbor Shipyard प्रक्रिया पूरी करके इसे फिर से खोलेगा।",
   "Harbor is having trouble, try again in a moment":
     "Harbor में समस्या आ रही है, कुछ देर बाद फिर कोशिश करें",
   "Harbor is open source. PRs that reference a bug get reviewed within 48h and ship with credit in the release notes.":
@@ -1068,7 +1068,7 @@ const catalogGI: Record<string, string> = {
   "https://...manifest.json or stremio://...": "https://...manifest.json या stremio://...",
   "https://posters.example.com or a pattern with {id}":
     "https://posters.example.com या {id} वाला पैटर्न",
-  "https://sync.harbor.site": "https://sync.harbor.site",
+  "https://sync.harborcommunity.site": "https://sync.harborcommunity.site",
   "huge ({width}×{height}px)": "बहुत बड़ी ({width}×{height}px)",
   "if the first page is 0. Use this when the URL counts pages.":
     "अगर पहला पेज 0 है। इसका इस्तेमाल तब करें जब URL में पेज नंबर दिया जाता हो।",

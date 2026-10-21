@@ -78,13 +78,15 @@ export function MusicTrackRow({
   const saved = liked ?? tracked;
   const rowBadge = badge?.kind === "connector" ? { ...badge, itemId: track.id } : badge;
   const save = onToggleFavorite ?? (() => toggleMusicLiked(track));
-  const anchorRef = useRef<HTMLButtonElement | null>(null);
+  const anchorRef = useRef<HTMLElement | null>(null);
   const [open, setOpen] = useState(false);
+  const [contextPosition, setContextPosition] = useState<{ x: number; y: number } | null>(null);
   const [burst, setBurst] = useState(0);
   const seed = `track:${track.connectorId ?? ""}:${track.sourceId ?? track.id}`;
 
   const items = useMusicTrackMenuItems(track, {
     onPlay,
+    onToggleLike: () => toggleMusicLiked(track),
     onAddToQueue,
     onAddToPlaylist,
     onGoToArtist,
@@ -95,6 +97,15 @@ export function MusicTrackRow({
   const openMenu = (event: MouseEvent<HTMLElement>) => {
     event.preventDefault();
     event.stopPropagation();
+    const target = event.target instanceof Element
+      ? event.target.closest<HTMLElement>("button, [href], [tabindex]:not([tabindex='-1'])")
+      : null;
+    anchorRef.current = target && event.currentTarget.contains(target) ? target : event.currentTarget;
+    setContextPosition(
+      event.type === "contextmenu" && (event.clientX !== 0 || event.clientY !== 0)
+        ? { x: event.clientX, y: event.clientY }
+        : null,
+    );
     setOpen(true);
   };
 
@@ -103,6 +114,8 @@ export function MusicTrackRow({
       data-now-playing-track={nowPlaying || undefined}
       data-menu-open={open || undefined}
       aria-current={nowPlaying ? "true" : undefined}
+      tabIndex={-1}
+      onContextMenu={openMenu}
       className={`group relative flex h-14 min-w-0 items-center ${nowPlaying ? "rounded-md bg-elevated" : open ? "bg-elevated" : ""} ${className}`}
     >
       {leading ??
@@ -111,7 +124,7 @@ export function MusicTrackRow({
             {String(index).padStart(2, "0")}
           </span>
         ) : null)}
-      <div onContextMenu={openMenu} className="music-track-details flex h-14 min-w-0 flex-1 items-center text-start">
+      <div className="music-track-details flex h-14 min-w-0 flex-1 items-center text-start">
         <button
           type="button"
           onClick={nowPlaying ? toggleMusicPlayback : onPlay}
@@ -234,7 +247,6 @@ export function MusicTrackRow({
         </button>
       )}
       <button
-        ref={anchorRef}
         type="button"
         onClick={openMenu}
         aria-haspopup="menu"
@@ -247,8 +259,12 @@ export function MusicTrackRow({
       <MusicTrackMenu
         anchorRef={anchorRef}
         open={open}
-        onClose={() => setOpen(false)}
+        onClose={() => {
+          setOpen(false);
+          setContextPosition(null);
+        }}
         items={items}
+        position={contextPosition}
       />
     </div>
   );

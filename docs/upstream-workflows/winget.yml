@@ -48,9 +48,9 @@ jobs:
           # A release published without a Windows build is not an error; there is
           # simply nothing to submit.
           installer="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --json assets --jq '[.assets[].name | select(test("_x64-setup\\.exe$"))] | first // ""')"
+            --json assets --jq '[.assets[].name | select(test("harbor-shipyard-.*\\.exe$"))] | first // ""')"
           if [ -z "$installer" ]; then
-            echo "::warning::No _x64-setup.exe asset on $TAG; skipping WinGet submission."
+            echo "::warning::No harbor-shipyard-*.exe asset on $TAG; skipping WinGet submission."
             echo "found=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -67,6 +67,6 @@ jobs:
           identifier: HarborStremio.Harbor
           version: ${{ steps.release.outputs.version }}
           release-tag: ${{ steps.release.outputs.tag }}
-          installers-regex: '_x64-setup\.exe$'
+          installers-regex: 'harbor-shipyard-.*\.exe$'
           fork-user: harborstremio
           token: ${{ secrets.WINGET_TOKEN }}

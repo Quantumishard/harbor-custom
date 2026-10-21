@@ -74,7 +74,7 @@ export function parseBetaReturnTargets(
 
 export function betaReturnSupported(probe: HandoffProbe | null): boolean {
   // A signed recoverable experimental handoff can bootstrap the marker for a
-  // Windows installation that arrived through NSIS. Harbor Setup writes the
+  // Windows installation that arrived through NSIS. Harbor Shipyard writes the
   // normal managed marker before the experimental app is allowed to remain.
   return !!probe?.supported && probe.platformKey === "windows-x86_64";
 }

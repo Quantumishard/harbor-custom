@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { LoaderCircle, Play } from "@/components/icons/music-icons";
 import { MUSIC_SHELF_MIN } from "@/components/music/music-catalog-row";
+import { musicPlayOpenMenuItems } from "@/components/music/music-item-menu";
 import { MusicMixCover } from "@/components/music/music-mix-cover";
 import { MusicNowPlayingMark } from "@/components/music/music-now-playing-mark";
 import { MusicSectionHead } from "@/components/music/music-track-grid";
+import { MusicTrackMenu, type MusicTrackMenuItem } from "@/components/music/music-track-menu";
 import { Row } from "@/components/row";
 import { activeProfileId } from "@/lib/active-profile-id";
 import { loadMadeForYou, readMadeForYouShelf, type MadeForYouMix } from "@/lib/music/made-for-you";
@@ -79,6 +81,8 @@ function MadeForYouRow({ player, t, title, openMix }: { player: MusicBandContext
   }, [hasTaste, day, profile, retry]);
   const [busy, setBusy] = useState<string | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
+  const anchor = useRef<HTMLElement | null>(null);
+  const [menu, setMenu] = useState<{ mix: Mix; x: number; y: number } | null>(null);
   const request = useRef(0);
   useEffect(
     () => () => {
@@ -115,6 +119,22 @@ function MadeForYouRow({ player, t, title, openMix }: { player: MusicBandContext
   // than showing an empty shelf. It appears once there are plays, likes or follows.
   if (!hasTaste && !mixes.length && !errored) return null;
 
+  const openMenu = (mix: Mix) => (event: MouseEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    anchor.current = event.currentTarget;
+    setMenu({ mix, x: event.clientX, y: event.clientY });
+  };
+
+  const menuItems: MusicTrackMenuItem[] = menu
+    ? musicPlayOpenMenuItems({
+        t,
+        name: mixName(menu.mix, t),
+        onPlay: () => void open(menu.mix, true),
+        onOpen: () => void open(menu.mix),
+      })
+    : [];
+
   return (
     <section className="flex min-w-0 flex-col gap-3" aria-busy={loadingPersonal}>
       <MusicSectionHead title={title} subtitle={t("music.madeForYou.subtitle")} />
@@ -124,7 +144,7 @@ function MadeForYouRow({ player, t, title, openMix }: { player: MusicBandContext
       </div>}
       <Row shape="square" min={MUSIC_SHELF_MIN} scrollKey="music:madeForYou" alwaysActive>
         {loadingPersonal && !mixes.length ? Array.from({ length: 6 }, (_, index) => <div key={index} aria-hidden="true" className="aspect-square rounded-md bg-elevated animate-pulse motion-reduce:animate-none" />) : mixes.map((mix) => (
-          <div key={mix.id} data-mix-id={mix.id} className="music-mix-card music-cover-card group">
+          <div key={mix.id} data-mix-id={mix.id} className="music-mix-card music-cover-card group" onContextMenu={openMenu(mix)}>
             <div className="relative">
               <button
                 type="button"
@@ -175,6 +195,13 @@ function MadeForYouRow({ player, t, title, openMix }: { player: MusicBandContext
           </div>
         ))}
       </Row>
+      <MusicTrackMenu
+        anchorRef={anchor}
+        open={menu !== null && menuItems.length > 0}
+        onClose={() => setMenu(null)}
+        items={menuItems}
+        position={menu ? { x: menu.x, y: menu.y } : null}
+      />
     </section>
   );
 }

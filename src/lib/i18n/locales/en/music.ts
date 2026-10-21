@@ -100,6 +100,10 @@ const music: Record<string, string> = {
   "music.playlist.moveUp": "Move {title} up",
   "music.playlist.moveDown": "Move {title} down",
   "music.playlist.rename": "Rename",
+  "music.playlist.edit": "Edit playlist",
+  "music.playlist.pin": "Pin to home",
+  "music.playlist.unpin": "Unpin from home",
+  "music.pinned.title": "Pinned",
   "music.speed.title": "Speed and pitch",
   "dj.title": "DJ deck",
   "dj.minimize": "Minimise",
@@ -321,11 +325,11 @@ const music: Record<string, string> = {
   "music.source.preferred": "Preferred",
   "music.source.loading": "Finding music sources",
   "music.source.none": "No matching source is available right now.",
-  "music.consent.title": "Before you turn on YouTube or SoundCloud",
+  "music.consent.title": "Before you turn on YouTube, SoundCloud or Spotify",
   "music.consent.hosting":
     "Harbor hosts no music. It is open source code, written by contributors around the world, that opens publicly available pages on the services you choose to turn on. Nothing is stored, uploaded or served by Harbor or by the people who work on it.",
   "music.consent.terms":
-    "YouTube and SoundCloud are independent services with their own terms of service. Turning one on here means you agree to follow that service's terms, and to stop using it if you no longer accept them. Harbor is not affiliated with, endorsed by or connected to either service.",
+    "YouTube, SoundCloud and Spotify are independent services with their own terms of service. Turning one on here means you agree to follow that service's terms, and to stop using it if you no longer accept them. Harbor is not affiliated with, endorsed by or connected to any of these services.",
   "music.consent.responsibility":
     "You are responsible for how you use these sources and for following the law where you live. Harbor's contributors accept no responsibility or liability for what you choose to play, download or share.",
   "music.consent.rights":
@@ -348,6 +352,8 @@ const music: Record<string, string> = {
   "music.spotify.premium": "Premium",
   "music.playlist.alreadyAdded": "Already in playlist",
   "music.playlist.add": "Add to selected playlist",
+  "music.playlist.duplicateWarning": "{title} is already in {name}. Add another copy?",
+  "music.playlist.addDuplicate": "Add another copy",
   "music.playlist.remove": "Remove from playlist",
   "music.playlist.namePlaceholder": "Name a new playlist",
   "music.playlist.nameLabel": "New playlist name",
@@ -660,6 +666,24 @@ const music: Record<string, string> = {
     "No Client ID is saved on this device. Follow the setup steps and paste your Client ID.",
   "music.spotifySetup.rejected":
     "Check the Client ID and redirect URI in your Spotify app settings, then try again.",
+  "music.spotifySetup.pairTitle": "1 · Pair this device for playback",
+  "music.spotifySetup.pairBody":
+    "No Spotify app setup needed. Harbor shows a code — enter it at spotify.com/pair from a phone or browser, then approve.",
+  "music.spotifySetup.pairAction": "Pair with Spotify",
+  "music.spotifySetup.pairCodeLabel": "Pairing code",
+  "music.spotifySetup.pairWaiting": "Waiting for approval at spotify.com/pair…",
+  "music.spotifySetup.pairOpen": "Open spotify.com/pair",
+  "music.spotifySetup.pairCopy": "Copy code",
+  "music.spotifySetup.pairCopied": "Copied",
+  "music.spotifySetup.pairCopyFailed": "Select the code and copy it manually.",
+  "music.spotifySetup.pairManual": "2 · Browse with your own Spotify app",
+  "music.spotifySetup.browseRecommended": "Recommended",
+  "music.spotifySetup.browseBody":
+    "Browsing on Spotify's shared limit saturates often. Your own app gives browsing a private quota — playback stays paired.",
+  "music.spotifyBrowse.title": "Browsing shares Spotify's rate limit",
+  "music.spotifyBrowse.body":
+    "Playback is paired and working. Browsing currently shares librespot's Spotify quota, which saturates often — sign in with your own Spotify app to give browsing its own quota. Playback stays paired.",
+  "music.spotifyBrowse.action": "Use my own Spotify app",
   "music.recovery.title": "Playback help",
   "music.recovery.failed": "{source} couldn’t play this song",
   "music.recovery.skipping": "Skipping to the next song in {seconds}s",

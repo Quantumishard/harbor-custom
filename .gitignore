@@ -113,6 +113,11 @@ crowdin_credentials.*
 *.token
 gemini.key
 /.firecrawl
+# Update signing keys live in %USERPROFILE%\.tauri, never in the repository.
+# A literal "~/..." path once put the private key in the work tree; keep that
+# accident from ever being committable.
+/~
+/.tauri/
 /work
 !docs/games/*.md
 /docs/games
@@ -122,6 +127,7 @@ gemini.key
 /public/games/
 
 # Built separately from pinned GPL sources; see tools/pokemon-engine/README.md.
+!tools/pokemon-engine/README.md
 /src-tauri/resources/pokemon-engine/
 
 # Rotated dev-server logs: *.log covers dev.log but not its .prev rotation.

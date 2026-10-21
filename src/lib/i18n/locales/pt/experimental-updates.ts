@@ -78,6 +78,6 @@ export default {
     "Não foi possível buscar versões experimentais. Verifique sua conexão e tente novamente.",
   "Couldn't verify your Harbor account access. Check your connection and try again.":
     "Não foi possível verificar o acesso da sua conta Harbor. Verifique sua conexão e tente novamente.",
-  "Harbor Setup did not finish updating Harbor. Check for updates to try again.":
+  "Harbor Shipyard did not finish updating Harbor. Check for updates to try again.":
     "O instalador do Harbor não concluiu a atualização. Verifique as atualizações para tentar novamente.",
 };

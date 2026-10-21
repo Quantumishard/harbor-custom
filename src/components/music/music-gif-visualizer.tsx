@@ -38,7 +38,7 @@ export function MusicGifCanvas({ animation, playing = true, track, timing = "aut
       const key = track ? JSON.stringify([track.connectorId, track.id]) : "";
       if (key !== trackKey) { trackKey = key; groove.reset(); clock.retime(); }
       const animate = playing && inView && !document.hidden && !motion.matches && !!surface.offsetWidth;
-      const analyze = animate && track && track.connectorId !== "spotify" && track.mediaKind !== "video";
+      const analyze = animate && track && track.mediaKind !== "video";
       if (!analyze) { release?.(); release = null; }
       else if (!release) release = acquireMusicMeter(state => {
         const current = playback.current.track;

@@ -59,6 +59,29 @@ async function doFetch(path: string, opts: SimklRequestOptions): Promise<Respons
 
 const RETRY_STATUSES = new Set([429, 500, 502, 503]);
 
+/**
+ * Whether Simkl itself refuses this token, asked with a read that cannot change
+ * anything. Only a rejection here signs the listener out.
+ */
+async function tokenIsRejected(
+  token: string | undefined,
+  assertOwner: () => void,
+): Promise<boolean> {
+  // A call that carried no token proves nothing: Simkl answers 401 `user_token_failed`
+  // for anonymous requests too, and a session the app had not read yet must not be
+  // thrown away because one startup call arrived before it.
+  if (!token) return false;
+  try {
+    const check = await doFetch("/users/settings", { token, method: "POST" });
+    assertOwner();
+    return check.status === 401 || check.status === 403;
+  } catch {
+    // An account change rethrows through assertOwner; anything else is inconclusive.
+    assertOwner();
+    return false;
+  }
+}
+
 async function sendRequest<T>(
   path: string,
   opts: SimklRequestOptions,
@@ -73,7 +96,10 @@ async function sendRequest<T>(
     res = await doFetch(path, opts);
     assertOwner();
     if (!RETRY_STATUSES.has(res.status)) break;
-    const body = await res.clone().text().catch(() => "");
+    const body = await res
+      .clone()
+      .text()
+      .catch(() => "");
     assertOwner();
     const policy = simklRetryPolicy(res.status, body, res.headers.get("Retry-After"), attempt);
     if (policy.cooldown) {
@@ -96,7 +122,10 @@ async function sendRequest<T>(
   }
 
   if (res.status === 401 && usesSession) {
-    setSession(null);
+    // Simkl answers 401 for more than a dead token, and signing the listener out costs
+    // a manual re-authorization, so ask a cheap authenticated read with the very same
+    // token before ending the session. Anything inconclusive keeps the connection.
+    if (await tokenIsRejected(opts.token, assertOwner)) setSession(null);
     throw new SimklApiError(401, "unauthorized");
   }
 
@@ -107,7 +136,15 @@ async function sendRequest<T>(
   }
 
   if (res.status === 204) return undefined as unknown as T;
+  const jsonStarted = performance.now();
   const data = (await res.json()) as T;
+  const jsonMs = performance.now() - jsonStarted;
+  if (typeof window !== "undefined" && jsonMs >= 16) {
+    window.__harborProfiler?.mark("simkl:response-json", {
+      path: path.split("?")[0],
+      durationMs: Math.round(jsonMs),
+    });
+  }
   assertOwner();
   return data;
 }
@@ -157,6 +194,12 @@ export function simklRequest<T>(path: string, opts: SimklRequestOptions = {}): P
   const usesSession = !opts.token && opts.authed !== false;
   const session = usesSession ? getSession() : null;
   const request = { ...opts, token: opts.token || session?.accessToken };
+  // A session call without a token has nothing to ask with: Simkl would answer 401
+  // `user_token_failed`, and a burst of those while the store is still loading looked
+  // like a dead token. Fail locally, unambiguously, and leave the session alone.
+  if (usesSession && !request.token) {
+    return Promise.reject(new SimklApiError(0, "no connected Simkl session"));
+  }
   const assertOwner = () => {
     if (usesSession && (activeProfileId() !== profile || getSession() !== session)) {
       throw new DOMException("SIMKL request cancelled after account change", "AbortError");

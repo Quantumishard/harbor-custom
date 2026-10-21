@@ -4,7 +4,7 @@ import { useMusicPlaylistCover } from "./music-playlist-cover-edit";
 import { useT } from "@/lib/i18n";
 import type { MusicCollectionEntry } from "@/lib/music/library-collections";
 import "./music-collection-grid.css";
-import type { ReactNode } from "react";
+import type { MouseEvent, ReactNode } from "react";
 import { useMusicPlaybackOrigin } from "@/lib/music/playback-origin";
 import { useMusicNowPlaying } from "@/lib/music/use-now-playing";
 import { MusicNowPlayingMark } from "./music-now-playing-mark";
@@ -37,11 +37,13 @@ export function MusicCollectionGrid({
   entries,
   emptyCopy,
   onOpen,
+  onContextMenu,
   emptyState,
 }: {
   entries: MusicCollectionEntry[];
   emptyCopy: string;
   onOpen: (entry: MusicCollectionEntry) => void;
+  onContextMenu?: (entry: MusicCollectionEntry, event: MouseEvent<HTMLButtonElement>) => void;
   emptyState?: ReactNode;
 }) {
   const t = useT();
@@ -58,6 +60,7 @@ export function MusicCollectionGrid({
           data-round={entry.round || undefined}
           className="music-collection-card"
           onClick={() => onOpen(entry)}
+          onContextMenu={(event) => onContextMenu?.(entry, event)}
         >
           <span className="music-collection-cover-wrap">
             <EntryCover entry={entry} />

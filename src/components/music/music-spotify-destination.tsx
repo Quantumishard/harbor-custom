@@ -1,14 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import { LoaderCircle, Plus } from "@/components/icons/music-icons";
 import { MusicActionGlyph, useMusicActionReceipt } from "./music-action-feedback";
+import { MusicPlaylistCover } from "./music-playlist-cover";
+import { MusicPlaylistDuplicateConfirm } from "./music-playlist-duplicate-confirm";
+import { useScrollPreserved } from "./use-scroll-preserved";
 import { useT } from "@/lib/i18n";
 import { connectSource } from "@/lib/music/catalog";
+import { guardMusicSource } from "@/lib/music/source-consent";
 import {
   addTrackToSpotifyPlaylist,
   createSpotifyPlaylist,
   loadSpotifyLibraryPage,
   spotifyLibraryErrorKey,
   spotifyTrackUri,
+  spotifyPlaylistContainsTrack,
   type SpotifyLibraryPage,
 } from "@/lib/music/spotify-library";
 import type { MusicTrack } from "@/lib/music/types";
@@ -39,8 +44,11 @@ export function MusicSpotifyDestination({
   const [notice, setNotice] = useState("");
   const [saved, setSaved] = useState("");
   const [target, setTarget] = useState<string | null>(null);
+  const [duplicateTarget, setDuplicateTarget] = useState<string | null>(null);
   const created = useMusicActionReceipt(`${account?.account}:${uri}`);
   const [name, setName] = useState("");
+  const list = useRef<HTMLUListElement>(null);
+  const listScroll = useScrollPreserved(list);
   const generation = useRef(0);
   const finishTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -68,6 +76,7 @@ export function MusicSpotifyDestination({
     setSaved("");
     setBusy(false);
     setTarget(null);
+    setDuplicateTarget(null);
     if (connected && uri) void load();
     return () => {
       generation.current += 1;
@@ -80,15 +89,20 @@ export function MusicSpotifyDestination({
     void load(page.nextOffset);
   }, [query, loading, busy, saved, error, connected, uri, page?.nextOffset]);
 
-  const add = async (playlistId: string) => {
+  const add = async (playlistId: string, allowDuplicate = false) => {
     if (busy || saved) return;
     const run = generation.current;
     setBusy(true);
     setTarget(playlistId);
     setError("");
     try {
+      if (!allowDuplicate && await spotifyPlaylistContainsTrack(playlistId, track)) {
+        if (generation.current === run) setDuplicateTarget(playlistId);
+        return;
+      }
       await addTrackToSpotifyPlaylist(playlistId, track);
       if (generation.current !== run) return;
+      setDuplicateTarget(null);
       setSaved(playlistId);
       finishTimer.current = setTimeout(onDone, 600);
     } catch (error) {
@@ -99,7 +113,7 @@ export function MusicSpotifyDestination({
   };
 
   const create = async () => {
-    if (!name.trim() || busy || saved) return;
+    if (!name.trim() || busy || saved || duplicateTarget) return;
     const run = generation.current;
     setBusy(true);
     setTarget(null);
@@ -128,6 +142,7 @@ export function MusicSpotifyDestination({
   };
 
   const reconnect = async () => {
+    if (!guardMusicSource("spotify", () => void reconnect())) return;
     setBusy(true);
     setTarget("reconnect");
     setError("");
@@ -176,19 +191,37 @@ export function MusicSpotifyDestination({
           {notice}
         </p>
       )}
+      {duplicateTarget && (
+        <MusicPlaylistDuplicateConfirm
+          title={track.title}
+          playlistName={page?.playlists.find((playlist) => playlist.id === duplicateTarget)?.name ?? t("music.spotifyLibrary.playlists")}
+          busy={busy}
+          onCancel={() => setDuplicateTarget(null)}
+          onContinue={() => void add(duplicateTarget, true)}
+        />
+      )}
       <span role="status" className="sr-only">{saved ? t("music.similar.saved") : ""}</span>
-      <ul className="music-playlist-destination-list">
+      <ul ref={list} className="music-playlist-destination-list" onScroll={listScroll.onScroll}>
         {page?.playlists.filter(playlist => matchesPlaylistSearch(playlist.name, query)).map((playlist) => (
           <li key={playlist.id}>
             <button
               type="button"
-              disabled={busy || !!saved || !playlist.editable}
+              disabled={busy || !!saved || !!duplicateTarget || !playlist.editable}
               aria-busy={busy && target === playlist.id}
               data-music-action-state={saved === playlist.id ? "done" : busy && target === playlist.id ? "busy" : "idle"}
               onClick={() => void add(playlist.id)}
-              className="music-action-button flex min-h-11 w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-start text-sm text-ink hover:bg-raised disabled:opacity-40"
+              className="music-action-button music-playlist-destination-cell"
             >
-              <span className="truncate">{playlist.name}</span>
+              <MusicPlaylistCover artwork={playlist.artwork} seed={playlist.id} glyphSize={20} className="music-playlist-destination-cover" />
+              <span className="music-playlist-destination-copy">
+                <span className="truncate">{playlist.name}</span>
+                <small className="truncate">
+                  {playlist.subtitle ||
+                    (playlist.trackCount != null
+                      ? t("music.card.trackCount", { count: playlist.trackCount })
+                      : "")}
+                </small>
+              </span>
               <MusicActionGlyph state={saved === playlist.id ? "done" : busy && target === playlist.id ? "busy" : "idle"} idle={null} size={17} identity={uri ?? undefined} />
             </button>
           </li>
@@ -235,12 +268,12 @@ export function MusicSpotifyDestination({
           <input
             value={name}
             maxLength={100}
-            disabled={busy || !!saved}
+            disabled={busy || !!saved || !!duplicateTarget}
             onChange={(event) => setName(event.target.value)}
             aria-label={t("music.playlist.nameLabel")}
             placeholder={t("music.playlist.namePlaceholder")}
           />
-          <button type="submit" className="music-spotify-button music-action-button" disabled={busy || !!saved || !name.trim()} aria-busy={busy && target === null} data-music-action-state={busy && target === null ? "busy" : created.confirmed ? "done" : "idle"}>
+          <button type="submit" className="music-spotify-button music-action-button" disabled={busy || !!saved || !!duplicateTarget || !name.trim()} aria-busy={busy && target === null} data-music-action-state={busy && target === null ? "busy" : created.confirmed ? "done" : "idle"}>
             <MusicActionGlyph state={busy && target === null ? "busy" : created.confirmed ? "done" : "idle"} idle={<Plus size={17} />} size={17} />
             {t("music.spotifyLibrary.create")}
           </button>

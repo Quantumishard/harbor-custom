@@ -380,8 +380,8 @@ const catalog05: Record<string, string> = {
   "Font name can only use letters, numbers, and spaces.":
     "Nazwa czcionki może zawierać tylko litery, cyfry i spacje.",
   "Font tokens": "Tokeny czcionek",
-  "For Application URL anything works, for example https://harbor.site. TMDB never visits it.":
-    "W polu Application URL możesz wpisać dowolny adres, na przykład https://harbor.site. TMDB nigdy go nie odwiedza.",
+  "For Application URL anything works, for example https://harborcommunity.site. TMDB never visits it.":
+    "W polu Application URL możesz wpisać dowolny adres, na przykład https://harborcommunity.site. TMDB nigdy go nie odwiedza.",
   "For Everyone": "Dla każdego",
   "For a link or image you usually want an attribute:":
     "W przypadku linku lub obrazu zwykle potrzebny jest atrybut:",
@@ -728,8 +728,8 @@ const catalog05: Record<string, string> = {
   "Harbor Relay": "Harbor Relay",
   "Harbor Relay Documentation": "Dokumentacja Harbor Relay",
   "Harbor Relay docs": "Dokumentacja Harbor Relay",
-  "Harbor Setup did not finish updating Harbor. Nothing was changed.":
-    "Harbor Setup nie ukończył aktualizacji Harbor. Nie wprowadzono żadnych zmian.",
+  "Harbor Shipyard did not finish updating Harbor. Nothing was changed.":
+    "Harbor Shipyard nie ukończył aktualizacji Harbor. Nie wprowadzono żadnych zmian.",
   "Harbor Staff": "Zespół Harbor",
   "Harbor Voyages": "Harbor Voyages",
 };

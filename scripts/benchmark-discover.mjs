@@ -64,7 +64,7 @@ export function railFixture(source, active = true) {
     active,
     railId: "fixture",
     allRails: [{ id: "fixture", shelf: { title: "Fixture" }, fetch: async () => [] }],
-    deduped: {},
+    items: null,
     ensureLoaded: (id) => requests.push(id),
     loadMore: () => requests.push("more"),
   };
@@ -73,6 +73,7 @@ export function railFixture(source, active = true) {
     source,
     {
       react: {
+        memo: (fn) => fn,
         useContext: () => root,
         useRef: () => ({ current: {} }),
         useState: (initial) => {
@@ -100,7 +101,19 @@ export function railFixture(source, active = true) {
       "@/components/feed-shelf": { FeedShelf: "FeedShelf" },
       "@/components/row": { ScrollRootContext: {} },
       "@/lib/i18n": { useT: () => (text) => text },
-      "@/lib/view": { useView: () => ({ openGrid: () => {} }) },
+      "@/lib/view": {
+        useView: () => ({ openGrid: () => {} }),
+        useViewActions: () => ({ openGrid: () => {} }),
+      },
+      "@/lib/visibility": {
+        observeWithin: (_element, rootMargin, callback, scrollRoot) => {
+          observer = {
+            callback: ([entry]) => callback(entry),
+            options: { root: scrollRoot, rootMargin },
+          };
+          return () => {};
+        },
+      },
     },
     {
       IntersectionObserver: class {

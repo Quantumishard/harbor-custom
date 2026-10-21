@@ -52,6 +52,15 @@ export type WebhookTrigger =
   | { event: "fromTraktWatchlist" }
   | { event: "liveTvEvent"; channelIds?: string[]; favoritesOnly?: boolean; leadMinutes?: number };
 
+export type SecondaryProfilePrivileges = {
+  canAddProfiles: boolean;
+  canManageStartup: boolean;
+  canViewAccountProvider: boolean;
+  canViewHarborAccount: boolean;
+  canViewProviderAccount: boolean;
+  canSignOutRoot: boolean;
+};
+
 export type ContentCategory = "anime" | "sports" | "adult";
 
 export type ContentFilters = Record<ContentCategory, boolean>;
@@ -104,7 +113,11 @@ export type MusicSpeedPreset = {
   keepPitch: boolean;
 };
 
+export type AccountProvider = "stremio" | "nuvio";
+
 export type Settings = {
+  accountProvider: AccountProvider;
+  spooktoberBanner: "disabled" | "small" | "below-hero" | undefined;
   soundTheme: "none" | "glass" | "modern" | "retro" | "cinematic";
   sfxVolume: number;
   playerVolumeSfx: boolean;
@@ -174,6 +187,7 @@ export type Settings = {
   awardTabs: boolean;
   awardTabPosition: "above" | "below" | "top";
   rowTitleScale: number;
+  cardTitleScale: number;
   playerTitleScale: number;
   playerTitleSeriesFirst: boolean;
   uiScale: number;
@@ -192,6 +206,7 @@ export type Settings = {
   controllerRepeatMs: number;
   controllerInitialDelayMs: number;
   trailerQuality: "auto" | "360p" | "720p" | "1080p" | "best";
+  autoplayTrailerQuality: Settings["trailerQuality"];
   detailTrailerAutoplay: boolean;
   heroBackdropCarousel: boolean;
   detailTrailerAudio: boolean;
@@ -244,11 +259,14 @@ export type Settings = {
     | "regional"
     | "tmdb";
   tvdbOrderPanel: boolean;
+  tvdbSeasonExplorer: boolean;
   tvdbPin: string;
   harborAvatar: string | null;
   harborColor: string;
   anilistAutoSync: boolean;
   malAutoSync: boolean;
+  anilistCountRewatches: boolean;
+  malCountRewatches: boolean;
   anilistBlurComments: boolean;
   showAnilistComments: boolean;
   useAnilistAvatar: boolean;
@@ -277,7 +295,14 @@ export type Settings = {
   discordShowTimestamp: boolean;
   discordShowPartyJoin: boolean;
   discordMusicPresence: boolean;
+  discordHideMusicWhenPaused: boolean;
   playerEngine: "auto" | "html5" | "mpv";
+  /** Play in the user's own external mpv, with IPC to keep progress synced. */
+  playerExternalMpv: boolean;
+  /** Path to the mpv executable. If left empty then it uses mpv from PATH. */
+  playerExternalMpvPath: string;
+  /** Extra command line options for mpv. */
+  playerExternalMpvArgs: string;
   /** resize shrinks the Harbor window; native floats the video in its own window. */
   pipBehavior: "resize" | "native";
   playerShellId: string;
@@ -504,11 +529,22 @@ export type Settings = {
   audioDevice: string;
   bandwidthMbps: number;
   nextEpisodeLeadSec: number;
+  /**
+   * When the "More like this" end screen appears. 0 turns it off, -1 shows it
+   * when playback finishes, and a positive number shows it that many seconds
+   * before the end (up to 30 minutes) so the film is still running behind it.
+   */
+  endScreenLeadSec: number;
+  /** Seconds before the end screen closes itself. 0 leaves it open. */
+  endScreenCountdownSec: number;
+  /** What the countdown does when it reaches zero. */
+  endScreenOnZero: "close" | "play";
   autoPlayNextEpisode: boolean;
   stillWatching: boolean;
   stillWatchingAfter: number;
   keyboardPauseShowsControls: boolean;
   hideWatchedInCatalogs: boolean;
+  hideWatchedInHero: boolean;
   hideUnreleased: boolean;
   localEpisodeSortDesc: boolean;
   /** Review count when the banner was last dismissed; it returns only if more turn up. */
@@ -517,11 +553,18 @@ export type Settings = {
   showSimklCard: boolean;
   showLetterboxdCard: boolean;
   externalContinueWatching: boolean;
-  cwSources: { library: boolean; trakt: boolean; simkl: boolean; local: boolean };
+  cwSources: {
+    library: boolean;
+    trakt: boolean;
+    simkl: boolean;
+    local: boolean;
+    publicmetadb: boolean;
+  };
   showPlaylistsTab: boolean;
   skipProfileScreen: boolean;
   profilePromptInterval: "launch" | "15m" | "30m" | "never";
   defaultProfileId: string;
+  nuvioDefaultProfileId: string;
   sportsLeagues: string[];
   sportsShowOdds: boolean;
   /** Scores and schedules need no provider; streams do. Off until asked for. */
@@ -546,6 +589,7 @@ export type Settings = {
   musicSeekThumbHover: boolean;
   musicSpeedPresets: MusicSpeedPreset[];
   homeMode: "harbor" | "classic";
+  classicCatalogSource: "all" | "stremio" | "nuvio";
   homeShowAllAddonRows: boolean;
   homeNewEpisodes: boolean;
   libraryBookmarkedOnly: boolean;
@@ -592,6 +636,7 @@ export type Settings = {
   cwSnapshotFullQuality: boolean;
   cwPreferEpisodeStill: boolean;
   streamFilterLevel: "strict" | "balanced" | "off";
+  animePreferImdbStreams: boolean;
   blockTrackers: boolean;
   homeRows: {
     order: string[];
@@ -644,6 +689,7 @@ export type Settings = {
   seekBarColor: string;
   seekBarImage: string;
   seekBarFill: boolean;
+  seekBarChapters: boolean;
   seekBarFillOpacity: number;
   seekDotShape: "circle" | "square" | "image" | "hidden";
   seekDotHover: boolean;
@@ -681,7 +727,9 @@ export type Settings = {
   simklUpNextRailEnabled: boolean;
   simklTrendingRailEnabled: boolean;
   simklScrobbleEnabled: boolean;
-  simklAnimeTitleLanguage: "english" | "romaji" | "native";
+  /** Preferred language for anime titles across the app (cards, picker, presence). */
+  animeTitleLanguage: "english" | "romaji" | "native";
+  publicmetadbScrobbleEnabled: boolean;
   weekStartsMonday: boolean;
   calendarPosterSize: CalendarPosterSize;
   customCalendar: {
@@ -739,6 +787,7 @@ export type Settings = {
   arabicWelcomeSeen: boolean;
   cropMode: string;
   customLists: CustomList[];
+  libraryGroups: import("@/lib/library-groups").LibraryGroup[];
   pauseListStatusOnPause: boolean;
   translateTitles: boolean;
   translateDescriptions: boolean;
@@ -749,4 +798,6 @@ export type Settings = {
   xrayEnabled: boolean;
   xrayLiveScan: boolean;
   auddApiKey: string;
+  secondaryPrivileges: SecondaryProfilePrivileges;
+  nuvioSecondaryPrivileges: SecondaryProfilePrivileges;
 };

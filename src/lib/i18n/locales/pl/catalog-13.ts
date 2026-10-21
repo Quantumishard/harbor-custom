@@ -716,10 +716,10 @@ const catalog13: Record<string, string> = {
   "This member has hidden their showcase, activity and friends from public view.":
     "Ten użytkownik ukrył swoją prezentację, aktywność i znajomych przed osobami odwiedzającymi profil publiczny.",
   "This month": "Ten miesiąc",
-  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Setup. Harbor closes, the installer finishes, then Harbor reopens.":
-    "Ta aktualizacja zastępuje również wbudowane odtwarzacze i narzędzia Harbor, dlatego jest instalowana przez Harbor Setup. Harbor zostanie zamknięty, instalator dokończy pracę, a następnie Harbor otworzy się ponownie.",
-  "This one installs through Harbor Setup, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
-    "Ta aktualizacja jest instalowana przez Harbor Setup, ale jej manifest aktualizacji nie zawiera podpisu. Harbor nie uruchomi instalatora, którego nie może zweryfikować. Pobierz go i uruchom samodzielnie.",
+  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Shipyard. Harbor closes, the installer finishes, then Harbor reopens.":
+    "Ta aktualizacja zastępuje również wbudowane odtwarzacze i narzędzia Harbor, dlatego jest instalowana przez Harbor Shipyard. Harbor zostanie zamknięty, instalator dokończy pracę, a następnie Harbor otworzy się ponownie.",
+  "This one installs through Harbor Shipyard, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
+    "Ta aktualizacja jest instalowana przez Harbor Shipyard, ale jej manifest aktualizacji nie zawiera podpisu. Harbor nie uruchomi instalatora, którego nie może zweryfikować. Pobierz go i uruchom samodzielnie.",
   "This only takes a moment the first time.": "Za pierwszym razem zajmuje to tylko chwilę.",
   "This opens Harbor to devices on your Wi-Fi. You can turn it off again in Settings.":
     "Pozwala to urządzeniom w Twojej sieci Wi-Fi łączyć się z Harbor. Możesz ponownie wyłączyć tę funkcję w Ustawieniach.",

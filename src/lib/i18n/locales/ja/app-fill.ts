@@ -777,16 +777,16 @@ const appFill: Record<string, string> = {
   "Use Cinemeta for title metadata": "タイトルのメタデータにCinemetaを使用",
   "Turn this off to take Cinemeta out entirely and use only your own metadata addons, such as AIOMetadata or AIOStreams. Cinemeta can go stale and show already released episodes as TBA. Leave it on unless you have a metadata addon installed, or titles will have no details.":
     "オフにするとCinemetaを完全に無効にし、AIOMetadataやAIOStreamsなど、ご自身のメタデータアドオンのみを使用します。Cinemetaの情報は古くなり、配信済みのエピソードがTBAと表示されることがあります。メタデータアドオンをインストールしていない場合はオンのままにしてください。オフにするとタイトルの詳細が表示されません。",
-  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Setup. Harbor closes, the installer finishes, then Harbor reopens.":
-    "このアップデートではHarbor内蔵のプレイヤーとツールも置き換えるため、Harbor Setupからインストールします。Harborが終了し、インストール完了後に再起動します。",
-  "This one installs through Harbor Setup, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
-    "このアップデートはHarbor Setupからインストールされますが、アップデートマニフェストに署名がありません。Harborは検証できないインストーラーを実行しません。ダウンロードしてご自身で実行してください。",
+  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Shipyard. Harbor closes, the installer finishes, then Harbor reopens.":
+    "このアップデートではHarbor内蔵のプレイヤーとツールも置き換えるため、Harbor Shipyardからインストールします。Harborが終了し、インストール完了後に再起動します。",
+  "This one installs through Harbor Shipyard, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
+    "このアップデートはHarbor Shipyardからインストールされますが、アップデートマニフェストに署名がありません。Harborは検証できないインストーラーを実行しません。ダウンロードしてご自身で実行してください。",
   "Download installer": "インストーラーをダウンロード",
   "Install and reopen": "インストールして再度開く",
-  "Harbor is closing. Harbor Setup will finish and reopen it.":
-    "Harborを終了しています。Harbor Setupがインストールを完了し、Harborを再起動します。",
-  "Harbor Setup did not finish updating Harbor. Nothing was changed.":
-    "Harbor SetupでHarborのアップデートを完了できませんでした。変更はありません。",
+  "Harbor is closing. Harbor Shipyard will finish and reopen it.":
+    "Harborを終了しています。Harbor Shipyardがインストールを完了し、Harborを再起動します。",
+  "Harbor Shipyard did not finish updating Harbor. Nothing was changed.":
+    "Harbor ShipyardでHarborのアップデートを完了できませんでした。変更はありません。",
   "Dismiss": "閉じる",
 };
 

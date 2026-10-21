@@ -19,17 +19,17 @@ export const HARBOR_TVDB_BASE = resolveBase(import.meta.env.VITE_HARBOR_TVDB_BAS
 
 export const HARBOR_BUGS_BASE = resolveBase(
   import.meta.env.VITE_HARBOR_BUGS_BASE,
-  "https://bugs.harbor.site",
+  "https://bugs.harborcommunity.site",
 );
 
 export const HARBOR_SYNC_BASE = resolveBase(
   import.meta.env.VITE_HARBOR_SYNC_BASE,
-  "https://sync.harbor.site",
+  "https://sync.harborcommunity.site",
 );
 
 export const HARBOR_RELAY_BASE = resolveBase(
   import.meta.env.VITE_HARBOR_RELAY_BASE,
-  "https://app.harbor.site",
+  HARBOR_API_BASE,
 );
 
 export const HARBOR_DISCORD_INVITE = resolveBase(

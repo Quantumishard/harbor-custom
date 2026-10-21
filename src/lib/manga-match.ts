@@ -1,4 +1,5 @@
 import { activeProfileId } from "@/lib/active-profile-id";
+import { stripColorTag } from "@/lib/manga/title";
 import type { MangaTracker } from "@/lib/manga/sync";
 
 // Per-title -> tracker mangaId mapping, so a local title that matches the wrong
@@ -70,7 +71,7 @@ function migrateLegacy(legacy: string): string {
 }
 
 export function normalizeTitle(title: string): string {
-  return title.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  return stripColorTag(title).toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
 function titleVariants(candidate: string, altTitles?: string[]): string[] {
@@ -89,14 +90,15 @@ export function isConfidentTitleMatch(
   altTitles?: string[],
 ): boolean {
   const variants = titleVariants(candidate, altTitles);
-  const qt = query
+  const cleanQuery = stripColorTag(query);
+  const qt = cleanQuery
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter((w) => w.length > 2);
   if (qt.length === 0) return false;
   for (const v of variants) {
     const vq = normalizeTitle(v);
-    if (vq === normalizeTitle(query)) return true;
+    if (vq === normalizeTitle(cleanQuery)) return true;
     const vt = new Set(v.toLowerCase().split(/[^a-z0-9]+/));
     if (qt.every((w) => vt.has(w))) return true;
   }

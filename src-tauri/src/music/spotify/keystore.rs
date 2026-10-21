@@ -21,6 +21,9 @@ pub struct WebToken {
     pub expires_at: u64,
     #[serde(default)]
     pub scopes: Vec<String>,
+    /// The client the token was issued to; refreshing must ask the same client.
+    #[serde(default)]
+    pub client_id: Option<String>,
 }
 
 impl WebToken {
@@ -136,6 +139,7 @@ mod tests {
             refresh_token: None,
             expires_at: 1_000,
             scopes: Vec::new(),
+            client_id: None,
         };
         assert!(token.is_fresh(800));
         assert!(!token.is_fresh(940));
@@ -149,6 +153,7 @@ mod tests {
             refresh_token: Some("refresh".to_string()),
             expires_at: u64::MAX,
             scopes: Vec::new(),
+            client_id: None,
         };
         assert!(!token.is_fresh(0));
     }
@@ -167,14 +172,17 @@ mod tests {
             refresh_token: Some("refresh".to_string()),
             expires_at: 42,
             scopes: vec!["user-library-read".to_string()],
+            client_id: Some("desktop".to_string()),
         };
         let encoded = serde_json::to_string(&token).expect("encode");
         assert!(encoded.contains("accessToken"));
         assert!(encoded.contains("expiresAt"));
+        assert!(encoded.contains("clientId"));
         let decoded = serde_json::from_str::<WebToken>(&encoded).expect("decode");
         assert_eq!(decoded.refresh_token.as_deref(), Some("refresh"));
         assert_eq!(decoded.expires_at, 42);
         assert_eq!(decoded.scopes, vec!["user-library-read"]);
+        assert_eq!(decoded.client_id.as_deref(), Some("desktop"));
     }
 
     #[test]

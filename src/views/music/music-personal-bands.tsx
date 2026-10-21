@@ -1,11 +1,17 @@
+import { useRef, useState, type MouseEvent } from "react";
 import { Music2, Plus, X } from "@/components/icons/music-icons";
 import { hideMusicRecent, isMusicRecentHidden } from "@/lib/music/hidden-recents";
 import { MusicTrackMixChip, MusicTrackPlaylistChip } from "@/components/music/music-playlist-chip";
 import { MusicMediaBadge } from "@/components/music/music-media-badge";
 import { MusicArtistLink } from "@/components/music/music-artist-link";
 import { MUSIC_SHELF_MIN, MusicCatalogRow } from "@/components/music/music-catalog-row";
+import { useMusicNavigate } from "@/components/music/music-navigate";
+import { useMusicPlaylistPicker } from "@/components/music/music-playlist-picker";
+import { MusicTrackMenu, useMusicTrackMenuItems } from "@/components/music/music-track-menu";
 import { MusicSectionHead } from "@/components/music/music-track-grid";
 import { Row } from "@/components/row";
+import { enqueueMusic, toggleMusicLiked } from "@/lib/music/player";
+import { recordMusicLibraryPlayback } from "@/lib/music/playback-origin";
 import { favoriteArtists } from "@/lib/music/sources";
 import type { MusicArtistRef, MusicCatalogItem, MusicTrack } from "@/lib/music/types";
 import { localRow, trackItem, type MusicBand, type MusicBandContext } from "./music-band-types";
@@ -118,61 +124,98 @@ function NewPlaylistTile({
   );
 }
 
+function MusicRecentsRow({ ctx, title }: { ctx: MusicBandContext; title: string }) {
+  const t = ctx.t;
+  const recents = ctx.player.recents.filter((track) => !isMusicRecentHidden(track.id)).slice(0, 18);
+  const items = recents.map(trackItem);
+  const anchor = useRef<HTMLElement | null>(null);
+  const [menu, setMenu] = useState<{ track: MusicTrack; x: number; y: number } | null>(null);
+  const { goToArtist } = useMusicNavigate();
+  const { openPlaylistPicker } = useMusicPlaylistPicker();
+  const selected = menu?.track ?? null;
+  const menuItems = useMusicTrackMenuItems(selected, {
+    onPlay: selected
+      ? () => {
+          recordMusicLibraryPlayback("recent", title, recents);
+          ctx.playTrack(selected, recents);
+        }
+      : undefined,
+    onToggleLike: selected ? () => toggleMusicLiked(selected) : undefined,
+    onAddToQueue: selected ? () => enqueueMusic(selected) : undefined,
+    onAddToPlaylist: selected ? () => openPlaylistPicker(selected) : undefined,
+    onGoToArtist: selected ? () => goToArtist(selected.artist, selected) : undefined,
+  });
+
+  const openMenu = (track: MusicTrack) => (event: MouseEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    anchor.current = event.currentTarget;
+    setMenu({ track, x: event.clientX, y: event.clientY });
+  };
+
+  return (
+    <section className="music-quick-section">
+      <MusicSectionHead title={title} onViewAll={ctx.openLibrary} />
+      <div className="music-quick-grid">
+        {recents.slice(0, 8).map((item) => (
+          <div key={item.id} className="music-quick-item" onContextMenu={openMenu(item)}>
+            <button
+              type="button"
+              className="music-quick-remove"
+              aria-label={t("music.recents.remove", { title: item.title })}
+              title={t("music.recents.remove", { title: item.title })}
+              onClick={(event) => {
+                event.stopPropagation();
+                hideMusicRecent(item.id);
+              }}
+            >
+              <X size={13} aria-hidden="true" />
+            </button>
+            <button
+              className="music-quick-art"
+              type="button"
+              aria-label={t("music.card.openItem", { title: item.title })}
+              onClick={() => ctx.openItem(trackItem(item), items)}
+            >
+              {item.artwork ? (
+                <img src={item.artwork} alt="" />
+              ) : (
+                <Music2 size={24} aria-hidden />
+              )}
+            </button>
+            <div className="music-quick-copy">
+              <button type="button" onClick={() => ctx.openItem(trackItem(item), items)}>
+                <strong>{item.title}</strong>
+              </button>
+              <MusicArtistLink name={item.artist} track={item} className="music-quick-artist" />
+              <div className="music-quick-indicators">
+                <MusicMediaBadge kind={item.mediaKind} />
+                <MusicTrackPlaylistChip track={item} />
+                <MusicTrackMixChip track={item} />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+      <MusicTrackMenu
+        anchorRef={anchor}
+        open={selected !== null}
+        onClose={() => setMenu(null)}
+        items={menuItems}
+        position={menu ? { x: menu.x, y: menu.y } : null}
+      />
+    </section>
+  );
+}
+
 function recentsBand(ctx: MusicBandContext): MusicBand | null {
   const recents = ctx.player.recents.filter((track) => !isMusicRecentHidden(track.id)).slice(0, 18);
   if (recents.length === 0) return null;
-  const t = ctx.t;
-  const items = recents.map(trackItem);
   return {
     key: "recents",
-    title: t("music.row.recents"),
+    title: ctx.t("music.row.recents"),
     catalog: false,
-    render: (title) => (
-      <section className="music-quick-section">
-        <MusicSectionHead title={title} onViewAll={ctx.openLibrary} />
-        <div className="music-quick-grid">
-          {recents.slice(0, 8).map((item) => (
-            <div key={item.id} className="music-quick-item">
-              <button
-                type="button"
-                className="music-quick-remove"
-                aria-label={t("music.recents.remove", { title: item.title })}
-                title={t("music.recents.remove", { title: item.title })}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  hideMusicRecent(item.id);
-                }}
-              >
-                <X size={13} aria-hidden="true" />
-              </button>
-              <button
-                className="music-quick-art"
-                type="button"
-                aria-label={t("music.card.openItem", { title: item.title })}
-                onClick={() => ctx.openItem(trackItem(item), items)}
-              >
-                {item.artwork ? (
-                  <img src={item.artwork} alt="" />
-                ) : (
-                  <Music2 size={24} aria-hidden />
-                )}
-              </button>
-              <div className="music-quick-copy">
-                <button type="button" onClick={() => ctx.openItem(trackItem(item), items)}>
-                  <strong>{item.title}</strong>
-                </button>
-                <MusicArtistLink name={item.artist} track={item} className="music-quick-artist" />
-                <div className="music-quick-indicators">
-                  <MusicMediaBadge kind={item.mediaKind} />
-                  <MusicTrackPlaylistChip track={item} />
-                  <MusicTrackMixChip track={item} />
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-    ),
+    render: (title) => <MusicRecentsRow ctx={ctx} title={title} />,
   };
 }
 

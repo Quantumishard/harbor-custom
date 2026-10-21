@@ -9,6 +9,7 @@ import {
 import {
   Copy,
   Disc3,
+  Heart,
   ImageDown,
   ListMusic,
   ListPlus,
@@ -31,6 +32,7 @@ import {
   musicTitleTarget,
 } from "@/lib/music/playback-origin";
 import { getMusicState } from "@/lib/music/player";
+import { useMusicTrackLiked } from "@/lib/music/use-track-liked";
 import { useArtistCredits } from "./use-artist-credits";
 import { useMusicNavigate } from "./music-navigate";
 import type { MusicTrack } from "@/lib/music/types";
@@ -44,6 +46,7 @@ export type MusicTrackMenuItem = {
 
 export type MusicTrackMenuHandlers = {
   onPlay?: () => void;
+  onToggleLike?: () => void;
   onAddToQueue?: () => void;
   onAddToPlaylist?: () => void;
   onGoToArtist?: () => void;
@@ -58,13 +61,29 @@ export function useMusicTrackMenuItems(
   const t = useT();
   const { goToArtist, goToAlbum } = useMusicNavigate();
   const credits = useArtistCredits(track?.artist ?? "", track?.title ?? "");
-  const { onPlay, onAddToQueue, onAddToPlaylist, onGoToArtist, onGoToAlbum, onMoreLikeThis } =
-    handlers;
+  const {
+    onPlay,
+    onToggleLike,
+    onAddToQueue,
+    onAddToPlaylist,
+    onGoToArtist,
+    onGoToAlbum,
+    onMoreLikeThis,
+  } = handlers;
+  const liked = useMusicTrackLiked(track);
 
   const items: MusicTrackMenuItem[] = [];
   if (!track) return items;
   if (onPlay)
     items.push({ id: "play", label: t("music.play"), icon: <Play size={14} />, run: onPlay });
+  if (onToggleLike) {
+    items.push({
+      id: "like",
+      label: t(liked ? "music.unsaveTrack" : "music.saveTrack"),
+      icon: <Heart size={14} fill={liked ? "currentColor" : "none"} />,
+      run: onToggleLike,
+    });
+  }
   if (track.artwork) {
     items.push({
       id: "artwork",
@@ -178,11 +197,13 @@ export function MusicTrackMenu({
   open,
   onClose,
   items,
+  position,
 }: {
   anchorRef: RefObject<HTMLElement | null>;
   open: boolean;
   onClose: () => void;
   items: MusicTrackMenuItem[];
+  position?: { x: number; y: number } | null;
 }) {
   const t = useT();
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -197,7 +218,13 @@ export function MusicTrackMenu({
   }, [open]);
 
   return (
-    <AnchoredMenu anchorRef={anchorRef} open={open} onClose={onClose} width={220}>
+    <AnchoredMenu
+      anchorRef={anchorRef}
+      open={open}
+      onClose={onClose}
+      fitContent
+      position={position}
+    >
       <div
         role="menu"
         data-dropdown-menu
@@ -268,17 +295,35 @@ export function useMusicTrackContextMenu(
   const items = useMusicTrackMenuItems(track, handlers);
   const anchorRef = useRef<HTMLElement | null>(null);
   const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
   const onContextMenu = (event: MouseEvent<HTMLElement>) => {
     if (!items.length) return;
     event.preventDefault();
     event.stopPropagation();
     anchorRef.current = event.currentTarget;
+    setPosition(
+      event.type === "contextmenu" && (event.clientX !== 0 || event.clientY !== 0)
+        ? { x: event.clientX, y: event.clientY }
+        : null,
+    );
     setOpen(true);
   };
-  const close = () => setOpen(false);
+  const close = () => {
+    setOpen(false);
+    setPosition(null);
+  };
   return {
     open,
+    position,
     onContextMenu,
-    menu: <MusicTrackMenu anchorRef={anchorRef} open={open} onClose={close} items={items} />,
+    menu: (
+      <MusicTrackMenu
+        anchorRef={anchorRef}
+        open={open}
+        onClose={close}
+        items={items}
+        position={position}
+      />
+    ),
   };
 }

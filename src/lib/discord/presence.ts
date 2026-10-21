@@ -1,13 +1,17 @@
-import { HARBOR_API_BASE } from "@/lib/config/endpoints";
 import type { MangaReadingState } from "@/lib/manga-reading-state";
+import { stripColorTag } from "@/lib/manga/title";
+import { mangaDiscordCover, onMangaCoverResolved } from "./manga-cover";
 
 const IS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
-const HARBOR_LOGO = `${HARBOR_API_BASE}/discord/harbordiscord.png`;
 // Discord strips buttons that link to its own invites: discord.gg makes it
 // reject the whole activity (presence vanishes), discord.com/invite is dropped
 // silently. A community-invite button needs a redirect on a domain we own.
-const STATIC_BUTTONS = [{ label: "Harbor Website", url: "https://harbor.elfhosted.com/" }];
+const STATIC_BUTTONS = [
+  { label: "Harbor Website", url: "https://harborcommunity.site" },
+];
+/** How long a paused song keeps its presence before it clears. */
+const MUSIC_PAUSED_HIDE_MS = 3500;
 
 type DiscordConfig = {
   enabled: boolean;
@@ -18,6 +22,7 @@ type DiscordConfig = {
   showTimestamp: boolean;
   showPartyJoin: boolean;
   showMusic: boolean;
+  hideMusicWhenPaused: boolean;
 };
 
 export type MusicPresence = {
@@ -51,6 +56,10 @@ export type BrowsePresence = {
   state?: string;
   largeImage?: string;
   largeText?: string;
+  /** Marks a manga hint so the presence can substitute a Discord-safe cover. */
+  kind?: "manga";
+  /** Manga id, used to disambiguate a common title's poster by author. */
+  id?: string;
 };
 
 export type PartyPresence = {
@@ -68,6 +77,7 @@ let config: DiscordConfig = {
   showTimestamp: true,
   showPartyJoin: true,
   showMusic: true,
+  hideMusicWhenPaused: true,
 };
 let playback: PlaybackPresence | null = null;
 let music: MusicPresence | null = null;
@@ -78,6 +88,8 @@ let lastEnabledSent: boolean | null = null;
 let lastKey = "";
 let lastStartTs: number | null = null;
 let flushTimer: number | null = null;
+let musicPausedAt: number | null = null;
+let musicHideTimer: number | null = null;
 
 async function call(cmd: string, args?: Record<string, unknown>): Promise<void> {
   if (!IS_TAURI) return;
@@ -92,6 +104,8 @@ async function call(cmd: string, args?: Record<string, unknown>): Promise<void> 
 type Computed = { payload: Record<string, unknown> | null; key: string };
 type Base = { payload: Record<string, unknown>; key: string } | null;
 
+// Artwork is optional: the native side falls back to the Harbor Discord asset when no
+// poster is supplied, so a presence without an image still carries the logo.
 function computeBase(): Base {
   if (playback && !(playback.paused && !config.showWhenPaused)) {
     if (config.hideTitle) {
@@ -99,7 +113,6 @@ function computeBase(): Base {
         payload: {
           details: "Watching something",
           state: playback.paused ? "Paused" : undefined,
-          posterUrl: HARBOR_LOGO,
           paused: playback.paused,
         },
         key: `hide:${playback.paused}`,
@@ -115,7 +128,7 @@ function computeBase(): Base {
       payload: {
         details: playback.title,
         state,
-        posterUrl: (config.showPoster && playback.posterUrl) || HARBOR_LOGO,
+        posterUrl: config.showPoster ? playback.posterUrl : undefined,
         smallImageUrl: (config.showPoster && playback.smallImageUrl) || undefined,
         largeText: playback.year != null ? `${playback.title} (${playback.year})` : playback.title,
         startTs:
@@ -126,13 +139,12 @@ function computeBase(): Base {
       key: `play:${playback.title}|${state ?? ""}|${playback.paused}|${playback.posterUrl ?? ""}|${live ? "ts" : "nots"}`,
     };
   }
-  if (music && config.showMusic && !party && !(music.paused && !config.showWhenPaused)) {
+  if (music && config.showMusic && !party && !pausedMusicHidden()) {
     if (config.hideTitle) {
       return {
         payload: {
           details: "Listening to something",
           state: music.paused ? "Paused" : undefined,
-          posterUrl: HARBOR_LOGO,
           activityType: "listening",
           paused: music.paused,
         },
@@ -142,8 +154,10 @@ function computeBase(): Base {
     const nowSec = Math.floor(Date.now() / 1000);
     const remaining = music.durationSec - music.positionSec;
     const live = !music.paused && music.durationSec > 0 && remaining > 0;
-    const credit = music.album ? `${music.artist} · ${music.album}` : music.artist;
-    const state = music.paused ? `Paused · ${music.artist}` : credit;
+    // Discord renders details, state and the large-image text as three lines, so each line
+    // carries one credit: the song, the artist, then the album. Repeating the album and
+    // artist in two of them reads as a duplicate.
+    const state = music.paused ? `Paused · ${music.artist}` : music.artist;
     const buttons = music.trackUrl
       ? [{ label: "Listen in Harbor", url: music.trackUrl }, ...STATIC_BUTTONS]
       : STATIC_BUTTONS;
@@ -153,8 +167,8 @@ function computeBase(): Base {
         detailsUrl: music.trackUrl,
         state,
         stateUrl: music.artistUrl ?? music.trackUrl,
-        posterUrl: (config.showPoster && music.artwork) || HARBOR_LOGO,
-        largeText: music.album ? `${music.album} by ${music.artist}` : music.artist,
+        posterUrl: config.showPoster ? music.artwork : undefined,
+        largeText: music.album,
         largeUrl: music.albumUrl ?? music.trackUrl,
         smallUrl: STATIC_BUTTONS[0].url,
         startTs: live && config.showTimestamp ? nowSec - Math.floor(music.positionSec) : undefined,
@@ -172,40 +186,55 @@ function computeBase(): Base {
         payload: {
           details: "Reading something",
           state: reading.page > 0 ? `Page ${reading.page}/${reading.totalPages}` : undefined,
-          posterUrl: HARBOR_LOGO,
         },
         key: `read:hide:${reading.page}/${reading.totalPages}`,
       };
     }
     const state = `${reading.chapterLabel}, page ${reading.page}/${reading.totalPages}`;
+    const title = stripColorTag(reading.title);
+    const poster = config.showPoster
+      ? mangaDiscordCover(reading.cover, title, reading.mangaId)
+      : undefined;
     return {
       payload: {
-        details: reading.title,
+        details: title,
         state,
-        posterUrl: (config.showPoster && reading.cover) || HARBOR_LOGO,
-        largeText: reading.title,
+        posterUrl: poster,
+        largeText: title,
       },
-      key: `read:${reading.title}|${state}|${reading.cover ?? ""}`,
+      key: `read:${reading.title}|${state}|${poster ?? ""}`,
     };
   }
   if (browse && config.showWhenBrowsing) {
     if (config.hideTitle)
       return {
-        payload: { details: "Browsing Harbor", posterUrl: HARBOR_LOGO },
+        payload: { details: "Browsing Harbor" },
         key: "browse:hide",
       };
+    const isManga = browse.kind === "manga";
+    const details = isManga
+      ? stripColorTag(browse.details ?? "Browsing Harbor")
+      : (browse.details ?? "Browsing Harbor");
+    const largeText = isManga
+      ? stripColorTag(browse.largeText ?? browse.details ?? "")
+      : (browse.largeText ?? browse.details);
+    const poster = config.showPoster
+      ? isManga
+        ? mangaDiscordCover(browse.largeImage, largeText, browse.id)
+        : browse.largeImage
+      : undefined;
     return {
       payload: {
-        details: browse.details ?? "Browsing Harbor",
+        details,
         state: browse.state,
-        posterUrl: (config.showPoster && browse.largeImage) || HARBOR_LOGO,
-        largeText: browse.largeText ?? browse.details,
+        posterUrl: poster,
+        largeText,
       },
-      key: `browse:${browse.details ?? ""}|${browse.state ?? ""}|${browse.largeImage ?? ""}`,
+      key: `browse:${browse.details ?? ""}|${browse.state ?? ""}|${poster ?? ""}`,
     };
   }
   if (party) {
-    return { payload: { details: "In a Watch Party", posterUrl: HARBOR_LOGO }, key: "party-only" };
+    return { payload: { details: "In a Watch Party" }, key: "party-only" };
   }
   return null;
 }
@@ -267,9 +296,67 @@ function schedule(): void {
   }, 800);
 }
 
+/** A discrete change (a new song) must not sit behind the debounce. */
+function flushNow(): void {
+  if (flushTimer != null) {
+    window.clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+  flush();
+}
+
+// An async AniList cover lookup landing after the first send must re-flush so
+// the poster shows without waiting for the next page turn.
+onMangaCoverResolved(schedule);
+
+function clearMusicHideTimer(): void {
+  if (musicHideTimer != null) {
+    window.clearTimeout(musicHideTimer);
+    musicHideTimer = null;
+  }
+}
+
+/**
+ * Arms the one-shot hide from the pause itself, so the presence clears on time even when no
+ * other state changes while the song sits paused.
+ */
+function armMusicHideTimer(): void {
+  if (music?.paused !== true || musicPausedAt == null || !config.hideMusicWhenPaused) {
+    clearMusicHideTimer();
+    return;
+  }
+  if (musicHideTimer != null) return;
+  const wait = Math.max(0, MUSIC_PAUSED_HIDE_MS - (Date.now() - musicPausedAt));
+  musicHideTimer = window.setTimeout(() => {
+    musicHideTimer = null;
+    // Flush at the deadline itself: the debounce would add up to another 800ms, and this
+    // timer is already the precise moment the presence is supposed to go.
+    flush();
+  }, wait + 50);
+}
+
+/** True once a paused song should no longer occupy the presence. */
+function pausedMusicHidden(): boolean {
+  if (!music || !music.paused) return false;
+  if (!config.showWhenPaused) return true;
+  return (
+    config.hideMusicWhenPaused &&
+    musicPausedAt != null &&
+    Date.now() - musicPausedAt >= MUSIC_PAUSED_HIDE_MS
+  );
+}
+
 export function configureDiscord(next: DiscordConfig): void {
   config = next;
   lastKey = "";
+  // Turning the setting on while a song is already paused starts its grace period now;
+  // turning it off releases the pause so the song can show again.
+  if (next.hideMusicWhenPaused) {
+    if (music?.paused === true && musicPausedAt == null) musicPausedAt = Date.now();
+  } else {
+    musicPausedAt = null;
+  }
+  armMusicHideTimer();
   schedule();
 }
 
@@ -297,8 +384,19 @@ export function setPlaybackPresence(p: PlaybackPresence | null): void {
 }
 
 export function setMusicPresence(m: MusicPresence | null): void {
+  const wasPaused = music?.paused === true;
+  const isPaused = m?.paused === true;
+  const changedTrack =
+    m != null && (music == null || music.title !== m.title || music.artist !== m.artist);
   music = m;
-  schedule();
+  // The grace period starts when the song becomes paused (or a different paused song
+  // arrives); a repeated publish of the same paused state must not restart the clock.
+  if (!isPaused) musicPausedAt = null;
+  else if (!wasPaused || changedTrack) musicPausedAt = Date.now();
+  armMusicHideTimer();
+  // A track change is a discrete moment; the debounce would leave Discord a step behind.
+  if (changedTrack) flushNow();
+  else schedule();
 }
 
 export function setReadingPresence(r: MangaReadingState): void {

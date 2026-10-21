@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   BookOpen,
@@ -10,6 +10,7 @@ import {
   List,
   Loader2,
   Pause,
+  RefreshCw,
   Server,
   Tv,
 } from "lucide-react";
@@ -17,7 +18,6 @@ import { Play } from "@/components/icons/play-filled";
 import { Search } from "@/components/icons/search-icon";
 import { t, useT } from "@/lib/i18n";
 import { Flag, flagSrc } from "@/components/flag";
-import { useContextMenu } from "@/lib/context-menu";
 import { languageName, type MangaChapter } from "@/lib/manga/model";
 import {
   useMangaProgressEntry,
@@ -35,6 +35,36 @@ import {
 } from "@/lib/manga-downloads";
 import { listMangaSources, sourceIconUrl } from "@/lib/manga/sources";
 import { chapterGroupKey } from "@/lib/manga/chapter-identity";
+import { useMangaChapterContext } from "@/lib/use-manga-chapter-context";
+
+function ChapterContextButton({
+  mangaId,
+  mangaTitle,
+  mangaCover,
+  chapter,
+  onClick,
+  className,
+  children,
+}: {
+  mangaId: string;
+  mangaTitle?: string;
+  mangaCover?: string;
+  chapter: MangaChapter;
+  onClick: () => void;
+  className: string;
+  children: ReactNode;
+}) {
+  const ref = useMangaChapterContext<HTMLButtonElement>(
+    { id: mangaId, title: mangaTitle ?? "", cover: mangaCover },
+    chapter,
+    onClick,
+  );
+  return (
+    <button ref={ref} type="button" onClick={onClick} className={className}>
+      {children}
+    </button>
+  );
+}
 
 type ChapterView = "grid" | "list";
 const VIEW_KEY = "harbor.manga.chapterview";
@@ -200,6 +230,33 @@ function ChapterProgress({ page, total }: { page: number; total: number }) {
 function chapterSourceId(id: string): string {
   const i = id.indexOf("::");
   return i === -1 ? "" : id.slice(0, i);
+}
+
+// The owning provider of an aggregate manga id ("providerId::orig").
+function ownSourceId(mangaId?: string): string {
+  if (!mangaId) return "";
+  const i = mangaId.indexOf("::");
+  return i === -1 ? "" : mangaId.slice(0, i);
+}
+
+const CHAPTER_SOURCE_KEY = "harbor.manga.chaptersource.v1.";
+const CHAPTER_SCAN_KEY = "harbor.manga.chapterscan.v1.";
+
+function readStored(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStored(key: string, value: string): void {
+  try {
+    if (value) localStorage.setItem(key, value);
+    else localStorage.removeItem(key);
+  } catch {
+    /* storage unavailable — filters simply reset */
+  }
 }
 
 function isCurrentChapter(progress: MangaProgressEntry | undefined, c: MangaChapter): boolean {
@@ -398,6 +455,7 @@ export function ChapterList({
   mangaCover,
   animeEndChapter,
   pending = false,
+  onRefresh,
   scrollRoot,
 }: {
   chapters: MangaChapter[];
@@ -410,6 +468,7 @@ export function ChapterList({
   mangaCover?: string;
   animeEndChapter?: number;
   pending?: boolean;
+  onRefresh?: () => void;
   scrollRoot?: RefObject<HTMLElement | null>;
 }) {
   const t = useT();
@@ -418,27 +477,30 @@ export function ChapterList({
   const [view, setView] = useState<ChapterView>(readView);
   const [range, setRange] = useState<number | null>(null);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-  const [sourceFilter, setSourceFilter] = useState("");
-  const [scanFilter, setScanFilter] = useState("");
+  const [sourceFilter, setSourceFilterState] = useState("");
+  const [scanFilter, setScanFilterState] = useState("");
+  const filterInitRef = useRef("");
+  const userPickedSourceRef = useRef(false);
   const batch = useMangaDownloadBatch(mangaId ?? "");
+
+  const chooseSource = (id: string) => {
+    userPickedSourceRef.current = true;
+    setSourceFilterState(id);
+    writeStored(CHAPTER_SOURCE_KEY + (mangaId ?? ""), id);
+  };
+  const chooseScan = (name: string) => {
+    setScanFilterState(name);
+    writeStored(CHAPTER_SCAN_KEY + (mangaId ?? ""), name);
+  };
 
   useEffect(() => {
     localStorage.setItem(VIEW_KEY, view);
   }, [view]);
 
+  // A new manga resets the one-shot filter handling below.
   useEffect(() => {
-    setRange(null);
-    setVisibleCount(PAGE_SIZE);
-  }, [selectedLang, scanFilter, mangaId]);
-
-  const progress = useMangaProgressEntry(mangaId, mangaTitle);
-  const readIds = useReadMangaChapterIds(mangaId);
-  const isRead = (c: MangaChapter) => c.serverRead === true || readIds.has(c.id);
-  const { open: openContextMenu } = useContextMenu();
-  const chapterMenu = (e: ReactMouseEvent, c: MangaChapter) => {
-    if (!mangaId) return;
-    openContextMenu(e, { kind: "manga-chapter", mangaId, mangaTitle, mangaCover, chapter: c });
-  };
+    userPickedSourceRef.current = false;
+  }, [mangaId]);
 
   const sourceOptions = useMemo(() => {
     const all = listMangaSources();
@@ -450,9 +512,40 @@ export function ChapterList({
     });
   }, [chapters]);
 
+  // Restore the persisted source/scanlator filter, defaulting to the owning
+  // source instead of "All" on first visit. Runs once per manga after its
+  // chapters finish streaming so partially-loaded options cannot decide.
   useEffect(() => {
-    if (sourceFilter && !sourceOptions.some((o) => o.id === sourceFilter)) setSourceFilter("");
-  }, [sourceOptions, sourceFilter]);
+    const key = mangaId ?? "";
+    if (!key || filterInitRef.current === key || userPickedSourceRef.current) return;
+    if (pending) return;
+    filterInitRef.current = key;
+    const stored = readStored(CHAPTER_SOURCE_KEY + key);
+    if (stored && sourceOptions.some((o) => o.id === stored)) {
+      setSourceFilterState(stored);
+    } else if (stored !== "") {
+      const own = ownSourceId(mangaId);
+      setSourceFilterState(own && sourceOptions.some((o) => o.id === own) ? own : "");
+    } else {
+      setSourceFilterState("");
+    }
+    const storedScan = readStored(CHAPTER_SCAN_KEY + key);
+    setScanFilterState(storedScan ?? "");
+  }, [mangaId, pending, sourceOptions]);
+
+  useEffect(() => {
+    setRange(null);
+    setVisibleCount(PAGE_SIZE);
+  }, [selectedLang, scanFilter, mangaId]);
+
+  const progress = useMangaProgressEntry(mangaId, mangaTitle);
+  const readIds = useReadMangaChapterIds(mangaId);
+  const isRead = (c: MangaChapter) => c.serverRead === true || readIds.has(c.id);
+
+  useEffect(() => {
+    if (pending) return;
+    if (sourceFilter && !sourceOptions.some((o) => o.id === sourceFilter)) setSourceFilterState("");
+  }, [sourceOptions, sourceFilter, pending]);
 
   const rawScoped = useMemo(
     () =>
@@ -480,8 +573,9 @@ export function ChapterList({
   }, [rawScoped]);
 
   useEffect(() => {
-    if (scanFilter && !scanOptions.some((o) => o.name === scanFilter)) setScanFilter("");
-  }, [scanOptions, scanFilter]);
+    if (pending) return;
+    if (scanFilter && !scanOptions.some((o) => o.name === scanFilter)) chooseScan("");
+  }, [scanOptions, scanFilter, pending]);
 
   const scoped = useMemo(
     () => (scanFilter ? rawScoped.filter((c) => displayGroup(c.group) === scanFilter) : rawScoped),
@@ -561,11 +655,28 @@ export function ChapterList({
     onRead(ascending, index >= 0 ? index : 0);
   };
   const showMore = () => setVisibleCount((n) => n + PAGE_SIZE);
+  const refreshButton = onRefresh && (
+    <button
+      type="button"
+      onClick={onRefresh}
+      disabled={pending}
+      className="inline-flex h-11 items-center gap-2 rounded-xl border border-edge-soft bg-surface/60 px-4 text-[14px] text-ink transition-colors hover:border-edge hover:bg-elevated/60 disabled:cursor-default disabled:opacity-50"
+    >
+      <RefreshCw
+        size={16}
+        className={pending ? "animate-spin motion-reduce:animate-none" : undefined}
+      />
+      {t("Refresh")}
+    </button>
+  );
 
   if (chapters.length === 0) {
     return (
       <section className="flex flex-col gap-6">
-        <h2 className="text-[22px] font-medium tracking-tight text-ink">{t("Chapters")}</h2>
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <h2 className="text-[22px] font-medium tracking-tight text-ink">{t("Chapters")}</h2>
+          {refreshButton}
+        </div>
         <div className="rounded-2xl border border-edge-soft bg-surface/40 px-6 py-14 text-center">
           {pending ? (
             <p className="flex items-center justify-center gap-2 text-[15px] text-ink-muted">
@@ -606,11 +717,13 @@ export function ChapterList({
         </div>
       ) : null;
     const row = (
-      <button
+      <ChapterContextButton
         key={c.id}
-        type="button"
+        mangaId={mangaId ?? ""}
+        mangaTitle={mangaTitle}
+        mangaCover={mangaCover}
+        chapter={c}
         onClick={() => readChapter(c)}
-        onContextMenu={(e) => chapterMenu(e, c)}
         className={`group relative flex min-h-[64px] w-full items-center justify-between gap-4 ${last ? "" : "border-b border-edge-soft/60 "}px-5 py-3.5 text-start transition-colors hover:bg-elevated/40 ${
           cur ? "bg-accent/5" : ""
         }`}
@@ -652,7 +765,7 @@ export function ChapterList({
             className="shrink-0 text-ink-subtle transition-colors group-hover:text-accent"
           />
         </div>
-      </button>
+      </ChapterContextButton>
     );
     return volumeHead ? [volumeHead, row] : row;
   };
@@ -671,6 +784,7 @@ export function ChapterList({
           )}
         </div>
         <div className="flex flex-wrap items-center gap-3">
+          {refreshButton}
           <div className="flex h-11 items-center gap-1 rounded-xl border border-edge-soft bg-surface/60 p-1">
             {(
               [
@@ -759,7 +873,7 @@ export function ChapterList({
             <SourceFilterDropdown
               options={sourceOptions}
               selected={sourceFilter}
-              onSelect={setSourceFilter}
+              onSelect={chooseSource}
             />
           )}
           {langs.length > 1 && (
@@ -786,7 +900,7 @@ export function ChapterList({
           <span className="mr-1 text-[13px] font-medium text-ink-subtle">{t("Scanlator")}</span>
           <button
             type="button"
-            onClick={() => setScanFilter("")}
+            onClick={() => chooseScan("")}
             className={`h-9 rounded-lg px-3.5 text-[13px] font-medium transition-colors ${
               scanFilter === ""
                 ? "bg-accent text-canvas"
@@ -799,7 +913,7 @@ export function ChapterList({
             <button
               key={o.name}
               type="button"
-              onClick={() => setScanFilter(o.name)}
+              onClick={() => chooseScan(o.name)}
               className={`h-9 rounded-lg px-3.5 text-[13px] font-medium transition-colors ${
                 scanFilter === o.name
                   ? "bg-accent text-canvas"
@@ -871,7 +985,9 @@ export function ChapterList({
               })}
             </div>
           ) : (
-            renderSource.map((c, i) => renderListRow(c, i, renderSource, i === renderSource.length - 1))
+            renderSource.map((c, i) =>
+              renderListRow(c, i, renderSource, i === renderSource.length - 1),
+            )
           )}
         </div>
       ) : (
@@ -882,11 +998,13 @@ export function ChapterList({
           {visible.map((c) => {
             const cur = isCurrentChapter(progress, c);
             return (
-              <button
+              <ChapterContextButton
                 key={c.id}
-                type="button"
+                mangaId={mangaId ?? ""}
+                mangaTitle={mangaTitle}
+                mangaCover={mangaCover}
+                chapter={c}
                 onClick={() => readChapter(c)}
-                onContextMenu={(e) => chapterMenu(e, c)}
                 className={`group relative flex min-h-[64px] flex-col justify-between gap-2 rounded-xl border bg-surface/60 px-4 py-3.5 text-start transition-colors hover:bg-elevated/60 ${
                   cur ? "border-accent/70" : "border-edge-soft hover:border-edge"
                 }`}
@@ -930,7 +1048,7 @@ export function ChapterList({
                     />
                   </div>
                 </div>
-              </button>
+              </ChapterContextButton>
             );
           })}
         </div>

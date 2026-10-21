@@ -67,6 +67,12 @@ export type SubResult = {
   upstreamProvider?: string;
   hash?: string;
   timingStatus?: SubtitleTimingStatus;
+  /**
+   * The URL is served by the same origin as the user-installed local-network
+   * addon that provided it. Downloading it may use the local fetch guard
+   * exemption instead of the public-network-only policy.
+   */
+  localTrusted?: boolean;
 };
 
 export type SubtitleLoadMetadata = {
@@ -98,6 +104,8 @@ export type SubtitleLoadMetadata = {
   providerMatch?: ProviderMatchEvidence;
   downloadAuth?: SubtitleDownloadAuth;
   providerDerived?: boolean;
+  /** See SubResult.localTrusted; downloads for these tracks may use local networking. */
+  localTrusted?: boolean;
   prepared?: boolean;
   autoSelectionEligible?: boolean;
   originalUrl?: string;
@@ -107,6 +115,12 @@ export type SubtitleLoadMetadata = {
    * and to replace a previous track for the same source instead of duplicating it.
    */
   refreshable?: boolean;
+  /**
+   * The source is an on-demand translation offer (a generated "Make Hindi" variant
+   * rather than a language code). The same URL is fetched again until the addon
+   * serves the finished file, and only an explicit viewer pick may start that work.
+   */
+  translation?: boolean;
   timingStatus?: SubtitleTimingStatus;
   timingMeasurementStatus?: "measured" | "unknown";
   matchExplanation?: SubtitleMatchExplanation;

@@ -1,4 +1,6 @@
 const coverage: Record<string, string> = {
+  "Waiting for {name}…": "In attesa di {name}…",
+  "Keeping the source you were watching.": "Mantengo la sorgente che stavi guardando.",
   "Sound descriptions": "Descrizioni sonore",
   "Hide sound effects and speaker names": "Nascondi effetti sonori e nomi dei personaggi",
   "Removes bracketed descriptions like [door creaks] and shouted speaker labels like JOHN: while subtitles play, so a release that only ships an SDH track still reads as plain dialogue. Song lyrics, ordinary parentheses and non-Latin scripts are left alone. Skipped on forced and picture-based tracks.":
@@ -298,7 +300,7 @@ const coverage: Record<string, string> = {
   "Harbor Rank": "Harbor Rank",
   "Harbor couldn't reach MyAnimeList or AniList. Check the connection and reopen Big Picture.":
     "Harbor non è riuscito a contattare MyAnimeList o AniList. Controlla la connessione e riapri Big Picture.",
-  "Harbor is closing. Harbor Setup will finish and reopen it.":
+  "Harbor is closing. Harbor Shipyard will finish and reopen it.":
     "Harbor si sta chiudendo. Il programma di installazione completerà l'operazione e riaprirà Harbor.",
   "Harbor never hosts your books or source files.":
     "Harbor non ospita mai i tuoi libri né i file sorgente.",

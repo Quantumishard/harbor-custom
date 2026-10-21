@@ -1,5 +1,8 @@
 # Badge-gated experimental updates: server handoff
 
+> Note: the managed installer was renamed from Harbor Setup to Harbor Shipyard on
+> 2026-10-16. Status entries below keep the name that was in use when they were written.
+
 ## Status
 
 ### September 4: Harbor account badge gate
@@ -64,7 +67,7 @@ Both use branch `codex/experimental-feed`; neither has been pushed.
 | Experimental              | `updates/latest-experimental.json` | Add a new manifest and explicit route |
 
 The app keeps the configured native Tauri URL,
-`https://harbor.site/updates/latest.json`, with `x-harbor-channel: experimental`.
+`https://harborcommunity.site/updates/latest.json`, with `x-harbor-channel: experimental`.
 Its preliminary browser fetch instead uses `/updates/latest-experimental.json`
 with no custom request header. This simple CORS GET avoids changing the normal
 channels' preflight behavior. The compiled native endpoint and signing key stay

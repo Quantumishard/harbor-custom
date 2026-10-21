@@ -2136,10 +2136,10 @@ const catalogSU: Record<string, string> = {
   "This member has hidden their showcase, activity and friends from public view.":
     "इस सदस्य ने अपना शोकेस, अपनी गतिविधि और अपने दोस्तों को सार्वजनिक रूप से छिपा रखा है।",
   "This month": "इस महीने",
-  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Setup. Harbor closes, the installer finishes, then Harbor reopens.":
-    "यह Harbor के साथ दिए गए प्लेयर और टूल भी बदलता है, इसलिए इसे Harbor Setup के ज़रिए इंस्टॉल किया जाता है। Harbor बंद होगा, इंस्टॉलर अपना काम पूरा करेगा, फिर Harbor दोबारा खुलेगा।",
-  "This one installs through Harbor Setup, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
-    "यह Harbor Setup के ज़रिए इंस्टॉल होता है, लेकिन अपडेट मैनिफ़ेस्ट में इसके लिए कोई सिग्नेचर नहीं है। Harbor ऐसा इंस्टॉलर नहीं चलाएगा जिसे वह सत्यापित न कर सके। इसे डाउनलोड करके खुद चलाएँ।",
+  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Shipyard. Harbor closes, the installer finishes, then Harbor reopens.":
+    "यह Harbor के साथ दिए गए प्लेयर और टूल भी बदलता है, इसलिए इसे Harbor Shipyard के ज़रिए इंस्टॉल किया जाता है। Harbor बंद होगा, इंस्टॉलर अपना काम पूरा करेगा, फिर Harbor दोबारा खुलेगा।",
+  "This one installs through Harbor Shipyard, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
+    "यह Harbor Shipyard के ज़रिए इंस्टॉल होता है, लेकिन अपडेट मैनिफ़ेस्ट में इसके लिए कोई सिग्नेचर नहीं है। Harbor ऐसा इंस्टॉलर नहीं चलाएगा जिसे वह सत्यापित न कर सके। इसे डाउनलोड करके खुद चलाएँ।",
   "This only takes a moment the first time.": "पहली बार इसमें बस कुछ पल लगते हैं।",
   "This opens Harbor to devices on your Wi-Fi. You can turn it off again in Settings.":
     "इससे आपके Wi-Fi पर मौजूद डिवाइस Harbor को ऐक्सेस कर सकेंगे। आप इसे सेटिंग्स में फिर से बंद कर सकते हैं।",

@@ -715,10 +715,10 @@ const catalog: Record<string, string> = {
   "This member has hidden their showcase, activity and friends from public view.":
     "Anggota ini menyembunyikan etalase, aktivitas, dan teman mereka dari tampilan publik.",
   "This month": "Bulan ini",
-  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Setup. Harbor closes, the installer finishes, then Harbor reopens.":
-    "Yang ini juga menggantikan pemutar dan alat bawaan Harbor, jadi pemasangannya dilakukan melalui Harbor Setup. Harbor akan ditutup, pemasang menyelesaikan prosesnya, lalu Harbor dibuka kembali.",
-  "This one installs through Harbor Setup, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
-    "Yang ini dipasang melalui Harbor Setup, tetapi manifes pembaruannya tidak memiliki tanda tangan. Harbor tidak akan menjalankan pemasang yang tidak dapat diverifikasi. Unduh dan jalankan sendiri.",
+  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Shipyard. Harbor closes, the installer finishes, then Harbor reopens.":
+    "Yang ini juga menggantikan pemutar dan alat bawaan Harbor, jadi pemasangannya dilakukan melalui Harbor Shipyard. Harbor akan ditutup, pemasang menyelesaikan prosesnya, lalu Harbor dibuka kembali.",
+  "This one installs through Harbor Shipyard, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
+    "Yang ini dipasang melalui Harbor Shipyard, tetapi manifes pembaruannya tidak memiliki tanda tangan. Harbor tidak akan menjalankan pemasang yang tidak dapat diverifikasi. Unduh dan jalankan sendiri.",
   "This only takes a moment the first time.":
     "Ini hanya memerlukan waktu sejenak saat pertama kali.",
   "This opens Harbor to devices on your Wi-Fi. You can turn it off again in Settings.":

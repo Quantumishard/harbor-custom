@@ -10,6 +10,8 @@ import { timeAgo } from "./profile-bits";
 import { ACTIVITY_VERB, ActivityGlyph } from "./recent-activity";
 import type { ActivityItem, Badge } from "./profile-types";
 import { useProfileTitle } from "./use-profile-title";
+import { profileMediaMeta } from "@/lib/social/profile-media-meta";
+import { useTitleContext } from "@/components/context-menu/use-title-context";
 
 type Section = "lists" | "badges" | "activity";
 
@@ -148,11 +150,7 @@ function ListsSection({
           )}
           <div className="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-x-4 gap-y-5">
             {list.items.map((item) => (
-              <ListItem
-                key={item.id}
-                item={item}
-                onOpenMeta={onOpenMeta}
-              />
+              <ListItem key={item.id} item={item} onOpenMeta={onOpenMeta} />
             ))}
           </div>
         </div>
@@ -161,14 +159,22 @@ function ListsSection({
   );
 }
 
-function ListItem({ item, onOpenMeta }: {
+function ListItem({
+  item,
+  onOpenMeta,
+}: {
   item: FeaturedItem;
   onOpenMeta?: (id: string, kind?: string, hint?: { name?: string; poster?: string }) => void;
 }) {
   const media = useProfileTitle(item.id, item.name, item.poster, item.type);
+  const onContextMenu = useTitleContext(
+    profileMediaMeta(item.id, item.type, { name: media.title, poster: media.poster }),
+    media.poster,
+  );
   return (
     <button
       ref={media.ref}
+      onContextMenu={onContextMenu}
       onClick={() => onOpenMeta?.(item.id, item.type, { name: media.title, poster: media.poster })}
       disabled={!onOpenMeta}
       className="group text-start disabled:cursor-default"

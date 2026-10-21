@@ -1,4 +1,5 @@
 import type { Meta } from "../../cinemeta";
+import { movieReleaseDates, type MovieRelease } from "./movie-release-dates";
 import { get, IMG, effectiveTmdbLanguage } from "./tmdb-client";
 import { tmdbBackdropUrl, tmdbPosterUrl } from "./tmdb-image-rungs";
 import { loadStoredSettings } from "@/lib/settings/load";
@@ -7,7 +8,15 @@ import { imageLangParam, imageLangRank } from "./tmdb-image-lang";
 import { pickTrailers, type Video } from "./tmdb-trailers";
 import type { PersonRef } from "./tmdb-people";
 import { isAnimeItem } from "./tmdb-meta-mappers";
+import {
+  pickTmdbTitle,
+  shouldUseEnglishTitle,
+  tmdbEnglishTranslation,
+  tmdbEnglishTitle,
+} from "./tmdb-title-fallback";
 import { setItemWithRecovery } from "@/lib/storage-recovery";
+import { episodeTextLanguage } from "@/lib/episode-text-language";
+import { isGenericSeasonName } from "@/lib/season-name";
 
 export type CastEntry = {
   id: number;
@@ -29,7 +38,10 @@ export type Season = {
   id: number;
   seasonNumber: number;
   name: string;
+  nameLanguage?: string;
+  isGenericName?: boolean;
   overview: string;
+  overviewLanguage?: string;
   posterPath: string | null;
   episodeCount: number;
   airDate: string | null;
@@ -41,6 +53,8 @@ export type Episode = {
   seasonNumber: number;
   name: string;
   overview: string;
+  nameLanguage?: string;
+  overviewLanguage?: string;
   stillPath: string | null;
   stillUrl?: string;
   airDate: string | null;
@@ -106,12 +120,15 @@ export type TmdbDetail = {
   similar: Meta[];
   collection?: { id: number; name: string } | null;
   seasons: Season[];
+  tmdbTvId?: number;
+  seasonPosters?: Record<number, string>;
   numberOfSeasons: number;
   numberOfEpisodes: number;
   keywords: number[];
   firstAirDate?: string;
   lastAirDate?: string;
   releaseDate?: string;
+  movieReleases?: MovieRelease[];
   lastEpisodeAir?: { seasonNumber: number; airDate: string | null };
   budget?: number;
   revenue?: number;
@@ -236,8 +253,7 @@ export async function tmdbDetails(
   const settings = loadStoredSettings();
   const metaLang = lang ?? (effectiveTmdbLanguage() || "en");
   const raw = await get<any>(key, `${kind}/${id}`, {
-    append_to_response:
-      "credits,aggregate_credits,recommendations,similar,videos,external_ids,images,keywords,translations",
+    append_to_response: `credits,aggregate_credits,recommendations,similar,videos,external_ids,images,keywords,translations${kind === "movie" ? ",release_dates" : ""}`,
     language: metaLang,
     include_image_language: imageLangParam(),
   });
@@ -342,10 +358,49 @@ export async function tmdbDetails(
     name: displayName(c),
   }));
 
+  const recommendationResults: any[] = raw.recommendations?.results ?? [];
+  const similarResults: any[] = raw.similar?.results ?? [];
+  const needsEnglishRelated =
+    settings.translateTitles &&
+    [...recommendationResults, ...similarResults].some((entry) =>
+      shouldUseEnglishTitle({
+        localized: entry.title ?? entry.name ?? "",
+        original: entry.original_title ?? entry.original_name ?? "",
+        originalLanguage: entry.original_language,
+        targetLanguage: metaLang,
+        translateTitles: true,
+      }),
+    );
+  let englishRelatedNames: Map<number, string> | null = null;
+  if (needsEnglishRelated) {
+    const english = await get<any>(key, `${kind}/${id}`, {
+      append_to_response: "recommendations,similar",
+      language: "en-US",
+    });
+    if (english) {
+      englishRelatedNames = new Map();
+      for (const list of [english.recommendations?.results, english.similar?.results]) {
+        for (const entry of list ?? []) {
+          const title = entry?.title ?? entry?.name;
+          if (typeof entry?.id === "number" && typeof title === "string" && title.trim()) {
+            englishRelatedNames.set(entry.id, title.trim());
+          }
+        }
+      }
+    }
+  }
+
   const toMeta = (r: any): Meta => ({
     id: kind === "movie" ? `tmdb:movie:${r.id}` : `tmdb:tv:${r.id}`,
     type: kind === "movie" ? "movie" : "series",
-    name: r.title ?? r.name,
+    name: pickTmdbTitle({
+      localized: r.title ?? r.name ?? "",
+      original: r.original_title ?? r.original_name ?? "",
+      english: englishRelatedNames?.get(r.id),
+      originalLanguage: r.original_language,
+      targetLanguage: metaLang,
+      translateTitles: settings.translateTitles,
+    }),
     poster: tmdbPosterUrl(r.poster_path),
     background: tmdbBackdropUrl(r.backdrop_path),
     description: r.overview,
@@ -355,8 +410,8 @@ export async function tmdbDetails(
     adult: r.adult,
   });
 
-  const recommendations: Meta[] = (raw.recommendations?.results ?? []).map(toMeta);
-  const similar: Meta[] = (raw.similar?.results ?? []).map(toMeta);
+  const recommendations: Meta[] = recommendationResults.map(toMeta);
+  const similar: Meta[] = similarResults.map(toMeta);
 
   const seasons: Season[] = (raw.seasons ?? [])
     .filter((s: any) => s.season_number > 0 && (s.episode_count ?? 0) > 0)
@@ -365,7 +420,10 @@ export async function tmdbDetails(
       id: s.id,
       seasonNumber: s.season_number,
       name: s.name,
+      nameLanguage: episodeTextLanguage(s.name, metaLang),
+      isGenericName: isGenericSeasonName(s.name ?? "", s.season_number),
       overview: s.overview ?? "",
+      overviewLanguage: episodeTextLanguage(s.overview, metaLang),
       posterPath: s.poster_path ?? null,
       episodeCount: s.episode_count ?? 0,
       airDate: s.air_date ?? null,
@@ -385,16 +443,15 @@ export async function tmdbDetails(
   const anime = isAnimeItem(raw);
   const requestedTitle = raw.title || raw.name;
   const originalTitle = raw.original_title || raw.original_name || requestedTitle;
-  const titleFellBackToOriginal = requestedTitle === originalTitle;
 
   let overview = raw.overview ?? "";
   let tagline = raw.tagline ?? "";
-  const enTrans = raw.translations?.translations?.find((t: any) => t.iso_639_1 === "en")?.data;
+  const enTrans = tmdbEnglishTranslation(raw.translations);
   if (!settings.translateDescriptions && !lang) {
     if (enTrans?.overview) overview = enTrans.overview;
     if (enTrans?.tagline) tagline = enTrans.tagline;
   }
-  const enTitle = enTrans?.title || enTrans?.name;
+  const enTitle = tmdbEnglishTitle(raw.translations);
 
   let finalPosterPath = raw.poster_path;
   if (!settings.posterBaseUrl && posterSource?.length) {
@@ -406,17 +463,25 @@ export async function tmdbDetails(
     if (best) finalPosterPath = best.file_path;
   }
 
-  const useEnglishForAnime = anime && (!settings.translateTitles || titleFellBackToOriginal);
+  const useEnglishForAnime = anime && !settings.translateTitles;
+  const useEnglishForFallback = shouldUseEnglishTitle({
+    localized: requestedTitle,
+    original: raw.original_title || raw.original_name || "",
+    originalLanguage: raw.original_language,
+    targetLanguage: metaLang,
+    translateTitles: settings.translateTitles,
+  });
 
   return {
     kind,
     id: raw.id,
     imdbId: raw.external_ids?.imdb_id ?? null,
-    title: useEnglishForAnime
-      ? enTitle || requestedTitle
-      : settings.translateTitles
-        ? requestedTitle
-        : originalTitle,
+    title:
+      useEnglishForFallback || useEnglishForAnime
+        ? enTitle || requestedTitle
+        : settings.translateTitles
+          ? requestedTitle
+          : originalTitle,
     originalTitle: raw.original_title ?? raw.original_name ?? "",
     tagline,
     overview,
@@ -468,12 +533,28 @@ export async function tmdbDetails(
       ? { id: raw.belongs_to_collection.id, name: raw.belongs_to_collection.name ?? "" }
       : null,
     seasons,
+    tmdbTvId: kind === "tv" ? Number(id) : undefined,
+    seasonPosters:
+      kind === "tv"
+        ? Object.fromEntries(
+            (raw.seasons ?? [])
+              .filter(
+                (s: any) =>
+                  Number.isInteger(s.season_number) && s.season_number >= 0 && s.poster_path,
+              )
+              .map((s: any) => [s.season_number, tmdbPosterUrl(s.poster_path)]),
+          )
+        : undefined,
     numberOfSeasons: raw.number_of_seasons ?? 0,
     numberOfEpisodes: raw.number_of_episodes ?? 0,
     keywords,
     firstAirDate: raw.first_air_date,
     lastAirDate: raw.last_air_date,
     releaseDate: raw.release_date,
+    movieReleases:
+      kind === "movie"
+        ? movieReleaseDates(raw.release_dates?.results ?? [], settings.region)
+        : undefined,
     lastEpisodeAir: raw.last_episode_to_air
       ? {
           seasonNumber: raw.last_episode_to_air.season_number,
@@ -498,13 +579,15 @@ export async function tmdbSeasonEpisodes(
     language: requested,
   });
   if (!data?.episodes) return [];
-  const toEpisodes = (d: any): Episode[] =>
+  const toEpisodes = (d: any, language = requested): Episode[] =>
     d.episodes.map((e: any) => ({
       id: e.id,
       episodeNumber: e.episode_number,
       seasonNumber: e.season_number,
       name: e.name ?? "",
       overview: e.overview ?? "",
+      nameLanguage: episodeTextLanguage(e.name, language),
+      overviewLanguage: episodeTextLanguage(e.overview, language),
       stillPath: e.still_path ?? null,
       airDate: e.air_date ?? null,
       runtime: e.runtime ?? null,
@@ -519,7 +602,7 @@ export async function tmdbSeasonEpisodes(
     episodes.some((e) => japanese.test(e.name) || japanese.test(e.overview));
   if (fellBackToJapanese) {
     const en = await get<any>(key, `tv/${tvId}/season/${seasonNumber}`, { language: "en-US" });
-    if (en?.episodes) return toEpisodes(en);
+    if (en?.episodes) return toEpisodes(en, "en");
   }
   return episodes;
 }

@@ -1,6 +1,6 @@
 {
-  "name": "harbor-setup",
-  "version": "0.9.132",
+  "name": "harbor-shipyard",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "scripts": {

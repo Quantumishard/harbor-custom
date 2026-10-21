@@ -70,7 +70,6 @@ export function MusicMikuVisualizer({ track, playing, concealed = false, stream 
   useEffect(() => { playingRef.current = playing; refresh.current?.(); }, [playing]);
   const trackId = track.id, connectorId = track.connectorId ?? null;
   const video = track.mediaKind === "video";
-  const supported = connectorId !== "spotify" && !video;
   const identity = useRef({ trackId, connectorId });
   identity.current = { trackId, connectorId };
   useEffect(() => { refresh.current?.(); }, [trackId, connectorId]);
@@ -176,7 +175,9 @@ export function MusicMikuVisualizer({ track, playing, concealed = false, stream 
       const dt = Math.min(250, elapsed);
       previous = now;
       if (now - sampledAt > MIKU_TIMING.meterGrace) target = 0;
-      energy += (target - energy) * Math.min(1, dt / (target > energy ? 75 : 210));
+      // Short attacks keep the nod on the beat now that the meter is clock-aligned;
+      // long rests turned every kick into a slow rise.
+      energy += (target - energy) * Math.min(1, dt / (target > energy ? 60 : 140));
       const driving = !!release && target > 0.04;
       const pulse = groove.advance(elapsed, driving, now);
       if (video) {
@@ -235,7 +236,7 @@ export function MusicMikuVisualizer({ track, playing, concealed = false, stream 
       reconcileTrack();
       setState("ambient", String(!document.hidden && !motion.matches && !!host.offsetWidth));
       videoPlaying = video && playingRef.current && !document.hidden && !motion.matches && !!host.offsetWidth;
-      if (!playingRef.current || (!supported && !video) || document.hidden || motion.matches || !host.offsetWidth) {
+      if (!playingRef.current || document.hidden || motion.matches || !host.offsetWidth) {
         if (release && !playingRef.current) groove.suspend();
         release?.(); release = undefined; target = 0; audibleAt = 0;
         if (motion.matches || document.hidden || !host.offsetWidth) {
@@ -272,7 +273,7 @@ export function MusicMikuVisualizer({ track, playing, concealed = false, stream 
       expression.reset(); eyes = expression.advance(0, false);
       danceState = dance.advance(0, { beat: 0, locked: false, excitement: 0 }, false, false); paint();
     };
-  }, [supported, video, stream, active]);
+  }, [video, stream, active]);
   if (!active) return <div className="music-miku-perch" data-concealed={concealed || undefined} aria-hidden="true">
     <div className="music-miku-reveal"><MikuArtwork /></div>
   </div>;

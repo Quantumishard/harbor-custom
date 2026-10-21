@@ -11,8 +11,8 @@ function flag(name, fallback) {
   return i >= 0 && argv[i + 1] ? argv[i + 1] : fallback;
 }
 
-const exe = resolve(flag('exe', join(SETUP, 'target', 'release', 'harbor-setup.exe')));
-const base = flag('base', 'https://harbor.site/updates').replace(/\/+$/, '');
+const exe = resolve(flag('exe', join(SETUP, 'target', 'release', 'harbor-shipyard.exe')));
+const base = flag('base', 'https://harborcommunity.site/updates').replace(/\/+$/, '');
 const platform = flag('platform', 'windows-x86_64');
 const versionFile = join(SETUP, 'payload', 'version.txt');
 
@@ -37,7 +37,7 @@ const setupStat = statSync(exe);
 const zip = join(SETUP, 'payload', 'harbor-payload.zip');
 if (existsSync(zip) && statSync(zip).mtimeMs > setupStat.mtimeMs) {
   console.error('The payload is newer than the installer, so this exe does not carry it.');
-  console.error('Rebuild with: cd installer/src-tauri && cargo build --release --bin harbor-setup');
+  console.error('Rebuild with: cd installer/src-tauri && cargo build --release --bin harbor-shipyard');
   process.exit(1);
 }
 

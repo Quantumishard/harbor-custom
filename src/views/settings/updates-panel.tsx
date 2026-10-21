@@ -2,7 +2,7 @@ import { useT } from "@/lib/i18n";
 import { ExperimentalChangelog } from "@/components/update/experimental-changelog";
 import { isLinuxDesktop } from "@/lib/platform";
 import { Section } from "./shared";
-import { BetaChannelRow, UpdatesRow } from "./advanced-panel";
+import { BetaChannelRow, ModifyInstallationRow, UpdatesRow } from "./advanced-panel";
 import { RollbackRow } from "./rollback-row";
 import { BuildFeedback } from "./build-feedback";
 import { BackupRow } from "./backup-row";
@@ -26,11 +26,12 @@ export function UpdatesPanel() {
         <Section
           title={t("Updates")}
           subtitle={t(
-            "Harbor checks harbor.site for new versions and installs them in place. Nothing installs until you choose to, and a dismissed update never nags you again.",
+            "Harbor checks harborcommunity.site for new versions and installs them in place. Nothing installs until you choose to, and a dismissed update never nags you again.",
           )}
         >
           <UpdatesRow />
           <BetaChannelRow />
+          <ModifyInstallationRow />
           {!experimentalInstalled && <RollbackRow />}
           <BuildFeedback />
         </Section>

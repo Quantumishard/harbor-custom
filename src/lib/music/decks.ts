@@ -18,6 +18,32 @@ export type MusicDeckSnapshot = {
   primary: number;
 };
 
+/**
+ * The engine that is actually on air. A page reload leaves it running while the interface
+ * restores a checkpoint, so this is the truth the restored state has to be reconciled with.
+ */
+export type MusicEngineState = {
+  engine: string;
+  live: boolean;
+  paused: boolean;
+  deck: number | null;
+  trackId: string | null;
+  connectorId: string | null;
+  positionSeconds: number | null;
+  durationSeconds: number | null;
+};
+
+const IDLE_ENGINE: MusicEngineState = {
+  engine: "none",
+  live: false,
+  paused: true,
+  deck: null,
+  trackId: null,
+  connectorId: null,
+  positionSeconds: null,
+  durationSeconds: null,
+};
+
 export type VirtualAudioDevice = {
   name: string;
   description: string;
@@ -94,6 +120,26 @@ export async function deckSnapshot(): Promise<MusicDeckSnapshot> {
 
 export async function deckStates(): Promise<MusicDeckState[]> {
   return (await deckSnapshot()).decks;
+}
+
+export async function engineSnapshot(): Promise<MusicEngineState> {
+  try {
+    const snapshot = await invoke<MusicEngineState>("music_engine_state");
+    const position = snapshot?.positionSeconds;
+    const duration = snapshot?.durationSeconds;
+    return {
+      engine: typeof snapshot?.engine === "string" ? snapshot.engine : "none",
+      live: snapshot?.live === true,
+      paused: snapshot?.paused !== false,
+      deck: snapshot?.deck === 1 ? 1 : snapshot?.deck === 0 ? 0 : null,
+      trackId: typeof snapshot?.trackId === "string" ? snapshot.trackId : null,
+      connectorId: typeof snapshot?.connectorId === "string" ? snapshot.connectorId : null,
+      positionSeconds: typeof position === "number" && Number.isFinite(position) ? position : null,
+      durationSeconds: typeof duration === "number" && Number.isFinite(duration) ? duration : null,
+    };
+  } catch {
+    return IDLE_ENGINE;
+  }
 }
 
 export function setPrimaryDeck(deck: number): Promise<boolean> {

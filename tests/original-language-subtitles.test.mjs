@@ -13,6 +13,7 @@ function runTrackEffect({ original, tracks, manual = false, remembered = false }
   let stateSlot = 0;
   const mocks = {
     react: {
+      useMemo: (fn) => fn(),
       useRef: (current) => ({ current }),
       useState: (initial) => [stateSlot++ === 3 ? { meta, language: original } : initial, () => {}],
       useEffect: (fn) => effects.push(fn),
@@ -20,6 +21,10 @@ function runTrackEffect({ original, tracks, manual = false, remembered = false }
     "@/lib/player/original-language-subtitles": { originalLanguageSubtitlePolicy },
     "@/lib/subtitles/track-selection": selection,
     "@/lib/subtitles/language": language,
+    "@/lib/playback-history": {
+      playbackSourceKey: () => "fixture",
+      readActualPlaybackFor: () => null,
+    },
     "@/lib/player-prefs": { readPlayerPrefs: () => ({ subLang: "fr", subsOff: true }) },
     "@/lib/player/original-audio-language": { audioLanguageOrder: () => ["en"] },
     "@/lib/subtitles/subtitle-memory": {

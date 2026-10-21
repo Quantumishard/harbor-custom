@@ -31,12 +31,14 @@ export function useQueueNav(params: {
   const hasNextEpisodeNow = (canChangeEpisode && !!adjacent.next) || !!queueNextItem;
   const hasPrevEpisodeNow = (canChangeEpisode && !!adjacent.prev) || !!queuePrevItem;
   const playNext = () => {
-    if (queueNextItem) openPicker(queueNextItem.meta, queueNextItem.episode);
-    else if (canChangeEpisode && adjacent.next) goToEpisode(adjacent.next);
+    // The queue only takes over after the current show's episodes. Prioritising
+    // a queued episode here bypassed auto-play and therefore keep-same-source.
+    if (canChangeEpisode && adjacent.next) goToEpisode(adjacent.next);
+    else if (queueNextItem) openPicker(queueNextItem.meta, queueNextItem.episode);
   };
   const playPrev = () => {
-    if (queuePrevItem) openPicker(queuePrevItem.meta, queuePrevItem.episode);
-    else if (canChangeEpisode && adjacent.prev) goToEpisode(adjacent.prev);
+    if (canChangeEpisode && adjacent.prev) goToEpisode(adjacent.prev);
+    else if (queuePrevItem) openPicker(queuePrevItem.meta, queuePrevItem.episode);
   };
   const playNextRef = useRef(playNext);
   playNextRef.current = playNext;

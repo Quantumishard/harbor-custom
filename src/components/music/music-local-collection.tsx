@@ -10,6 +10,7 @@ import { MusicTrackRowsSkeleton } from "./music-skeletons";
 import { useMusicPlaylistPicker } from "./music-playlist-picker";
 import { useMusicSourcePicker } from "./music-source-picker";
 import { useMusicCatalogPlayback } from "./use-music-catalog-playback";
+import { useMusicNavigate } from "./music-navigate";
 import { enqueueMusic } from "@/lib/music/player";
 import { localCollection } from "@/lib/music/catalog";
 import type { MusicCatalogItem } from "@/lib/music/types";
@@ -32,6 +33,7 @@ export function MusicLocalCollection({
   const t = useT();
   const { openPlaylistPicker } = useMusicPlaylistPicker();
   const { openSourcePicker } = useMusicSourcePicker();
+  const { goToArtist } = useMusicNavigate();
   const playback = useMusicCatalogPlayback();
   const [items, setItems] = useState<MusicCatalogItem[]>([]);
   const [next, setNext] = useState<number | null>(null);
@@ -39,7 +41,10 @@ export function MusicLocalCollection({
   const [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
   const generation = useRef(0);
-  const itemMenu = useMusicItemMenu({ onOpen: (item) => onOpen(item, items) });
+  const itemMenu = useMusicItemMenu({
+    onPlay: (item) => { void playback.play(item, items); },
+    onOpen: (item) => onOpen(item, items),
+  });
   const load = useCallback(
     (offset: number) => {
       const request = ++generation.current;
@@ -113,9 +118,15 @@ export function MusicLocalCollection({
                 onOpen={() => onOpen(item, items)}
                 onAddToQueue={() => enqueueMusic(item)}
                 onAddToPlaylist={() => openPlaylistPicker(item)}
+                onGoToArtist={() => goToArtist(item.artist, item)}
               />
             ) : item.kind === "artist" ? (
-              <MusicArtistCard key={item.id} artist={item} onOpen={() => onOpen(item, items)} />
+              <MusicArtistCard
+                key={item.id}
+                artist={item}
+                onOpen={() => onOpen(item, items)}
+                onMenu={itemMenu.openFor(item, index)}
+              />
             ) : (
               <MusicCoverCard
                 key={item.id}

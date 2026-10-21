@@ -508,11 +508,30 @@ export function MusicDock() {
           </button>
           <button
             type="button"
+            onClick={() => previousMusic()}
+            aria-label={t("music.previous")}
+            data-music-tooltip=""
+            className="music-dock-tab-skip"
+          >
+            <MusicGlyph name="previous" size={17} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
             onClick={toggleMusicPlayback}
             aria-label={t(playing ? "music.pause" : "music.play")}
+            data-music-tooltip=""
             className="music-dock-tab-play"
           >
             <MusicGlyph name={playing ? "pause" : "play"} size={15} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            onClick={() => nextMusic()}
+            aria-label={t("music.next")}
+            data-music-tooltip=""
+            className="music-dock-tab-skip"
+          >
+            <MusicGlyph name="next" size={17} aria-hidden="true" />
           </button>
         </div>
         <MusicDockTooltip dockRef={dockRef} />

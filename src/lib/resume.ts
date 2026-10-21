@@ -4,9 +4,65 @@ import { privateCwProfileId } from "./cw-profile";
 const KEY = "harbor.resume";
 const PRIVATE_PREFIX = "harbor.resume.private.v1.";
 
-function readKey(): string {
+function nuvioAccountId(): string {
+  try {
+    const raw = localStorage.getItem("harbor.nuvio.state.v1") ?? localStorage.getItem("harbor.nuvio.state");
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed?.session?.user?.id) return String(parsed.session.user.id);
+    }
+  } catch {}
+  return "anon";
+}
+
+function isNuvioMode(): boolean {
+  try {
+    const explicit = localStorage.getItem("harbor.account-provider");
+    if (explicit === "nuvio") return true;
+    if (explicit === "stremio") return false;
+    for (const key of ["harbor.settings.shared", "harbor.settings", "harbor.settings.v1"]) {
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed.accountProvider === "nuvio") return true;
+      }
+    }
+  } catch {}
+  return false;
+}
+
+function nuvioActiveSlot(): number {
+  try {
+    const raw = localStorage.getItem("harbor.nuvio.state.v1") || localStorage.getItem("harbor.nuvio.state");
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return typeof parsed.activeProfileIndex === "number" ? parsed.activeProfileIndex : 1;
+    }
+  } catch {}
+  return 1;
+}
+
+function effectiveOwner(ownerId?: string): string | undefined {
+  if (ownerId && ownerId.startsWith("nuvio-")) return ownerId;
+  if (isNuvioMode()) {
+    return `nuvio-${nuvioActiveSlot()}`;
+  }
+  return ownerId;
+}
+
+function readKey(ownerId?: string): string {
+  const eff = effectiveOwner(ownerId);
+  if (eff && eff.startsWith("nuvio-")) {
+    const acc = nuvioAccountId();
+    return `${PRIVATE_PREFIX}${acc}.${eff}`;
+  }
   const profileId = privateCwProfileId();
-  return profileId ? PRIVATE_PREFIX + profileId : KEY;
+  if (!profileId) return KEY;
+  if (profileId.startsWith("nuvio-")) {
+    const acc = nuvioAccountId();
+    return `${PRIVATE_PREFIX}${acc}.${profileId}`;
+  }
+  return PRIVATE_PREFIX + profileId;
 }
 
 type Entry = { ms: number; t: number; s?: number; pct?: number; source?: ExternalCwSource };
@@ -33,14 +89,14 @@ function readAll(key = readKey()): Record<string, Entry> {
   }
 }
 
-function writeAll(all: Record<string, Entry>, key: string): void {
+function writeAll(all: Record<string, Entry>, key: string, acknowledged = false): void {
   try {
     const raw = JSON.stringify(all);
     localStorage.setItem(key, raw);
     parsedResume.set(key, { raw, entries: all });
-  } catch {
+  } catch (error) {
     parsedResume.delete(key);
-    /* noop */
+    if (acknowledged) throw error;
   }
 }
 
@@ -68,7 +124,17 @@ export function saveResumeMs(
     ...(source !== undefined ? { source } : {}),
   };
   // Imported/cloud progress never establishes a profile's playback ownership.
-  for (const key of ownerId ? [KEY, PRIVATE_PREFIX + ownerId] : [KEY]) {
+  const eff = effectiveOwner(ownerId);
+  const targetKeys: string[] = [];
+  if (eff && eff.startsWith("nuvio-")) {
+    const acc = nuvioAccountId();
+    targetKeys.push(`${PRIVATE_PREFIX}${acc}.${eff}`);
+  } else if (eff) {
+    targetKeys.push(KEY, PRIVATE_PREFIX + eff);
+  } else {
+    targetKeys.push(KEY);
+  }
+  for (const key of targetKeys) {
     const all = readAll(key);
     all[entryKey(id, season, episode)] = entry;
     writeAll(all, key);
@@ -85,9 +151,15 @@ export function saveResumeBatch(
     pct?: number;
     source?: ExternalCwSource;
   }[],
+  ownerId?: string,
 ): void {
   if (entries.length === 0) return;
-  const all = readAll(KEY);
+  const eff = effectiveOwner(ownerId);
+  const key =
+    eff && eff.startsWith("nuvio-")
+      ? `${PRIVATE_PREFIX}${nuvioAccountId()}.${eff}`
+      : KEY;
+  const all = readAll(key);
   const now = Date.now();
   for (const e of entries) {
     if (!Number.isFinite(e.ms) || e.ms < 0) continue;
@@ -103,11 +175,11 @@ export function saveResumeBatch(
       ...(e.source !== undefined ? { source: e.source } : {}),
     };
   }
-  writeAll(all, KEY);
+  writeAll(all, key);
 }
 
-export function readResumeMs(id: string, season?: number, episode?: number): number {
-  const all = readAll();
+export function readResumeMs(id: string, season?: number, episode?: number, ownerId?: string): number {
+  const all = readAll(readKey(ownerId));
   return all[entryKey(id, season, episode)]?.ms ?? 0;
 }
 
@@ -115,8 +187,9 @@ export function readResumeEntry(
   id: string,
   season?: number,
   episode?: number,
+  ownerId?: string,
 ): { ms: number; t: number; s?: number; pct?: number; source?: ExternalCwSource } | null {
-  const all = readAll();
+  const all = readAll(readKey(ownerId));
   const e = all[entryKey(id, season, episode)];
   return e
     ? {
@@ -133,15 +206,61 @@ export function readResumeSource(
   id: string,
   season?: number,
   episode?: number,
+  ownerId?: string,
 ): ExternalCwSource | undefined {
-  return readAll()[entryKey(id, season, episode)]?.source;
+  return readAll(readKey(ownerId))[entryKey(id, season, episode)]?.source;
 }
 
-export function clearResume(id: string, season?: number, episode?: number, ownerId?: string): void {
-  for (const key of ownerId ? [KEY, PRIVATE_PREFIX + ownerId] : [readKey()]) {
+export function clearAllNuvioResume(): void {
+  try {
+    const toRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (
+        key &&
+        (key.startsWith("harbor.resume.private.v1.nuvio-") ||
+          key.includes(".nuvio-"))
+      ) {
+        toRemove.push(key);
+      }
+    }
+    for (const k of toRemove) {
+      localStorage.removeItem(k);
+      parsedResume.delete(k);
+    }
+  } catch {}
+}
+
+export function clearResume(
+  id: string,
+  season?: number,
+  episode?: number,
+  ownerOrOptions?: string | { acknowledged?: boolean; ownerId?: string },
+): void {
+  const rawOwner = typeof ownerOrOptions === "string" ? ownerOrOptions : ownerOrOptions?.ownerId;
+  const acknowledged = typeof ownerOrOptions === "object" && ownerOrOptions?.acknowledged === true;
+  const eff = effectiveOwner(rawOwner);
+  const targetKeys: string[] = [];
+  if (eff && eff.startsWith("nuvio-")) {
+    const acc = nuvioAccountId();
+    targetKeys.push(`${PRIVATE_PREFIX}${acc}.${eff}`);
+  } else if (eff) {
+    targetKeys.push(KEY, PRIVATE_PREFIX + eff);
+  } else {
+    targetKeys.push(readKey());
+  }
+  for (const key of targetKeys) {
     const all = readAll(key);
-    delete all[entryKey(id, season, episode)];
-    writeAll(all, key);
+    if (typeof season === "number" && typeof episode === "number") {
+      delete all[entryKey(id, season, episode)];
+    } else {
+      delete all[id];
+      const prefix = `${id}|`;
+      for (const k of Object.keys(all)) {
+        if (k.startsWith(prefix)) delete all[k];
+      }
+    }
+    writeAll(all, key, acknowledged);
   }
 }
 

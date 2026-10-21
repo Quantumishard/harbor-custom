@@ -100,7 +100,7 @@ export function render(mount, ctx) {
       back.type = 'button';
       back.className = 'hb-rm-link';
       back.textContent = t('Download Harbor again');
-      back.addEventListener('click', () => openExternal('https://harbor.site'));
+      back.addEventListener('click', () => openExternal('https://harborcommunity.site'));
       mount.appendChild(back);
 
       ctx.setFooter({ nextEnabled: true, onNext: () => closeWindow() });

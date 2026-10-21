@@ -1,4 +1,6 @@
+import { isNuvioProviderActive, getNuvioActiveSlot } from "./active-profile-id";
 import type { LibraryItem } from "@/lib/stremio";
+import { noteNotify } from "@/lib/render-cause";
 import { persistCritical } from "@/lib/storage-recovery";
 
 const PROFILES_KEY = "harbor.profiles.v1";
@@ -74,11 +76,16 @@ function primaryProfileId(): string {
 }
 
 function storeKey(kind: keyof typeof PREFIXES): string {
+  if (isNuvioProviderActive()) {
+    const slot = getNuvioActiveSlot();
+    return `${PREFIXES[kind]}nuvio.${slot}`;
+  }
   const id = activeProfileId();
   return id ? PREFIXES[kind] + id : LEGACY_KEYS[kind];
 }
 
 function migrateLegacy(): void {
+  if (isNuvioProviderActive()) return;
   try {
     const pid = primaryProfileId();
     if (!pid) return;
@@ -94,7 +101,22 @@ function migrateLegacy(): void {
   }
 }
 
+let currentScope = "";
+
+function ensureScope(): void {
+  const sk = storeKey("watched");
+  if (currentScope === sk) return;
+  currentScope = sk;
+  watchedCache = null;
+  unwatchedCache = null;
+  metaCache = null;
+  dismissedCache = null;
+  unwatchedAtCache = null;
+  remoteCache = null;
+}
+
 function unwatchedAtMap(): Record<string, number> {
+  ensureScope();
   if (!unwatchedAtCache) {
     migrateLegacy();
     try {
@@ -108,6 +130,7 @@ function unwatchedAtMap(): Record<string, number> {
 }
 
 function remoteSet(): Set<string> {
+  ensureScope();
   if (!remoteCache) {
     migrateLegacy();
     remoteCache = loadSet(storeKey("remote"));
@@ -116,14 +139,17 @@ function remoteSet(): Set<string> {
 }
 
 function persistUnwatchedAt(): void {
+  ensureScope();
   persistCritical(storeKey("unwatchedAt"), JSON.stringify(unwatchedAtCache ?? {}));
 }
 
 function persistRemote(): void {
+  ensureScope();
   persistCritical(storeKey("remote"), JSON.stringify([...(remoteCache ?? [])]));
 }
 
 function loadMeta(): Record<string, ManualWatchedMeta> {
+  ensureScope();
   if (metaCache) return metaCache;
   migrateLegacy();
   try {
@@ -138,6 +164,7 @@ function loadMeta(): Record<string, ManualWatchedMeta> {
 }
 
 function dismissedSet(): Set<string> {
+  ensureScope();
   if (!dismissedCache) {
     migrateLegacy();
     dismissedCache = loadSet(storeKey("dismissed"));
@@ -146,6 +173,7 @@ function dismissedSet(): Set<string> {
 }
 
 function undismiss(metaId: string): void {
+  ensureScope();
   const set = dismissedSet();
   if (!set.has(metaId)) return;
   const next = new Set(set);
@@ -157,22 +185,31 @@ function undismiss(metaId: string): void {
     return;
   }
   version += 1;
-  for (const fn of subs) fn();
+  notifySubs();
 }
 
-export function dismissManualWatched(metaId: string): void {
+export function isManualWatchedDismissed(metaId: string): boolean {
+  return dismissedSet().has(metaId);
+}
+
+export function dismissManualWatched(metaId: string, options: { acknowledged?: boolean } = {}): void {
+  ensureScope();
   const set = dismissedSet();
   if (set.has(metaId)) return;
   const next = new Set(set);
   next.add(metaId);
-  dismissedCache = next;
   try {
     localStorage.setItem(storeKey("dismissed"), JSON.stringify([...next]));
-  } catch {
+  } catch (error) {
+    if (options.acknowledged)
+      throw new Error("Could not save the change. Check available storage and try again.", {
+        cause: error,
+      });
     return;
   }
+  dismissedCache = next;
   version += 1;
-  for (const fn of subs) fn();
+  notifySubs();
 }
 
 function loadSet(storageKey: string): Set<string> {
@@ -185,6 +222,7 @@ function loadSet(storageKey: string): Set<string> {
 }
 
 function watchedSet(): Set<string> {
+  ensureScope();
   if (!watchedCache) {
     migrateLegacy();
     watchedCache = loadSet(storeKey("watched"));
@@ -193,6 +231,7 @@ function watchedSet(): Set<string> {
 }
 
 function unwatchedSet(): Set<string> {
+  ensureScope();
   if (!unwatchedCache) {
     migrateLegacy();
     unwatchedCache = loadSet(storeKey("unwatched"));
@@ -201,12 +240,13 @@ function unwatchedSet(): Set<string> {
 }
 
 function persist(on: Set<string>, off: Set<string>): void {
+  ensureScope();
   watchedCache = on;
   unwatchedCache = off;
   persistCritical(storeKey("watched"), JSON.stringify([...on]));
   persistCritical(storeKey("unwatched"), JSON.stringify([...off]));
   version += 1;
-  for (const fn of subs) fn();
+  notifySubs();
 }
 
 function key(metaId: string, season: number, episode: number): string {
@@ -221,10 +261,19 @@ export function manualWatchedState(
   metaId: string,
   season: number,
   episode: number,
+  altIds?: Array<string | null | undefined>,
 ): boolean | undefined {
   const k = key(metaId, season, episode);
   if (watchedSet().has(k)) return true;
   if (unwatchedSet().has(k)) return false;
+  if (altIds && altIds.length > 0) {
+    for (const alt of altIds) {
+      if (!alt || alt === metaId) continue;
+      const altK = key(alt, season, episode);
+      if (watchedSet().has(altK)) return true;
+      if (unwatchedSet().has(altK)) return false;
+    }
+  }
   return undefined;
 }
 
@@ -243,6 +292,46 @@ export function manualEpisodeKeys(metaId: string): {
     return out;
   };
   return { watched: collect(watchedSet()), unwatched: collect(unwatchedSet()) };
+}
+
+
+export function reconcileNuvioWatchedEpisodes(
+  slot: number,
+  serverEpisodeKeys: Set<string>,
+): void {
+  const sk = `${PREFIXES.watched}nuvio.${slot}`;
+  const unsk = `${PREFIXES.unwatched}nuvio.${slot}`;
+
+  const currentLocalWatched = loadSet(sk);
+  const currentLocalUnwatched = loadSet(unsk);
+
+  let changed = false;
+
+  for (const sKey of serverEpisodeKeys) {
+    if (!currentLocalWatched.has(sKey)) {
+      currentLocalWatched.add(sKey);
+      currentLocalUnwatched.delete(sKey);
+      changed = true;
+    }
+  }
+
+  for (const lKey of currentLocalWatched) {
+    if (!serverEpisodeKeys.has(lKey)) {
+      currentLocalWatched.delete(lKey);
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    persistCritical(sk, JSON.stringify([...currentLocalWatched]));
+    persistCritical(unsk, JSON.stringify([...currentLocalUnwatched]));
+    if (currentScope === sk) {
+      watchedCache = currentLocalWatched;
+      unwatchedCache = currentLocalUnwatched;
+    }
+    version += 1;
+    notifySubs();
+  }
 }
 
 export function manualWatchedRawKeys(): string[] {
@@ -337,6 +426,54 @@ export function unwatchedAt(metaId: string, season: number, episode: number): nu
   return unwatchedAtMap()[key(metaId, season, episode)];
 }
 
+/** Each accepted storage write survives a later failure; reload the actual partial state. */
+export function setManualWatchedManyAcknowledged(
+  metaId: string,
+  episodes: Array<{ season: number; episode: number }>,
+  watched: boolean,
+): void {
+  const on = new Set(watchedSet());
+  const off = new Set(unwatchedSet());
+  const at = { ...unwatchedAtMap() };
+  const remote = new Set(remoteSet());
+  for (const { season, episode } of episodes) {
+    const k = key(metaId, season, episode);
+    if (watched) {
+      on.add(k);
+      off.delete(k);
+      delete at[k];
+    } else {
+      on.delete(k);
+      off.add(k);
+      at[k] = Date.now();
+    }
+    remote.delete(k);
+  }
+  try {
+    localStorage.setItem(storeKey("unwatchedAt"), JSON.stringify(at));
+    localStorage.setItem(storeKey("remote"), JSON.stringify([...remote]));
+    // Clear the opposing override before setting the requested state.
+    const pairs = watched
+      ? ([
+          ["unwatched", off],
+          ["watched", on],
+        ] as const)
+      : ([
+          ["watched", on],
+          ["unwatched", off],
+        ] as const);
+    for (const [name, values] of pairs)
+      localStorage.setItem(storeKey(name), JSON.stringify([...values]));
+  } finally {
+    watchedCache = null;
+    unwatchedCache = null;
+    unwatchedAtCache = null;
+    remoteCache = null;
+    version += 1;
+    notifySubs();
+  }
+}
+
 export function remoteWatchedKeys(metaId: string): Set<string> {
   const prefix = `${metaId}|`;
   const out = new Set<string>();
@@ -398,7 +535,7 @@ export function recordManualWatchedMeta(metaId: string, meta: ManualWatchedMeta)
     return;
   }
   version += 1;
-  for (const fn of subs) fn();
+  notifySubs();
 }
 
 export function manualWatchedLibraryItems(): LibraryItem[] {
@@ -448,6 +585,11 @@ export function manualWatchedLibraryItems(): LibraryItem[] {
   return out;
 }
 
+function notifySubs(): void {
+  noteNotify("store:manual-watched");
+  for (const fn of subs) fn();
+}
+
 export function subscribeManualWatched(fn: () => void): () => void {
   subs.add(fn);
   return () => {
@@ -460,11 +602,12 @@ export function manualWatchedVersion(): number {
 }
 
 if (typeof window !== "undefined") {
-  let lastProfile = activeProfileId();
-  const onProfileChange = () => {
-    const p = activeProfileId();
-    if (p === lastProfile) return;
-    lastProfile = p;
+  let lastScope = isNuvioProviderActive() ? `nuvio.${getNuvioActiveSlot()}` : activeProfileId();
+  const onScopeChange = () => {
+    const nextScope = isNuvioProviderActive() ? `nuvio.${getNuvioActiveSlot()}` : activeProfileId();
+    if (nextScope === lastScope) return;
+    lastScope = nextScope;
+    currentScope = "";
     watchedCache = null;
     unwatchedCache = null;
     metaCache = null;
@@ -472,8 +615,11 @@ if (typeof window !== "undefined") {
     unwatchedAtCache = null;
     remoteCache = null;
     version += 1;
-    for (const fn of subs) fn();
+    notifySubs();
   };
-  window.addEventListener("harbor:active-profile-changed", onProfileChange);
-  window.addEventListener("harbor:profiles-updated", onProfileChange);
+  window.addEventListener("harbor:active-profile-changed", onScopeChange);
+  window.addEventListener("harbor:profiles-updated", onScopeChange);
+  window.addEventListener("harbor:account-provider-changed", onScopeChange);
+  window.addEventListener("harbor:nuvio-profile-changed", onScopeChange);
+  window.addEventListener("harbor:nuvio-state-changed", onScopeChange);
 }

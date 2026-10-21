@@ -1,5 +1,25 @@
 // Newly introduced UI copy remains usable until each locale provides an override.
 const uiFallback: Record<string, string> = {
+  "Season explorer": "Season explorer",
+  "Shows a season shelf with posters, names, and synopses above the episode list. Anime uses Harbor's TVDB service without a key. Regular shows use your TVDB key when set, otherwise their TMDB metadata. Turn this off to hide the shelf and stop its metadata requests.":
+    "Shows a season shelf with posters, names, and synopses above the episode list. Anime uses Harbor's TVDB service without a key. Regular shows use your TVDB key when set, otherwise their TMDB metadata. Turn this off to hide the shelf and stop its metadata requests.",
+  "Previous seasons": "Previous seasons",
+  "More seasons": "More seasons",
+  "No season synopsis available.": "No season synopsis available.",
+  "Show Harbor": "Show Harbor",
+  "Could not apply this change. Try again.": "Could not apply this change. Try again.",
+  "Hide watched titles in the featured hero": "Hide watched titles in the featured hero",
+  "Watched movies and shows you've made progress on are skipped in the featured hero and replaced with the next unwatched pick from the same row. Uses your local watch history, Trakt, and Simkl.":
+    "Watched movies and shows you've made progress on are skipped in the featured hero and replaced with the next unwatched pick from the same row. Uses your local watch history, Trakt, and Simkl.",
+  "Rewatching on AniList": "Rewatching on AniList",
+  "Rewatched on AniList": "Rewatched on AniList",
+  "Rewatching on MyAnimeList": "Rewatching on MyAnimeList",
+  "Rewatched on MyAnimeList": "Rewatched on MyAnimeList",
+  "Count AniList rewatches": "Count AniList rewatches",
+  "Count MyAnimeList rewatches": "Count MyAnimeList rewatches",
+  "Watching an anime you already finished marks it as Rewatching and counts the rewatch, instead of resetting your progress.":
+    "Watching an anime you already finished marks it as Rewatching and counts the rewatch, instead of resetting your progress.",
+  "Turn on Sync watch progress first.": "Turn on Sync watch progress first.",
   "Big Picture display": "Big Picture display",
   "Which monitor Big Picture opens on at startup.":
     "Which monitor Big Picture opens on at startup.",
@@ -104,8 +124,8 @@ const uiFallback: Record<string, string> = {
     "Couldn't save the recovery backup. Free some storage and try again.",
   "Return to beta did not finish. Your recovery files have been kept. Try again from Experimental builds.":
     "Return to beta did not finish. Your recovery files have been kept. Try again from Experimental builds.",
-  "Harbor Setup did not finish updating Harbor. Check for updates to try again.":
-    "Harbor Setup did not finish updating Harbor. Check for updates to try again.",
+  "Harbor Shipyard did not finish updating Harbor. Check for updates to try again.":
+    "Harbor Shipyard did not finish updating Harbor. Check for updates to try again.",
   "Couldn't save the update channel. Free some storage and try again.":
     "Couldn't save the update channel. Free some storage and try again.",
   "Leave experimental builds before changing your normal update channel.":
@@ -903,6 +923,15 @@ const uiFallback: Record<string, string> = {
   "Signed in as {email}. Your library, add-ons and watch history sync with Stremio.":
     "Signed in as {email}. Your library, add-ons and watch history sync with Stremio.",
   "Signed in. Enter your server address below.": "Signed in. Enter your server address below.",
+  Collections: "Collections",
+  Daily: "Daily",
+  Minutes: "Minutes",
+  Hours: "Hours",
+  Days: "Days",
+  Weeks: "Weeks",
+  "Refresh interval": "Refresh interval",
+  "Refresh unit": "Refresh unit",
+  "No collections on these servers.": "No collections on these servers.",
   "Signs in to Letterboxd and unlocks your diary, friends activity and ratings.":
     "Signs in to Letterboxd and unlocks your diary, friends activity and ratings.",
   "Simkl is a free site for tracking the movies, shows, and anime you watch. Open it to read more or to make an account.":

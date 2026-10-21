@@ -7,12 +7,14 @@ import { isWindowsDesktop } from "@/lib/platform";
 import { isAssTrack, isImageSubTrack } from "@/lib/player/sub-format";
 import { clearImportedSubs } from "@/lib/player/imported-subs";
 import { readPlayerVolume } from "@/lib/player-volume";
-import { setPlayerActions } from "@/lib/player-actions";
+import { playerMagnetUrl, setPlayerActions } from "@/lib/player-actions";
 import type { PlayerBridge, PlayerSnapshot } from "@/lib/player/bridge";
 import { useSettings } from "@/lib/settings";
 import { useSimklScrobble } from "@/lib/simkl/scrobble-hook";
 import { useTraktScrobble } from "@/lib/trakt/scrobble-hook";
+import { usePublicMetaDbScrobble } from "@/lib/publicmetadb/scrobble-hook";
 import { useMediaServerProgress } from "@/lib/media-server/progress-sync";
+import { useNuvioScrobble } from "@/lib/nuvio/nuvio-scrobble-hook";
 import {
   claimTorrentPlaybackHandoff,
   confirmTorrentUsage,
@@ -29,12 +31,12 @@ import type { PlayerSrc } from "@/lib/view";
 import { useExitSnapshot } from "./use-exit-snapshot";
 import { usePowerInhibit } from "./use-power-inhibit";
 import { useResumeAutosave } from "./use-resume-autosave";
+import { useActualPlayback } from "./use-actual-playback";
 import { useStremioSync } from "./use-stremio-sync";
 import { useSubDrop } from "./use-sub-drop";
 import { useSubStyleApply } from "./use-sub-style-apply";
 import { useAssNormalize } from "./use-ass-normalize";
 import { useTrackAutoload } from "./use-track-autoload";
-import { useTranslationAutoSelect } from "./use-translation-auto-select";
 import { useSecondarySub } from "./use-secondary-sub";
 import { useAutoSync } from "./use-auto-sync";
 import { publishAutoSync } from "@/components/player/autosync/autosync-store";
@@ -57,6 +59,10 @@ export function usePlayerMedia(params: {
   svpActive: boolean;
   videoMountRef: RefObject<HTMLDivElement | null>;
   toggleFullscreen: () => void;
+  returnToPlayer: (
+    options?: import("@/lib/player/return-to-playback").PlayerReturnOptions,
+  ) => Promise<void>;
+  onEnterSync: () => void | Promise<void>;
   castActiveRef: RefObject<boolean>;
   season: number | undefined;
   episode: number | undefined;
@@ -73,6 +79,8 @@ export function usePlayerMedia(params: {
     svpActive,
     videoMountRef,
     toggleFullscreen,
+    returnToPlayer,
+    onEnterSync,
     castActiveRef,
     season,
     episode,
@@ -162,8 +170,6 @@ export function usePlayerMedia(params: {
     authKey,
   });
 
-  useTranslationAutoSelect({ bridgeRef, mediaUrl: src.url });
-
   const autoSync = useAutoSync({
     bridgeRef,
     src,
@@ -181,6 +187,7 @@ export function usePlayerMedia(params: {
     retry: asRetry,
     run: asRun,
     stop: asStop,
+    prepareLiveSync,
     feedback: asFeedback,
   } = autoSync;
   useEffect(() => {
@@ -192,10 +199,11 @@ export function usePlayerMedia(params: {
       retry: asRetry,
       run: asRun,
       stop: asStop,
+      prepareLiveSync,
       feedback: asFeedback,
     });
     return () => publishAutoSync(null);
-  }, [asStatus, asOffer, asApply, asRevert, asRetry, asRun, asStop, asFeedback]);
+  }, [asStatus, asOffer, asApply, asRevert, asRetry, asRun, asStop, asFeedback, prepareLiveSync]);
 
   // Whether the video actually renders inside Harbor's webview. This mirrors the
   // `embedActive` value the player bridge sends to mpv (use-player-bridge.ts):
@@ -311,7 +319,9 @@ export function usePlayerMedia(params: {
 
   useTraktScrobble({ src, snap });
   useSimklScrobble({ src, snap });
+  usePublicMetaDbScrobble({ src, snap });
   useMediaServerProgress({ src, snap });
+  useNuvioScrobble({ src, snap, season, episode });
   const download = useVideoDownload({
     url: src.url,
     meta: src.meta,
@@ -327,9 +337,13 @@ export function usePlayerMedia(params: {
       : (src.meta.name ?? "Subtitle");
     const fileName = `${base.replace(/[\\/:*?"<>|]+/g, " ").trim() || "Subtitle"}.srt`;
     const res = await getCuesAnySource(b, src.url, src.headers);
-    if (res.ok && res.source.cues.length > 0) {
-      await downloadText(fileName, toSrt(res.source.cues), ["srt"], "Subtitle");
-    }
+    if (!res.ok || res.source.cues.length === 0)
+      throw new Error(
+        "Could not read this subtitle track. Pick a different subtitle, then try again.",
+      );
+    await downloadText(fileName, toSrt(res.source.cues), ["srt"], "Subtitle", {
+      nativeFailure: "throw",
+    });
   }, [bridgeRef, src.meta.name, src.episode, src.url, src.headers]);
   const canDownloadSub = snap.subtitleTracks.some((trk) => trk.selected);
 
@@ -342,6 +356,11 @@ export function usePlayerMedia(params: {
       canDownloadSubtitle: canDownloadSub,
       streamUrl: src.url ?? null,
       infoHash: src.streamRef?.infoHash ?? null,
+      magnetUrl: playerMagnetUrl(src.streamRef?.infoHash),
+      liveSync: onEnterSync,
+      canLiveSync: canDownloadSub,
+      src,
+      returnToPlayer,
     });
     return () => setPlayerActions(null);
   }, [
@@ -351,8 +370,12 @@ export function usePlayerMedia(params: {
     src.streamRef?.infoHash,
     doDownloadSubtitle,
     canDownloadSub,
+    src,
+    returnToPlayer,
+    onEnterSync,
   ]);
 
+  useActualPlayback(src, snap);
   useResumeAutosave({ src, snap, season, episode, resolvedImdbId, resolvedImdbVerified });
   useStremioSync({
     src,
@@ -384,11 +407,13 @@ export function usePlayerMedia(params: {
 
   return {
     resolvedImdbId,
+    resolvedImdbVerified,
     suspendAutoSyncForManualTiming: autoSync.suspendForManualTiming,
     subtitleSearchActive,
     subAssNative: suppressHtmlSubs,
     captureExitSnapshot,
     download,
     subDropToast,
+    prepareLiveSync,
   };
 }

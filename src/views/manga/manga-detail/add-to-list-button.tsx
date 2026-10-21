@@ -6,10 +6,12 @@ import { useT } from "@/lib/i18n";
 export function MangaAddToListButton({
   mangaId,
   title,
+  altTitle,
   cover,
 }: {
   mangaId: string;
   title: string;
+  altTitle?: string;
   cover?: string;
 }) {
   const t = useT();
@@ -28,7 +30,7 @@ export function MangaAddToListButton({
         <UiIcon name="list" className="h-5 w-5" />
       </button>
       <AddToListMenu
-        item={{ id: mangaId, type: "manga", name: title, poster: cover }}
+        item={{ id: mangaId, type: "manga", name: title, altTitle, poster: cover }}
         anchorRef={ref}
         open={open}
         onClose={() => setOpen(false)}

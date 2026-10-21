@@ -1332,16 +1332,16 @@ const appFill: Record<string, string> = {
   "Harbor couldn't find a reliable timing correction for this subtitle.":
     "لم يتمكن Harbor من إيجاد تصحيح توقيت موثوق لهذه الترجمة.",
   "Sequels & Prequels": "الأجزاء اللاحقة والسابقة",
-  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Setup. Harbor closes, the installer finishes, then Harbor reopens.":
-    "يستبدل هذا التحديث أيضًا المشغّلات والأدوات المضمّنة في Harbor، لذلك يُثبّت عبر Harbor Setup. سيُغلق Harbor، ويُنهي المثبّت عمله، ثم يُفتح Harbor من جديد.",
-  "This one installs through Harbor Setup, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
-    "يُثبّت هذا التحديث عبر Harbor Setup، لكن بيان التحديث لا يحمل توقيعًا له. لن يشغّل Harbor مثبّتًا لا يستطيع التحقق منه. نزّله وشغّله بنفسك.",
+  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Shipyard. Harbor closes, the installer finishes, then Harbor reopens.":
+    "يستبدل هذا التحديث أيضًا المشغّلات والأدوات المضمّنة في Harbor، لذلك يُثبّت عبر Harbor Shipyard. سيُغلق Harbor، ويُنهي المثبّت عمله، ثم يُفتح Harbor من جديد.",
+  "This one installs through Harbor Shipyard, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
+    "يُثبّت هذا التحديث عبر Harbor Shipyard، لكن بيان التحديث لا يحمل توقيعًا له. لن يشغّل Harbor مثبّتًا لا يستطيع التحقق منه. نزّله وشغّله بنفسك.",
   "Download installer": "تنزيل المثبّت",
   "Install and reopen": "التثبيت وإعادة الفتح",
-  "Harbor is closing. Harbor Setup will finish and reopen it.":
-    "يجري إغلاق Harbor. سيُنهي Harbor Setup التثبيت ثم يعيد فتحه.",
-  "Harbor Setup did not finish updating Harbor. Nothing was changed.":
-    "لم يُكمل Harbor Setup تحديث Harbor. لم يتغيّر شيء.",
+  "Harbor is closing. Harbor Shipyard will finish and reopen it.":
+    "يجري إغلاق Harbor. سيُنهي Harbor Shipyard التثبيت ثم يعيد فتحه.",
+  "Harbor Shipyard did not finish updating Harbor. Nothing was changed.":
+    "لم يُكمل Harbor Shipyard تحديث Harbor. لم يتغيّر شيء.",
   "Dismiss": "تجاهل",
 };
 

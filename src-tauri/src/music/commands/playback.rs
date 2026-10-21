@@ -44,6 +44,19 @@ pub async fn music_play_track(
     Ok(())
 }
 
+/// Warm the next Spotify track while the current one is still playing. The request is a
+/// no-op unless local Spotify playback owns the output.
+#[tauri::command]
+pub async fn music_spotify_preload(
+    state: tauri::State<'_, MusicState>,
+    track: MusicTrack,
+) -> Result<bool, String> {
+    if state.active_engine() != ACTIVE_SPOTIFY {
+        return Ok(false);
+    }
+    state.spotify.preload(track).await
+}
+
 #[tauri::command]
 pub async fn music_engine_pause(
     state: tauri::State<'_, MusicState>,
@@ -120,6 +133,70 @@ pub async fn music_engine_stop(
         state.set_active_engine(ACTIVE_NONE);
     }
     result
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicEngineSnapshot {
+    pub engine: String,
+    pub live: bool,
+    pub paused: bool,
+    pub deck: Option<u8>,
+    pub track_id: Option<String>,
+    pub connector_id: Option<String>,
+    pub position_seconds: Option<f64>,
+    pub duration_seconds: Option<f64>,
+}
+
+/// The engine that is actually on air, so a reloaded interface can rejoin it instead of
+/// restoring a checkpoint that has not known about playback since the page went away.
+#[tauri::command]
+pub async fn music_engine_state(
+    state: tauri::State<'_, MusicState>,
+) -> Result<MusicEngineSnapshot, String> {
+    let mut snapshot = MusicEngineSnapshot {
+        engine: "none".to_string(),
+        live: false,
+        paused: true,
+        deck: None,
+        track_id: None,
+        connector_id: None,
+        position_seconds: None,
+        duration_seconds: None,
+    };
+    if state.active_engine() == ACTIVE_SPOTIFY {
+        let playback = state.spotify.playback_state().await;
+        snapshot.engine = "spotify".to_string();
+        snapshot.live = playback.live;
+        snapshot.paused = playback.paused;
+        snapshot.track_id = playback.track.as_ref().map(|track| track.id.clone());
+        snapshot.connector_id = playback
+            .track
+            .as_ref()
+            .and_then(|track| track.connector_id.clone());
+        snapshot.duration_seconds = playback
+            .track
+            .as_ref()
+            .map(|track| track.duration_seconds as f64)
+            .filter(|value| *value > 0.0);
+        snapshot.position_seconds = playback.position_seconds;
+        return Ok(snapshot);
+    }
+    // A deck can be live without the active engine ever being claimed (the DJ deck plays
+    // straight to deck B), so the primary deck is inspected for every non-Spotify state.
+    let decks = state.engine.deck_states().await;
+    let primary = state.engine.primary_deck();
+    if let Some(deck) = decks.get(primary).filter(|deck| deck.live) {
+        snapshot.engine = "stream".to_string();
+        snapshot.live = true;
+        snapshot.paused = deck.paused;
+        snapshot.deck = Some(primary as u8);
+        snapshot.track_id = deck.track_id.clone();
+        snapshot.connector_id = deck.connector_id.clone();
+        snapshot.position_seconds = deck.position_seconds;
+        snapshot.duration_seconds = deck.duration_seconds;
+    }
+    Ok(snapshot)
 }
 
 #[tauri::command]

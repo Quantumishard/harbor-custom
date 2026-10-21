@@ -2,6 +2,7 @@ import { lruSet } from "@/lib/cache";
 import { registerCache } from "@/lib/memory-profiler";
 import { safeFetch as tauriFetch } from "@/lib/safe-fetch";
 import { HARBOR_TVDB_BASE } from "@/lib/config/endpoints";
+import { episodeTextLanguage } from "@/lib/episode-text-language";
 
 const BASE = "https://api4.thetvdb.com/v4";
 const PROXY_V4 = `${HARBOR_TVDB_BASE}/api/tvdb/v4`;
@@ -14,7 +15,7 @@ function tvdbImg(v: unknown): string | undefined {
   return `https://artworks.thetvdb.com${v.startsWith("/") ? "" : "/"}${v}`;
 }
 
-function isDisplayableName(s: string): boolean {
+export function isDisplayableName(s: string): boolean {
   for (let i = 0; i < s.length; i += 1) {
     const c = s.charCodeAt(i);
     if (
@@ -52,6 +53,8 @@ export type TvdbEpisode = {
   absoluteNumber?: number;
   name?: string;
   overview?: string;
+  nameLanguage?: string;
+  overviewLanguage?: string;
   aired?: string;
   runtime?: number;
   image?: string;
@@ -127,7 +130,11 @@ async function getToken(apiKey: string): Promise<string | null> {
 }
 
 const RESPONSE_CACHE_MAX = 200;
-const responseCache = new Map<string, unknown>();
+// Providers correct episode data shortly after an episode airs (a "TBA"
+// placeholder becomes the real name), so cached responses expire instead of
+// pinning stale titles for the lifetime of a long-running session.
+const RESPONSE_TTL_MS = 10 * 60 * 1000;
+const responseCache = new Map<string, { t: number; v: unknown }>();
 const responseInflight = new Map<string, Promise<unknown>>();
 
 registerCache("tvdb:response", () => responseCache.size);
@@ -135,7 +142,8 @@ registerCache("tvdb:response", () => responseCache.size);
 async function getJson<T>(apiKey: string, path: string): Promise<T | null> {
   const useProxy = !apiKey;
   const key = `${useProxy ? "proxy" : apiKey.slice(0, 6)}::${path}`;
-  if (responseCache.has(key)) return responseCache.get(key) as T;
+  const hit = responseCache.get(key);
+  if (hit && Date.now() - hit.t < RESPONSE_TTL_MS) return hit.v as T;
   const existing = responseInflight.get(key);
   if (existing) return existing as Promise<T | null>;
   const p = (async (): Promise<T | null> => {
@@ -171,7 +179,8 @@ async function getJson<T>(apiKey: string, path: string): Promise<T | null> {
           if (!res.ok) return null;
           const j = (await res.json()) as { data?: T };
           const data = (j?.data ?? null) as T | null;
-          if (data !== null) lruSet(responseCache, key, data, RESPONSE_CACHE_MAX);
+          if (data !== null)
+            lruSet(responseCache, key, { t: Date.now(), v: data }, RESPONSE_CACHE_MAX);
           return data;
         } catch {
           if (attempt === 0) {
@@ -248,7 +257,7 @@ const ORDER_PRIORITY: TvdbOrderType[] = [
   "regional",
 ];
 
-function defaultOrderLabel(value: TvdbOrderType): string {
+export function defaultOrderLabel(value: TvdbOrderType): string {
   const map: Record<TvdbOrderType, string> = {
     aired: "Aired Order",
     dvd: "DVD Order",
@@ -283,22 +292,204 @@ export async function tvdbSeasonTypes(
   }));
 }
 
-export async function tvdbSeasonNames(
+export type TvdbSeasonInfo = {
+  id: number | null;
+  number: number;
+  seriesId?: number;
+  typeSlug?: string;
+  /** Display name. The proxy already resolves this in English for /series/extended. */
+  name: string;
+  /** Overview from the same response; the proxy localizes it with overviewLang. */
+  overview?: string;
+  overviewLanguage?: string;
+  image?: string;
+};
+
+export async function tvdbSeasons(
   apiKey: string,
   seriesId: number,
   typeSlug: string,
-): Promise<Map<number, string>> {
-  const map = new Map<number, string>();
+  lang?: string,
+): Promise<Map<number, TvdbSeasonInfo>> {
+  const map = new Map<number, TvdbSeasonInfo>();
   if (!seriesId) return map;
-  const data = await getJson<any>(apiKey, `/series/${seriesId}/extended?short=true`);
+  const overviewLang = !apiKey.trim() && lang ? `&overviewLang=${encodeURIComponent(lang)}` : "";
+  const data = await getJson<any>(apiKey, `/series/${seriesId}/extended?short=true${overviewLang}`);
   const seasons = (data?.seasons ?? []) as any[];
   for (const s of seasons) {
     if (s?.type?.type !== typeSlug) continue;
     const num = typeof s.number === "number" ? s.number : null;
+    if (num == null) continue;
     const name = typeof s.name === "string" ? s.name.trim() : "";
-    if (num != null && name && isDisplayableName(name)) map.set(num, name);
+    const overview = typeof s.overview === "string" ? s.overview.trim() || undefined : undefined;
+    const id = typeof s.id === "number" ? s.id : null;
+    // TVDB can pack several codes into one entry, e.g. ["eng,tur,fra"].
+    const overviewTranslations = Array.isArray(s.overviewTranslations)
+      ? s.overviewTranslations.flatMap((value: unknown) =>
+          typeof value === "string"
+            ? value
+                .split(",")
+                .map((code) => code.trim())
+                .filter(Boolean)
+            : [],
+        )
+      : undefined;
+    const overviewLanguage =
+      !apiKey.trim() && lang
+        ? episodeTextLanguage(overview, lang, undefined, overviewTranslations)
+        : "und";
+    map.set(num, {
+      id,
+      number: num,
+      seriesId,
+      typeSlug,
+      name,
+      overview,
+      overviewLanguage,
+      image: tvdbImg(s.image),
+    });
   }
   return map;
+}
+
+export type TvdbSeasonText = { name?: string; overview?: string };
+
+export async function tvdbSeasonText(
+  apiKey: string,
+  seasonId: number,
+  lang: string,
+): Promise<TvdbSeasonText | null> {
+  if (!seasonId || !lang) return null;
+  const data = await getJson<{ name?: unknown; overview?: unknown }>(
+    apiKey,
+    `/seasons/${seasonId}/translations/${lang}`,
+  );
+  if (!data) return null;
+  return {
+    name: typeof data.name === "string" ? data.name.trim() || undefined : undefined,
+    overview: typeof data.overview === "string" ? data.overview.trim() || undefined : undefined,
+  };
+}
+
+export async function tvdbSeasonTranslation(
+  apiKey: string,
+  seasonId: number,
+  lang: string,
+): Promise<string | null> {
+  return (await tvdbSeasonText(apiKey, seasonId, lang))?.name ?? null;
+}
+
+export function tvdbBaseSeasonNames(
+  infos: ReadonlyMap<number, TvdbSeasonInfo>,
+): Map<number, string> {
+  const names = new Map<number, string>();
+  for (const info of infos.values()) {
+    if (info.number >= 0 && info.name && isDisplayableName(info.name))
+      names.set(info.number, info.name);
+  }
+  return names;
+}
+
+export async function tvdbSeasonNames(
+  apiKey: string,
+  seriesId: number,
+  typeSlug: string,
+  lang?: string,
+): Promise<Map<number, string>> {
+  const infos = await tvdbSeasons(apiKey, seriesId, typeSlug, lang);
+  // The proxy does not expose /seasons/*; it already enriches
+  // /series/extended with the English season names.
+  if (!apiKey.trim()) return tvdbBaseSeasonNames(infos);
+  const names = new Map<number, string>();
+  // Resolve English names with bounded concurrency for long-running series.
+  const pending = [...infos.values()].filter((info) => info.number >= 0 && info.id != null);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(4, pending.length) }, async () => {
+      while (next < pending.length) {
+        const info = pending[next++];
+        const name = await tvdbSeasonTranslation(apiKey, info.id!, "eng").catch(() => null);
+        if (name && isDisplayableName(name)) names.set(info.number, name);
+      }
+    }),
+  );
+  return names;
+}
+
+export type TvdbSeasonArtwork = {
+  width?: number | null;
+  height?: number | null;
+  image?: unknown;
+  thumbnail?: unknown;
+  language?: string | null;
+  type?: number | null;
+  score?: number | null;
+  includesText?: boolean | null;
+};
+
+export async function tvdbSeasonExtended(
+  apiKey: string,
+  seasonId: number,
+): Promise<{
+  image?: string;
+  name?: string;
+  overview?: string;
+  artwork: TvdbSeasonArtwork[];
+} | null> {
+  if (!seasonId) return null;
+  const data = await getJson<any>(apiKey, `/seasons/${seasonId}/extended`);
+  if (!data) return null;
+  const artwork = Array.isArray(data.artwork) ? (data.artwork as TvdbSeasonArtwork[]) : [];
+  return {
+    image: tvdbImg(data.image),
+    name: typeof data.name === "string" ? data.name.trim() || undefined : undefined,
+    overview: typeof data.overview === "string" ? data.overview.trim() || undefined : undefined,
+    artwork,
+  };
+}
+
+function normArtLang(v: unknown): string {
+  return (typeof v === "string" ? v : "").trim().toLowerCase();
+}
+
+/**
+ * Pick a season poster in the requested metadata language, falling back to
+ * English. TVDB artwork carries a 3-letter `language` (e.g. `fra`, `eng`)
+ * and `type === 7` for season posters (`2` for series posters).
+ * Wrong-language text posters are avoided:
+ * after `lang` -> `eng` we prefer textless/neutral art, then the season's
+ * default image, and only then any poster rather than nothing.
+ */
+export function pickSeasonPoster(opts: {
+  artwork?: TvdbSeasonArtwork[] | null;
+  extendedImage?: unknown;
+  baseImage?: unknown;
+  lang?: string | null;
+}): string | undefined {
+  const langNorm = normArtLang(opts.lang) || "eng";
+  const candidates = (opts.artwork ?? []).filter(
+    (a) => a && [2, 7].includes(Number(a.type)) && typeof a.image === "string" && a.image,
+  );
+  // Prefer true season posters. Type 2 is a series poster, so it should only
+  // stand in when TVDB has no season artwork at all.
+  const seasonPosters = candidates.filter((a) => Number(a.type) === 7);
+  const posters = (
+    seasonPosters.length > 0 ? seasonPosters : candidates.filter((a) => Number(a.type) === 2)
+  )
+    .slice()
+    .sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0));
+  const byLang = (code: string) => posters.find((a) => normArtLang(a.language) === code);
+  const langHit = byLang(langNorm)?.image;
+  if (typeof langHit === "string" && langHit) return tvdbImg(langHit);
+  if (langNorm !== "eng") {
+    const engHit = byLang("eng")?.image;
+    if (typeof engHit === "string" && engHit) return tvdbImg(engHit);
+  }
+  const textlessHit = posters.find((a) => a.includesText === false)?.image;
+  if (typeof textlessHit === "string" && textlessHit) return tvdbImg(textlessHit);
+  const neutralHit = posters.find((a) => !normArtLang(a.language))?.image;
+  if (typeof neutralHit === "string" && neutralHit) return tvdbImg(neutralHit);
+  return tvdbImg(opts.extendedImage) ?? tvdbImg(opts.baseImage) ?? tvdbImg(posters[0]?.image);
 }
 
 export async function tvdbEpisodes(
@@ -322,6 +513,10 @@ export async function tvdbEpisodes(
       seasonNumber: e.seasonNumber,
       name: e.name,
       overview: e.overview,
+      nameLanguage: lang ? episodeTextLanguage(e.name, lang, undefined, e.nameTranslations) : "und",
+      overviewLanguage: lang
+        ? episodeTextLanguage(e.overview, lang, undefined, e.overviewTranslations)
+        : "und",
       aired: e.aired,
       runtime: e.runtime,
       image: tvdbImg(e.image),
@@ -390,6 +585,12 @@ export async function tvdbEpisodesByType(
         absoluteNumber: typeof e.absoluteNumber === "number" ? e.absoluteNumber : undefined,
         name: e.name,
         overview: e.overview,
+        nameLanguage: lang
+          ? episodeTextLanguage(e.name, lang, undefined, e.nameTranslations)
+          : "und",
+        overviewLanguage: lang
+          ? episodeTextLanguage(e.overview, lang, undefined, e.overviewTranslations)
+          : "und",
         aired: e.aired,
         runtime: e.runtime,
         image: tvdbImg(e.image),
@@ -426,7 +627,10 @@ export async function tvdbEpisodesAbsolute(
   const out: TvdbEpisode[] = [];
   const langSeg = lang ? `/${lang}` : "";
   for (let page = 0; page < 12; page++) {
-    const data = await getJson<any>(apiKey, `/series/${seriesId}/episodes/absolute${langSeg}?page=${page}`);
+    const data = await getJson<any>(
+      apiKey,
+      `/series/${seriesId}/episodes/absolute${langSeg}?page=${page}`,
+    );
     const arr = (data?.episodes ?? []) as any[];
     if (arr.length === 0) break;
     for (const e of arr) {

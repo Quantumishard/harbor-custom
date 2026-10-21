@@ -1,6 +1,10 @@
 # Harbor Custom
 
-An unofficial personal snapshot of Harbor 0.9.132 with custom playback, subtitle, watchlist, dismissal, HDR, responsiveness, and AIOMetadata search changes. Preserved by Quantumishard on October 14, 2026. This is not an official Harbor release and carries no promise of continued upstream support.
+An unofficial personal fork synchronized with Harbor v1.0.1-beta on October 21, 2026, retaining custom playback, subtitle, watchlist, dismissal, HDR, responsiveness, and AIOMetadata search changes. This is not an official Harbor release and carries no promise of continued upstream support.
+
+## Source synchronized with v1.0.1-beta (2026-10-21)
+
+The source includes the exact [upstream v1.0.1-beta release](https://github.com/Harborofficial/Harbor/releases/tag/v1.0.1-beta), commit `d862943d`, together with the current personal customizations. See [merge and verification notes](docs/release-notes/upstream-v1.0.1-beta-20261021.md). This is a source-only update; the Windows download below remains the October 19 build.
 
 ## Windows download
 
@@ -58,7 +62,7 @@ The title detail IMDb badge now recognizes Cinemeta ratings as IMDb, uses matchi
 
 ## Source and build information
 
-This repository is a fresh snapshot of the existing customized working tree, including its source changes and local source tests. It is based on local commit `45f30a4e016ba0f161b1c45aa40107cf64a5d7fb` from October 7, 2026. Historical Git metadata, private app data, login sessions, provider keys, dependency caches, and build outputs are not part of this repository.
+This repository began as a fresh snapshot of the customized working tree, including its source changes and local source tests. The October 21 update merges the upstream v1.0.1-beta history, so future upstream comparisons have a shared release ancestor. It is based on local commit `45f30a4e016ba0f161b1c45aa40107cf64a5d7fb` from October 7, 2026. Historical Git metadata, private app data, login sessions, provider keys, dependency caches, and build outputs are not part of this repository.
 
 See [the preserved upstream README](README-UPSTREAM.md) for architecture and setup details, and [AGENTS.md](AGENTS.md) for contributor instructions. The upstream instructions may refer to services or downloads that are no longer available. The custom Windows builds are rebuilt and packaged with the preserved runtime files. An entirely offline rebuild is not yet verified.
 

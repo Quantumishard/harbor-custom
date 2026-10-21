@@ -129,7 +129,10 @@ class MacMpvBundleTests(unittest.TestCase):
         before = self.mpv.read_bytes()
         staged = self.prepare()
         self.assertEqual({path.name for path in self.frameworks.iterdir()},
-                         {"libmpv.2.dylib", "libcli-only.dylib", "libnested.dylib"})
+                         {"libmpv.2.dylib", "libcli-only.dylib", "libnested.dylib", "link"})
+        shim = self.frameworks / "link" / "libmpv.dylib"
+        self.assertTrue(shim.is_file())
+        self.assertEqual(shim.read_bytes(), (self.frameworks / "libmpv.2.dylib").read_bytes())
         self.assertEqual(read_binary(staged)["loads"], ["@rpath/libmpv.2.dylib", "@rpath/libcli-only.dylib"])
         self.assertEqual(read_binary(staged)["rpaths"], ["@executable_path/../Frameworks"])
         self.assertEqual(read_binary(self.frameworks / "libcli-only.dylib")["loads"], ["@rpath/libnested.dylib"])
@@ -138,6 +141,8 @@ class MacMpvBundleTests(unittest.TestCase):
         self.assertEqual(config["bundle"]["externalBin"],
                          ["binaries/yt-dlp", "binaries/ffmpeg", "binaries/ffprobe", "binaries/mpv"])
         self.assertEqual(config["bundle"]["macOS"]["minimumSystemVersion"], "14.0")
+        self.assertEqual({Path(path).name for path in config["bundle"]["macOS"]["frameworks"]},
+                         {"libmpv.2.dylib", "libcli-only.dylib", "libnested.dylib"})
         self.assertIn(f"--target {TRIPLE}", config["build"]["beforeBundleCommand"])
         self.assertFalse(any(call[:2] == ("install_name_tool", "-id") and call[-1] == str(staged) for call in self.calls))
 

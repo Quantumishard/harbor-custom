@@ -1225,8 +1225,8 @@ name = "harbor-install-recovery"
 version = "0.1.0"
 
 [[package]]
-name = "harbor-setup"
-version = "0.9.132"
+name = "harbor-shipyard"
+version = "1.0.1"
 dependencies = [
  "crc32fast",
  "harbor-install-recovery",

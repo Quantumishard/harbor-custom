@@ -2,14 +2,12 @@ import { ArrowLeft, Layers, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import type { Meta } from "@/lib/cinemeta";
-import {
-  MAX_ITEMS,
-  sharedLists,
-  type ListItem,
-  type ListStore,
-} from "@/lib/custom-lists";
+import { MAX_ITEMS, sharedLists, type ListItem, type ListStore } from "@/lib/custom-lists";
 import { relativeTime } from "@/lib/dates";
 import { useT } from "@/lib/i18n";
+import { hasAnyMangaSource } from "@/lib/manga/sources";
+import { resolveMangaOpen } from "@/lib/manga/open-resolve";
+import { useView } from "@/lib/view";
 import { PickCard } from "@/components/pick-card";
 import { AddTitleSearch } from "./list-detail/add-title-search";
 import { ListSettingsMenu } from "./list-detail/list-settings-menu";
@@ -31,14 +29,19 @@ export function ListDetail({
   onBack,
   store = sharedLists,
   showSearch = true,
+  initialSettingsAction,
 }: {
   listId: string;
   onBack: () => void;
   store?: ListStore;
   showSearch?: boolean;
+  initialSettingsAction?: "rename" | "delete";
 }) {
   const t = useT();
   const list = store.useList(listId);
+  const { openManga } = useView();
+  const mangaBusy = useRef<Set<string>>(new Set());
+  const [missingId, setMissingId] = useState<string | null>(null);
   const itemElsRef = useRef<Map<string, HTMLDivElement>>(new Map());
   const dragCleanupRef = useRef<(() => void) | null>(null);
   const suppressClick = useRef(false);
@@ -59,6 +62,37 @@ export function ListDetail({
     for (const it of source) if (!out.some((existing) => existing.id === it.id)) out.push(it);
     return out;
   }, [list, order]);
+
+  // Saved manga ids can go stale (server/extension change). Resolve against a
+  // live source, self-heal the item, and never open a mismatched entry.
+  const openMangaItem = async (it: ListItem) => {
+    if (!list) return;
+    if (mangaBusy.current.has(it.id)) return;
+    const name = it.name.trim();
+    if (!name || !hasAnyMangaSource()) {
+      openManga(it.id);
+      return;
+    }
+    mangaBusy.current.add(it.id);
+    setMissingId((prev) => (prev === it.id ? null : prev));
+    try {
+      const resolved = await resolveMangaOpen({ id: it.id, title: name, altTitle: it.altTitle });
+      if (!resolved) {
+        setMissingId(it.id);
+        return;
+      }
+      if (resolved.id !== it.id || resolved.title !== it.name || resolved.cover !== it.poster) {
+        store.updateListItem(list.id, it.id, {
+          id: resolved.id,
+          name: resolved.title,
+          poster: resolved.cover,
+        });
+      }
+      openManga(resolved.id);
+    } finally {
+      mangaBusy.current.delete(it.id);
+    }
+  };
 
   const startItemDrag = (e: React.PointerEvent<HTMLDivElement>, itemId: string, index: number) => {
     if (e.button !== 0) return;
@@ -191,7 +225,12 @@ export function ListDetail({
               ` · ${t("Updated {when}", { when: relativeTime(list.updatedAt) })}`}
           </p>
         </div>
-        <ListSettingsMenu list={list} onDeleted={onBack} store={store} />
+        <ListSettingsMenu
+          list={list}
+          onDeleted={onBack}
+          store={store}
+          initialAction={initialSettingsAction}
+        />
       </div>
 
       {showSearch && <AddTitleSearch list={list} store={store} />}
@@ -220,7 +259,16 @@ export function ListDetail({
                 dragCleanupRef.current ? "opacity-40 cursor-grabbing" : "cursor-grab"
               }`}
             >
-              <PickCard meta={itemToMeta(it)} />
+              <PickCard
+                meta={itemToMeta(it)}
+                onOpenManga={() => void openMangaItem(it)}
+                membership={{ kind: "list", id: list.id, store }}
+              />
+              {missingId === it.id && (
+                <p className="mt-1 text-[11.5px] leading-snug text-ink-subtle">
+                  {t("This title would not open")}
+                </p>
+              )}
               <button
                 type="button"
                 aria-label={t("Remove from list")}

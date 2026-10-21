@@ -1146,10 +1146,10 @@ const catalog08: Record<string, string> = {
   "This member has hidden their showcase, activity and friends from public view.":
     "Questo membro ha nascosto al pubblico la propria vetrina, l'attività e gli amici.",
   "This month": "Questo mese",
-  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Setup. Harbor closes, the installer finishes, then Harbor reopens.":
-    "Questo aggiornamento sostituisce anche i lettori e gli strumenti inclusi in Harbor, quindi viene installato tramite Harbor Setup. Harbor si chiude, il programma di installazione termina e poi Harbor si riapre.",
-  "This one installs through Harbor Setup, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
-    "Questo aggiornamento viene installato tramite Harbor Setup, ma il relativo manifesto non contiene una firma. Harbor non eseguirà un programma di installazione che non può verificare. Scaricalo ed eseguilo manualmente.",
+  "This one also replaces Harbor's bundled players and tools, so it installs through Harbor Shipyard. Harbor closes, the installer finishes, then Harbor reopens.":
+    "Questo aggiornamento sostituisce anche i lettori e gli strumenti inclusi in Harbor, quindi viene installato tramite Harbor Shipyard. Harbor si chiude, il programma di installazione termina e poi Harbor si riapre.",
+  "This one installs through Harbor Shipyard, but the update manifest carries no signature for it. Harbor will not run an installer it cannot verify. Download it and run it yourself.":
+    "Questo aggiornamento viene installato tramite Harbor Shipyard, ma il relativo manifesto non contiene una firma. Harbor non eseguirà un programma di installazione che non può verificare. Scaricalo ed eseguilo manualmente.",
   "This only takes a moment the first time.": "Solo la prima volta richiede qualche istante.",
   "This opens Harbor to devices on your Wi-Fi. You can turn it off again in Settings.":
     "Consente ai dispositivi sulla tua rete Wi-Fi di accedere a Harbor. Puoi disattivarlo di nuovo nelle Impostazioni.",

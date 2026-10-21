@@ -16,6 +16,7 @@ import { subscribeMangaLibraryChanged } from "@/lib/manga/library-events";
 import { activeMangaSource, activeMangaSourceId, subscribeMangaSources } from "@/lib/manga/sources";
 import type { SuwayomiSource } from "@/lib/manga/sources/suwayomi/provider";
 import {
+  bySuwayomiSourceOrder,
   loadSuwayomiSourceOrder,
   saveSuwayomiSourceOrder,
   subscribeSuwayomiSourceOrder,
@@ -27,7 +28,8 @@ import {
   TagDropdown,
 } from "./manga-browse/filters";
 import { BrowseEmpty, BrowseError, SkeletonGrid } from "./manga-browse/states";
-import { AllExtensionsView, ReorderMenu, sourceDisplayName } from "./manga-browse/all-extensions";
+import { AllExtensionsView, sourceDisplayName } from "./manga-browse/all-extensions";
+import { ArrangeExtensions } from "./manga-browse/arrange-extensions";
 import { searchExtensions } from "./manga-browse/extensions-search";
 import { LanguageDropdown } from "./manga-browse/language-dropdown";
 import {
@@ -130,7 +132,7 @@ export function MangaBrowse({
     [reload],
   );
 
-  // The ReorderMenu lives here (parent), so re-read the per-server order here when
+  // The arrange modal lives here (parent), so re-read the per-server order here when
   // the active server changes. The parent remounts AllExtensionsView via `key`, but
   // this component state persists, so we resync the order on server switch.
   useEffect(
@@ -287,9 +289,18 @@ export function MangaBrowse({
     return list;
   }, [items, favItems, tagId, query, sortMode, statusFilter]);
 
+  // Search results follow the arranged extension order, with sources that have
+  // no custom position falling in alphabetically after the ordered ones.
   const sortedSearchGroups = useMemo(
-    () => [...searchGroups].sort((a, b) => a.name.localeCompare(b.name)),
-    [searchGroups],
+    () =>
+      [...searchGroups].sort(
+        bySuwayomiSourceOrder(
+          orderedIds,
+          (g) => g.sourceId,
+          (g) => g.name,
+        ),
+      ),
+    [searchGroups, orderedIds],
   );
 
   const loadMore = useCallback(() => {
@@ -385,7 +396,7 @@ export function MangaBrowse({
           </>
         ) : (
           <div className="ms-auto">
-            <ReorderMenu
+            <ArrangeExtensions
               sources={reorderSources}
               order={orderedIds}
               onOrder={(ids) => {

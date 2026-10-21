@@ -23,6 +23,7 @@ function load(file, dependencies, globals = {}) {
   return module.exports;
 }
 const local = load("src/lib/local-network.ts", {});
+const detect = load("src/lib/streams/addon-detect.ts", {});
 function addonsHarness(response) {
   const calls = [];
   const fetcher = (kind) => async (url) => {
@@ -45,7 +46,7 @@ function addonsHarness(response) {
       ...shared,
       "@/lib/debug": { dlog() {}, dwarn() {} },
       "@/lib/fetch-fallback-policy": { isHarborFetchPolicyError: () => false },
-      "./addon-detect": { isAddonRanked: () => false, isStatusOnlyAddon: () => false },
+      "./addon-detect": { ...detect, isAddonRanked: () => false, isStatusOnlyAddon: () => false },
       "./cached": { hasUncachedMarker: () => false },
       "@/lib/torrent/magnet": {},
       "./plugins/addon": { isPluginAddon: () => false, PLUGIN_ADDON_PREFIX: "plugin:" },
@@ -126,6 +127,65 @@ for (const [reason, response, code] of [
     assert.equal(progress.at(-1).settled, 1);
   });
 }
+
+test("retired and Stremio-hosted add-ons are skipped without fetching or failure reports", async () => {
+  const h = addonsHarness(() => {
+    throw new Error("retired add-ons must not be fetched");
+  });
+  const progress = [];
+  const streams = await h.fetchAddonStreams(
+    [
+      {
+        transportUrl: "https://stremio.torbox.app/key/manifest.json",
+        manifest: {
+          id: "app.torbox.stremio",
+          name: "TorBox",
+          resources: ["stream"],
+          types: ["movie"],
+        },
+      },
+      {
+        transportUrl: "http://127.0.0.1:11470/local-addon/manifest.json",
+        manifest: {
+          id: "org.stremio.local",
+          name: "Local Files",
+          resources: ["stream"],
+          types: ["movie"],
+        },
+      },
+    ],
+    { type: "movie", ids: ["tt1"] },
+    new AbortController().signal,
+    undefined,
+    (p) => progress.push(p),
+  );
+  assert.equal(streams.length, 0);
+  assert.equal(h.calls.length, 0);
+  assert.equal(progress.at(-1).failures, undefined);
+});
+
+test("add-on identity skips never catch healthy add-ons", () => {
+  const torrentio = {
+    transportUrl: "https://torrentio.strem.fun/manifest.json",
+    manifest: { id: "com.stremio.torrentio.addon" },
+  };
+  assert.equal(
+    detect.isStremioLocalAddon({
+      transportUrl: "http://127.0.0.1:11470/local-addon/manifest.json",
+      manifest: { id: "org.stremio.local" },
+    }),
+    true,
+  );
+  assert.equal(
+    detect.isRetiredTorboxAddon({
+      transportUrl: "https://stremio.torbox.app/key/manifest.json",
+      manifest: { id: "app.torbox.stremio" },
+    }),
+    true,
+  );
+  assert.equal(detect.isStremioLocalAddon(torrentio), false);
+  assert.equal(detect.isRetiredTorboxAddon(torrentio), false);
+});
 
 test("manifest validation still rejects failed HTTP, malformed JSON and missing identity", async () => {
   for (const [response, error] of [

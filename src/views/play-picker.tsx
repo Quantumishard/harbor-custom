@@ -30,12 +30,16 @@ import { consumeRecentStubEvent } from "@/lib/dead-streams";
 import { peekCachedLogo, resolveLogo } from "@/lib/logo";
 import {
   readPlayback,
+  isPlaybackActorCurrent,
   readLastSeriesPlayback,
   streamMatchesEntry,
-  streamMatchesReleaseLineage,
+  streamMatchesPreferredSource,
   streamMatchesSource,
+  findPreferredSourceMatch,
+  preferredSourceAddonPending,
 } from "@/lib/playback-history";
 import { readSeasonLock } from "@/lib/season-lock";
+import { continuationStream } from "@/lib/player/continue-playback";
 import { useSettings } from "@/lib/settings";
 import type { ScoredStream, Tier } from "@/lib/streams/types";
 import { isAddonRanked } from "@/lib/streams/addon-detect";
@@ -116,6 +120,7 @@ export function PlayPicker({
   intent,
   seasonEpisodes,
   resume,
+  continuation,
   playerActive,
 }: {
   meta: Meta;
@@ -125,6 +130,7 @@ export function PlayPicker({
   intent?: "play" | "download";
   seasonEpisodes?: PlayEpisode[];
   resume?: boolean;
+  continuation?: import("@/lib/playback-history").PlaybackContinuation;
   playerActive?: boolean;
 }) {
   const t = useT();
@@ -227,6 +233,22 @@ export function PlayPicker({
     () => (seasonLogo ? { ...meta, logo: seasonLogo } : meta),
     [meta, seasonLogo],
   );
+  const isAnimeMetaId = /^(kitsu|mal|anilist|anidb):/.test(meta.id);
+  const seasonLock = settings.seasonSourceLock && (meta.type === "series" || isAnimeMetaId);
+  const seasonLockEntry = useMemo(
+    () =>
+      seasonLock ? readSeasonLock(meta.id, isAnimeMetaId ? null : (episode?.season ?? null)) : null,
+    [seasonLock, meta.id, episode?.season, isAnimeMetaId],
+  );
+  const lastSeriesSource = useMemo(
+    () =>
+      seasonLockEntry ??
+      (settings.keepSourceNextEpisode && !!autoPlay && (meta.type === "series" || isAnimeMetaId)
+        ? readLastSeriesPlayback(meta.id)
+        : null),
+    [seasonLockEntry, meta.id, meta.type, isAnimeMetaId, settings.keepSourceNextEpisode, autoPlay],
+  );
+  const lastSeriesSourceIsLineage = seasonLockEntry == null;
   const [resolving, setResolving] = useState<ResolvingSelection | null>(null);
   const [failedStreams, setFailedStreams] = useState<Set<ScoredStream>>(new Set());
   const [selectedTier, setSelectedTier] = useState<Tier | null>(null);
@@ -234,7 +256,7 @@ export function PlayPicker({
   const [strictMode, setStrictMode] = useState(settings.streamFilterLevel === "strict");
   const [forceShowAll, setForceShowAll] = useState(false);
   const filterDisabled = settings.streamFilterLevel === "off" || forceShowAll || isDownload;
-  const animeTitles = useAnimeAltTitles(meta);
+  const animeTitles = useAnimeAltTitles(meta, episode?.sourceMetaId);
   const {
     result,
     loading,
@@ -251,6 +273,7 @@ export function PlayPicker({
     meta,
     episode,
     imdbId,
+    imdbIdVerified: resolvedImdb.verified,
     streamIds,
     addons,
     debrids,
@@ -258,6 +281,7 @@ export function PlayPicker({
     strictMode,
     filterDisabled,
     animeTitles,
+    preferredAddonId: lastSeriesSource?.addonId ?? null,
   });
   const baseLangs = settings.preferredLanguages ?? [];
   const isAnimeRequest = useMemo(
@@ -452,28 +476,14 @@ export function PlayPicker({
     setSelectedTier((s) => s ?? filteredPicker.primary!.tier);
   }, [filteredPicker]);
 
-  const isAnimeMetaId = /^(kitsu|mal|anilist|anidb):/.test(meta.id);
   const previousPlayback = useMemo(
     () =>
-      settings.rememberLastStream ? readPlayback(meta.id, episode?.season, episode?.episode) : null,
-    [meta.id, episode?.season, episode?.episode, settings.rememberLastStream],
-  );
-
-  const seasonLock = settings.seasonSourceLock && (meta.type === "series" || isAnimeMetaId);
-  const seasonLockEntry = useMemo(
-    () =>
-      seasonLock ? readSeasonLock(meta.id, isAnimeMetaId ? null : (episode?.season ?? null)) : null,
-    [seasonLock, meta.id, episode?.season, isAnimeMetaId],
-  );
-  const lastSeriesSource = useMemo(
-    () =>
-      seasonLockEntry ??
-      (settings.keepSourceNextEpisode && !!autoPlay && (meta.type === "series" || isAnimeMetaId)
-        ? readLastSeriesPlayback(meta.id)
+      continuation?.source ??
+      (settings.rememberLastStream
+        ? readPlayback(meta.id, episode?.season, episode?.episode)
         : null),
-    [seasonLockEntry, meta.id, meta.type, isAnimeMetaId, settings.keepSourceNextEpisode, autoPlay],
+    [meta.id, episode?.season, episode?.episode, settings.rememberLastStream, continuation],
   );
-  const lastSeriesSourceIsLineage = seasonLockEntry == null;
 
   const kidProfile = useActiveKid();
   const p2pAutoConsent = settings.p2pAutoConsent || !!kidProfile;
@@ -482,6 +492,7 @@ export function PlayPicker({
     previousPlayback,
     sourceEntry: lastSeriesSource,
     sourceEntryLineage: lastSeriesSourceIsLineage,
+    sourceEntryBestEffort: lastSeriesSourceIsLineage,
     isCached,
     addons,
     hasStrongAddon,
@@ -512,13 +523,18 @@ export function PlayPicker({
     !roomGuestPick;
   useEffect(() => {
     if (!autoActive) return;
+    if (preferredSourceAddonPending(lastSeriesSource, false, pipelineDone, addonQuorum)) return;
     const t = window.setTimeout(() => setAutoCancelled(true), 45_000);
     return () => window.clearTimeout(t);
-  }, [autoActive]);
+  }, [autoActive, lastSeriesSource, pipelineDone, addonQuorum]);
 
   const previousMatch: ScoredStream | null = useMemo(() => {
     if (!filteredPicker || !previousPlayback) return null;
-    const m = filteredPicker.allRaw.find((s) => streamMatchesEntry(s, previousPlayback)) ?? null;
+    const m = continuation
+      ? (filteredPicker.allRaw
+          .map((s) => continuationStream(s, continuation))
+          .find((s) => s != null) ?? null)
+      : (filteredPicker.allRaw.find((s) => streamMatchesEntry(s, previousPlayback)) ?? null);
     if (!m || isAnimeMetaId || !episode) return m;
     if (
       m.episode != null &&
@@ -533,12 +549,12 @@ export function PlayPicker({
     )
       return null;
     return m;
-  }, [filteredPicker, previousPlayback, episode, isAnimeMetaId]);
+  }, [filteredPicker, previousPlayback, episode, isAnimeMetaId, continuation]);
 
   const sameSourceMatch: ScoredStream | null = useMemo(() => {
     if (!filteredPicker || !lastSeriesSource || previousMatch) return null;
-    const matches = lastSeriesSourceIsLineage ? streamMatchesReleaseLineage : streamMatchesSource;
-    return filteredPicker.allRaw.find((s) => matches(s, lastSeriesSource)) ?? null;
+    const matches = lastSeriesSourceIsLineage ? streamMatchesPreferredSource : streamMatchesSource;
+    return findPreferredSourceMatch(filteredPicker.allRaw, lastSeriesSource, matches);
   }, [filteredPicker, lastSeriesSource, lastSeriesSourceIsLineage, previousMatch]);
 
   const currentPick: ScoredStream | null = useMemo(() => {
@@ -591,6 +607,7 @@ export function PlayPicker({
     absoluteEpisode: animeAbsoluteEpisode,
     attempt,
     resume,
+    continuation,
     debrids,
     isCached,
     seasonLock,
@@ -639,7 +656,7 @@ export function PlayPicker({
   const rememberedFiredRef = useRef(false);
   const rememberedHandledFirst =
     !!previousMatch &&
-    settings.rememberLastStream &&
+    (settings.rememberLastStream || !!continuation) &&
     !!resume &&
     !wasInvitedTo(inviteKey) &&
     !isDownload &&
@@ -686,7 +703,7 @@ export function PlayPicker({
     openPlayerGated,
   ]);
 
-  useAutoFire({
+  const { waitingForPreferredSource } = useAutoFire({
     autoActive,
     rememberedHandledFirst: rememberedHandledFirst && autoAttemptIdx === 0,
     attempt,
@@ -714,6 +731,12 @@ export function PlayPicker({
     setAutoCancelled,
     onPlay,
   });
+  const preferredAddonName = useMemo(() => {
+    if (!waitingForPreferredSource) return null;
+    const id = lastSeriesSource?.addonId;
+    if (!id) return null;
+    return addons?.find((a) => a.manifest.id === id)?.manifest.name ?? id;
+  }, [waitingForPreferredSource, lastSeriesSource, addons]);
 
   const allCount = filteredPicker?.all.length ?? 0;
   const rawCount = (result?.raw.addon.length ?? 0) + (result?.raw.library.length ?? 0);
@@ -865,6 +888,10 @@ export function PlayPicker({
         absoluteEpisode={animeAbsoluteEpisode}
         onStart={(finalSrc) => {
           setPendingPreselect(null);
+          if (finalSrc.continuation && !isPlaybackActorCurrent(finalSrc.continuation.actor)) {
+            setResolveError(playError("The active profile changed. Open the menu again."));
+            return;
+          }
           openPlayer(finalSrc);
         }}
         onCancel={() => setPendingPreselect(null)}
@@ -899,6 +926,7 @@ export function PlayPicker({
         p2p={resolving?.p2p === true}
         attemptIdx={autoAttemptIdx}
         download={isDownload}
+        waitingFor={preferredAddonName}
         onCancel={() => {
           abortResolve();
           setResolving(null);

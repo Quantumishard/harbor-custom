@@ -6,6 +6,10 @@ import * as selection from "../../src/lib/player/subtitle-selection.ts";
 import * as cleanups from "../../src/lib/player/prepared-subtitle-cleanups.ts";
 import * as seeds from "../../src/lib/subtitles/seed-batch.ts";
 import * as failures from "../../src/lib/player/mpv-failure.ts";
+import * as translationJobs from "../../src/lib/subtitles/translation-jobs.ts";
+import * as addedSubs from "../../src/lib/subtitles/added-subs.ts";
+import * as language from "../../src/lib/subtitles/language.ts";
+import { SubtitlePreparationError as RealSubtitlePreparationError } from "../../src/lib/subtitles/prepare.ts";
 import type { PlayerBridge, PlayerSnapshot } from "../../src/lib/player/bridge.ts";
 import type { MpvOptions } from "../../src/lib/player/mpv.ts";
 
@@ -84,14 +88,7 @@ export function mpvBridgeHarness(prefs = { volume: 0.35, muted: false }, options
     },
     "@/lib/subtitles/prepare": {
       prepareSubtitle: (input: { url: string }) => prepare(input),
-      SubtitlePreparationError: class SubtitlePreparationError extends Error {
-        reason: string;
-        constructor(reason: string, message: string) {
-          super(message);
-          this.name = "SubtitlePreparationError";
-          this.reason = reason;
-        }
-      },
+      SubtitlePreparationError: RealSubtitlePreparationError,
     },
     "@/lib/subtitles/provider-auth": { subtitleTrackDownloadHeaders: () => undefined },
     "@/lib/subtitles/prepared-registry": { takePreparedSubtitle: () => null },
@@ -101,7 +98,9 @@ export function mpvBridgeHarness(prefs = { volume: 0.35, muted: false }, options
       clearPendingSub() {},
       wasPendingSub: () => false,
     },
-    "@/lib/subtitles/translation-jobs": { registerTranslationJob() {} },
+    "@/lib/subtitles/translation-jobs": translationJobs,
+    "@/lib/subtitles/added-subs": addedSubs,
+    "@/lib/subtitles/language": language,
     "./mpv-failure": failures,
     "@/lib/platform": {
       isWindowsDesktop: () => true,
@@ -130,6 +129,9 @@ export function mpvBridgeHarness(prefs = { volume: 0.35, muted: false }, options
   const frames = new Map<number, FrameRequestCallback>();
   let frameId = 0;
   const documentEvents = new EventTarget();
+  const timers = new Map<number, () => void>();
+  let timerId = 0;
+  let visibilityState: DocumentVisibilityState = "visible";
   new Function("require", "module", "exports", "window", "console", "document", compiled)(
     (id: string) => {
       if (!(id in dependencies)) throw new Error(`Unexpected dependency: ${id}`);
@@ -138,6 +140,11 @@ export function mpvBridgeHarness(prefs = { volume: 0.35, muted: false }, options
     module,
     module.exports,
     {
+      setTimeout: (callback: () => void) => {
+        timers.set(++timerId, callback);
+        return timerId;
+      },
+      clearTimeout: (id: number) => timers.delete(id),
       requestAnimationFrame: (callback: FrameRequestCallback) => {
         frames.set(++frameId, callback);
         return frameId;
@@ -152,6 +159,7 @@ export function mpvBridgeHarness(prefs = { volume: 0.35, muted: false }, options
     },
     { warn() {}, info() {} },
     {
+      get visibilityState() { return visibilityState; },
       addEventListener: documentEvents.addEventListener.bind(documentEvents),
       removeEventListener: documentEvents.removeEventListener.bind(documentEvents),
     },
@@ -166,6 +174,15 @@ export function mpvBridgeHarness(prefs = { volume: 0.35, muted: false }, options
     commands,
     errors,
     emitWindow(name: string) { windowEvents.dispatchEvent(new Event(name)); },
+    emitVisibility(state: DocumentVisibilityState) {
+      visibilityState = state;
+      documentEvents.dispatchEvent(new Event("visibilitychange"));
+    },
+    runTimers() {
+      const callbacks = [...timers.values()];
+      timers.clear();
+      callbacks.forEach((callback) => callback());
+    },
     runFrame() {
       const callbacks = [...frames.values()];
       frames.clear();

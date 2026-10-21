@@ -5,11 +5,22 @@ import {
 import { DEFAULT_THEME } from "@/lib/theme";
 import { DEFAULT_FULLSCREEN_CLOCK_SIZE_PX } from "@/lib/local-time";
 import { AUTO_DISPLAY } from "@/lib/monitors";
-import type { Settings } from "./types";
+import type { Settings, SecondaryProfilePrivileges } from "./types";
 
 export const STORAGE_KEY = "harbor.settings";
 
+export const DEFAULT_SECONDARY_PRIVILEGES: SecondaryProfilePrivileges = {
+  canAddProfiles: false,
+  canManageStartup: false,
+  canViewAccountProvider: false,
+  canViewHarborAccount: false,
+  canViewProviderAccount: false,
+  canSignOutRoot: false,
+};
+
 export const DEFAULT: Settings = {
+  accountProvider: "stremio",
+  spooktoberBanner: undefined,
   soundTheme: "none",
   sfxVolume: 50,
   playerVolumeSfx: false,
@@ -91,6 +102,7 @@ export const DEFAULT: Settings = {
   awardTabs: false,
   awardTabPosition: "above",
   rowTitleScale: 1,
+  cardTitleScale: 1,
   playerTitleScale: 1,
   playerTitleSeriesFirst: false,
   uiScale: 1,
@@ -109,6 +121,7 @@ export const DEFAULT: Settings = {
   controllerRepeatMs: 140,
   controllerInitialDelayMs: 400,
   trailerQuality: "auto",
+  autoplayTrailerQuality: "auto",
   detailTrailerAutoplay: false,
   heroBackdropCarousel: false,
   detailTrailerAudio: false,
@@ -154,11 +167,14 @@ export const DEFAULT: Settings = {
   episodeOrderProvider: "tvdb",
   tvdbSeasonType: "aired",
   tvdbOrderPanel: true,
+  tvdbSeasonExplorer: true,
   tvdbPin: "",
   harborAvatar: null,
   harborColor: "#7dd3fc",
   anilistAutoSync: true,
   malAutoSync: true,
+  anilistCountRewatches: true,
+  malCountRewatches: true,
   anilistBlurComments: false,
   showAnilistComments: false,
   useAnilistAvatar: false,
@@ -215,7 +231,11 @@ export const DEFAULT: Settings = {
   discordShowTimestamp: true,
   discordShowPartyJoin: false,
   discordMusicPresence: true,
+  discordHideMusicWhenPaused: true,
   playerEngine: "auto",
+  playerExternalMpv: false,
+  playerExternalMpvPath: "",
+  playerExternalMpvArgs: "",
   pipBehavior: "resize",
   playerShellId: "default",
   playerChromeTheme: "auto",
@@ -410,11 +430,15 @@ export const DEFAULT: Settings = {
   audioDevice: "",
   bandwidthMbps: 0,
   nextEpisodeLeadSec: -1,
+  endScreenLeadSec: -1,
+  endScreenCountdownSec: 15,
+  endScreenOnZero: "close",
   autoPlayNextEpisode: true,
   stillWatching: false,
   stillWatchingAfter: 3,
   keyboardPauseShowsControls: true,
   hideWatchedInCatalogs: false,
+  hideWatchedInHero: false,
   hideUnreleased: false,
   localEpisodeSortDesc: false,
   localReviewDismissedCount: 0,
@@ -422,11 +446,12 @@ export const DEFAULT: Settings = {
   showSimklCard: false,
   showLetterboxdCard: false,
   externalContinueWatching: false,
-  cwSources: { library: true, trakt: false, simkl: false, local: true },
+  cwSources: { library: true, trakt: false, simkl: false, local: true, publicmetadb: false },
   showPlaylistsTab: false,
   skipProfileScreen: false,
   profilePromptInterval: "launch",
   defaultProfileId: "",
+  nuvioDefaultProfileId: "",
   sportsLeagues: [],
   sportsShowOdds: false,
   sportsWithoutProvider: false,
@@ -454,6 +479,7 @@ export const DEFAULT: Settings = {
   musicSeekThumbHover: true,
   musicSpeedPresets: [],
   homeMode: "harbor",
+  classicCatalogSource: "all",
   homeShowAllAddonRows: false,
   homeNewEpisodes: false,
   libraryBookmarkedOnly: true,
@@ -494,6 +520,7 @@ export const DEFAULT: Settings = {
   cwSnapshotFullQuality: false,
   cwPreferEpisodeStill: false,
   streamFilterLevel: "strict",
+  animePreferImdbStreams: false,
   blockTrackers: true,
   homeRows: {
     order: [],
@@ -534,6 +561,7 @@ export const DEFAULT: Settings = {
   seekBarColor: "",
   seekBarImage: "",
   seekBarFill: true,
+  seekBarChapters: true,
   seekBarFillOpacity: 0.35,
   seekDotShape: "circle",
   seekDotHover: true,
@@ -562,7 +590,8 @@ export const DEFAULT: Settings = {
   simklUpNextRailEnabled: false,
   simklTrendingRailEnabled: false,
   simklScrobbleEnabled: true,
-  simklAnimeTitleLanguage: "english",
+  animeTitleLanguage: "english",
+  publicmetadbScrobbleEnabled: true,
   weekStartsMonday: false,
   calendarPosterSize: "default",
   customCalendar: {
@@ -598,6 +627,7 @@ export const DEFAULT: Settings = {
   arabicWelcomeSeen: false,
   cropMode: "fit",
   customLists: [],
+  libraryGroups: [],
   pauseListStatusOnPause: false,
   translateTitles: true,
   translateDescriptions: true,
@@ -623,4 +653,53 @@ export const DEFAULT: Settings = {
   xrayEnabled: false,
   xrayLiveScan: true,
   auddApiKey: "",
+  secondaryPrivileges: { ...DEFAULT_SECONDARY_PRIVILEGES },
+  nuvioSecondaryPrivileges: { ...DEFAULT_SECONDARY_PRIVILEGES },
 };
+
+export function getSecondaryPrivileges(
+  settings?: {
+    accountProvider?: string;
+    secondaryPrivileges?: Partial<SecondaryProfilePrivileges> | null;
+    nuvioSecondaryPrivileges?: Partial<SecondaryProfilePrivileges> | null;
+  } | null,
+  isNuvioOverride?: boolean,
+): SecondaryProfilePrivileges {
+  let isNuvio = typeof isNuvioOverride === "boolean" ? isNuvioOverride : false;
+  if (typeof isNuvioOverride !== "boolean") {
+    if (settings?.accountProvider) {
+      isNuvio = settings.accountProvider === "nuvio";
+    } else {
+      try {
+        isNuvio = localStorage.getItem("harbor.account-provider") === "nuvio";
+      } catch {}
+    }
+  }
+
+  const directSource = isNuvio ? settings?.nuvioSecondaryPrivileges : settings?.secondaryPrivileges;
+  if (directSource) {
+    return {
+      ...DEFAULT_SECONDARY_PRIVILEGES,
+      ...directSource,
+    };
+  }
+
+  let sharedBlob: {
+    secondaryPrivileges?: Partial<SecondaryProfilePrivileges> | null;
+    nuvioSecondaryPrivileges?: Partial<SecondaryProfilePrivileges> | null;
+  } | null = null;
+  try {
+    const raw =
+      localStorage.getItem("harbor.settings.shared") ?? localStorage.getItem("harbor.settings");
+    if (raw) sharedBlob = JSON.parse(raw);
+  } catch {}
+
+  const fallbackSource = isNuvio
+    ? sharedBlob?.nuvioSecondaryPrivileges
+    : sharedBlob?.secondaryPrivileges;
+
+  return {
+    ...DEFAULT_SECONDARY_PRIVILEGES,
+    ...fallbackSource,
+  };
+}

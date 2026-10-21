@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight } from "@/components/icons/music-icons";
 import { Dropdown } from "@/components/dropdown";
 import { HoverTooltip } from "@/components/hover-tooltip";
 import { MusicArtistCard } from "@/components/music/music-artist-card";
+import { useMusicItemMenu } from "@/components/music/music-item-menu";
 import { useMusicNavigate } from "@/components/music/music-navigate";
 import { MusicSectionHead } from "@/components/music/music-track-grid";
 import { Row } from "@/components/row";
@@ -145,7 +146,20 @@ function FreshmanArtists({ freshmanClass, active }: { freshmanClass: XxlFreshman
     });
     return () => { live = false; };
   }, [active, freshmanClass]);
-  return <Row min={136} shape="square" arrowsAlways scrollKey={`music:xxl:${freshmanClass.year}`} className="music-xxl-artists">
-    {artists.map(artist => <MusicArtistCard key={artist.name} artist={artist} onOpen={() => goToArtist(artist.name)} />)}
-  </Row>;
+  const itemMenu = useMusicItemMenu({
+    onOpen: (item) => {
+      if (item.kind === "artist") goToArtist(item.name);
+    },
+  });
+  return <>
+    <Row min={136} shape="square" arrowsAlways scrollKey={`music:xxl:${freshmanClass.year}`} className="music-xxl-artists">
+      {artists.map((artist, index) => <MusicArtistCard
+        key={artist.name}
+        artist={artist}
+        onOpen={() => goToArtist(artist.name)}
+        onMenu={itemMenu.openFor({ ...artist, kind: "artist" }, index)}
+      />)}
+    </Row>
+    {itemMenu.menu}
+  </>;
 }

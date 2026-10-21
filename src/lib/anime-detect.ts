@@ -1,6 +1,9 @@
 import { useSyncExternalStore } from "react";
-import { meta as fetchMeta } from "@/lib/cinemeta";
-import { imdbToKitsu } from "@/lib/providers/anime-mapping";
+import { noteNotify } from "@/lib/render-cause";
+
+import { meta as fetchMeta, type Meta } from "@/lib/cinemeta";
+import { imdbToKitsu, tmdbTvToKitsu } from "@/lib/providers/anime-mapping";
+import { kitsuAnime } from "@/lib/providers/kitsu";
 import { setItemWithRecovery } from "@/lib/storage-recovery";
 
 const STORAGE_KEY = "harbor.anime.detected.v2";
@@ -72,9 +75,20 @@ function persistNegatives(): void {
   }, NEGATIVE_FLUSH_MS);
 }
 
+// Detection settles one title at a time, and each settle used to notify synchronously: a home feed
+// with hundreds of anime re-rendered home, discover and every other version consumer once per
+// title. Coalescing the notifications makes a burst of settles cost a single re-render.
+const BUMP_COALESCE_MS = 120;
+let bumpTimer: ReturnType<typeof setTimeout> | null = null;
+
 function bump(): void {
   version += 1;
-  listeners.forEach((l) => l());
+  if (bumpTimer != null) return;
+  bumpTimer = setTimeout(() => {
+    bumpTimer = null;
+    noteNotify("store:anime-detect");
+    listeners.forEach((l) => l());
+  }, BUMP_COALESCE_MS);
 }
 
 export function isDetectedAnime(id: string): boolean {
@@ -93,6 +107,24 @@ export function metaLooksAnime(m: {
   if (ANIME_ID_RE.test(id)) return true;
   if (detected.has(id)) return true;
   return isJapaneseAnime(m);
+}
+
+/**
+ * Warm the anime identity resolution for a catalog meta the user is about to
+ * open (the search top match): resolve imdb/tmdb -> kitsu and warm the Kitsu
+ * lookup the detail page's year verdict needs, so detection answers from cache
+ * instead of the series view rendering and then being swapped out.
+ */
+export function warmAnimeResolution(m: Meta): void {
+  if (!metaLooksAnime(m)) return;
+  const imdb = m.id.startsWith("tt") ? m.id : null;
+  const tmdbTv = /^tmdb:tv:(\d+)$/.exec(m.id);
+  if (!imdb && !tmdbTv) return;
+  void (async () => {
+    let k = tmdbTv ? await tmdbTvToKitsu(Number(tmdbTv[1])).catch(() => null) : null;
+    if (k == null && imdb) k = await imdbToKitsu(imdb).catch(() => null);
+    if (k != null) await kitsuAnime(k).catch(() => null);
+  })();
 }
 
 export function detectAnimeForMetas(metas: Array<{ id: string; type?: string }>): void {
@@ -129,6 +161,34 @@ function isJapaneseAnime(m: { genres?: string[]; country?: string; originalLangu
   const c = primaryCountry(m);
   const lang = (m.originalLanguage ?? "").toLowerCase();
   return c.includes("japan") || c === "jp" || c === "jpn" || lang === "ja" || lang === "jpn";
+}
+
+export function isOrphanAnimeCandidate(meta: {
+  type?: string;
+  animeFormat?: string;
+  genres?: string[];
+  country?: string;
+  originalLanguage?: string;
+  productionCountries?: string[];
+}): boolean {
+  if (meta.type === "anime" || !!meta.animeFormat) return true;
+  if (!hasAnimationGenre(meta)) return false;
+
+  const lang = (meta.originalLanguage ?? "").toLowerCase();
+  const metaCountry = (meta.country ?? "").toLowerCase();
+  const countries = (meta.productionCountries ?? []).map((c) => c.toUpperCase());
+
+  return (
+    lang === "ja" ||
+    lang === "jpn" ||
+    lang === "zh" ||
+    lang === "zho" ||
+    lang === "chi" ||
+    lang === "ko" ||
+    lang === "kor" ||
+    countries.some((c) => ["JP", "CN", "KR", "TW"].includes(c)) ||
+    /japan|china|korea|taiwan/i.test(metaCountry)
+  );
 }
 
 function settled(id: string): boolean {

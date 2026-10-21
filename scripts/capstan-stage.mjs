@@ -18,6 +18,10 @@
  * and after every stage that was skipped, and it starts the staged runtime and makes
  * the bridge answer. A build ships a runtime that ran, or it stops.
  *
+ * The layer's jars are not tracked in git, so a checkout can have the sources without
+ * them. Stage mode runs tools/deps.sh once to fill them in before judging the layer,
+ * which is what lets a fresh clone and a build runner provision themselves.
+ *
  * Modes:
  *   (none)      build the layer if stale, stage if stale, verify always.
  *   --check     verify what is staged. Never builds, never stages. Exit 1 if not ready.
@@ -50,8 +54,9 @@
  * live gate 10/13 matching the full JDK row for row, bridge test 38 checks 0 failed.
  *
  * Env overrides:
- *   HARBOR_CAPSTAN_JDK       JDK 17+ with jmods/ and bin/jlink. Default: JAVA_HOME, and when
- *                            neither names one, a Temurin build fetched once and cached.
+ *   HARBOR_CAPSTAN_JDK       JDK 17+ with jmods/ and bin/jlink. Default: JAVA_HOME, then the
+ *                            JDK behind java on PATH, and when none fits, a Temurin build
+ *                            fetched once and cached.
  *   HARBOR_CAPSTAN_JDK_TARGET, HARBOR_CAPSTAN_JDK_VERSION, HARBOR_CAPSTAN_CACHE: capstan-jdk.mjs.
  *   HARBOR_CAPSTAN_SRC       the compat layer checkout. Default: ../android-extension-compat.
  *   HARBOR_CAPSTAN_COMPRESS  jlink --compress. Default 2, which is 56.4 MB on disk and
@@ -74,7 +79,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, relative, sep } from "node:path";
+import { delimiter, dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FIX, hostTriple, markLaunchers, releaseLabel, resolveJdks } from "./capstan-jdk.mjs";
 import { dest, readManifest, report, stagedJava, structureProblems, verifyStage } from "./capstan-verify.mjs";
@@ -183,18 +188,7 @@ function buildLayer() {
   }
   if (!hostJdk) die("no JDK to build the compat layer with. Set HARBOR_CAPSTAN_JDK or JAVA_HOME.");
   log("compat layer is older than its sources, running tools/build.sh");
-  try {
-    execFileSync("sh", ["tools/build.sh"], {
-      cwd: src,
-      env: { ...process.env, JAVA_HOME: hostJdk },
-      stdio: ["ignore", "inherit", "inherit"],
-    });
-  } catch (error) {
-    die(
-      `tools/build.sh failed: ${String(error.message).split("\n")[0]}`,
-      "Run it by hand for the whole output: cd android-extension-compat && sh tools/build.sh",
-    );
-  }
+  runLayerScript("tools/build.sh", { JAVA_HOME: hostJdk });
   if (!existsSync(jar)) die("tools/build.sh reported success but produced no out/capstan.jar");
 }
 
@@ -248,6 +242,13 @@ function stagedPlanHash() {
   }
 }
 
+// resources/capstan is a bundled resource in tauri.conf.json, and the tracked .gitkeep is what
+// keeps the path present in a checkout that never stages (the Flatpak build, for one). Staging
+// wipes the directory, so the marker is written back to leave tracked files untouched.
+function keepStageMarker() {
+  writeFileSync(join(dest, ".gitkeep"), "");
+}
+
 function stage() {
   const jlink = join(hostJdk, "bin", exe("jlink"));
   const jmods = join(targetJdk, "jmods");
@@ -256,6 +257,7 @@ function stage() {
 
   rmSync(dest, { recursive: true, force: true });
   mkdirSync(dest, { recursive: true });
+  keepStageMarker();
 
   log(`jlink ${MODULES.length} modules for ${target} from ${jmods}`);
   execFileSync(
@@ -378,10 +380,93 @@ async function withoutSources() {
   // directory and cannot resolve a missing one.
   rmSync(dest, { recursive: true, force: true });
   mkdirSync(dest, { recursive: true });
+  keepStageMarker();
   warn(
     "BUILDING WITHOUT EXTENSION SUPPORT. HARBOR_CAPSTAN_OPTIONAL is set and this checkout has no",
     "compat layer, so nothing is staged and installed extensions will not run in this build.",
   );
+}
+
+/*
+ * Windows ships no sh, and a Git for Windows install is usually not on PATH in a plain shell
+ * even though it is installed. deps.sh and build.sh are POSIX scripts, so the shell is located
+ * by hand before giving up: PATH first, then the well known Git for Windows and MSYS2
+ * locations, then wherever a portable install put it, derived from git itself.
+ */
+function posixShells() {
+  if (process.platform !== "win32") return ["sh"];
+  const roots = [];
+  if (process.env.ProgramFiles) roots.push(join(process.env.ProgramFiles, "Git"));
+  if (process.env["ProgramFiles(x86)"]) roots.push(join(process.env["ProgramFiles(x86)"], "Git"));
+  if (process.env.LOCALAPPDATA) roots.push(join(process.env.LOCALAPPDATA, "Programs", "Git"));
+  roots.push("C:\\msys64");
+  try {
+    const execPath = execFileSync("git", ["--exec-path"], { encoding: "utf8", windowsHide: true }).trim();
+    // C:/.../Git/mingw64/libexec/git-core -> C:/.../Git
+    roots.push(join(execPath, "..", "..", ".."));
+  } catch {
+    /* git is not on PATH either; the fixed locations above still apply */
+  }
+  const candidates = ["sh"];
+  for (const root of roots) {
+    candidates.push(join(root, "usr", "bin", "sh.exe"), join(root, "bin", "sh.exe"));
+  }
+  return [...new Set(candidates)];
+}
+
+/*
+ * A shell found by absolute path inherits the caller's PATH untouched, so dirname, mkdir,
+ * sha256sum, unzip and cygpath in its own usr/bin are invisible to it, and Git for Windows
+ * keeps curl separately in mingw64/bin. Those directories are put back before any script runs.
+ * A shell that was already on PATH brought its environment with it and is left alone.
+ */
+function shellPath(shell) {
+  const dirs = [dirname(shell)];
+  let here = dirname(shell);
+  for (let i = 0; i < 3; i += 1) {
+    here = dirname(here);
+    for (const candidate of [join(here, "usr", "bin"), join(here, "mingw64", "bin")]) {
+      if (existsSync(candidate)) dirs.push(candidate);
+    }
+  }
+  return [...new Set(dirs)].join(delimiter);
+}
+
+// Runs one of the layer's POSIX scripts with the best sh this machine has, and says exactly what
+// was tried when there is none.
+function runLayerScript(script, extraEnv = {}) {
+  const shells = posixShells();
+  for (const [index, shell] of shells.entries()) {
+    const env = { ...process.env, ...extraEnv };
+    if (index > 0) env.PATH = `${shellPath(shell)}${delimiter}${env.PATH ?? ""}`;
+    try {
+      execFileSync(shell, [script], {
+        cwd: src,
+        env,
+        stdio: ["ignore", "inherit", "inherit"],
+      });
+      if (index > 0) log(`ran ${script} with ${shell}`);
+      return;
+    } catch (error) {
+      if (error && error.code === "ENOENT") continue;
+      die(
+        `${script} failed: ${String(error.message).split("\n")[0]}`,
+        `Run it by hand for the whole output: cd android-extension-compat && sh ${script}`,
+      );
+    }
+  }
+  die(
+    `no POSIX shell found to run ${script} with, and the layer's jars are not tracked.`,
+    "Install Git for Windows, or put a sh on PATH, then try again.",
+  );
+}
+
+// libs/ and tools/dex-tools/ are gitignored, so a checkout with the layer can still be
+// missing everything it compiles against. deps.sh is the documented fresh-clone step;
+// stage mode runs it here so a build runner needs no human in front of it.
+function fetchLayerDeps() {
+  log("the extension layer is missing its jars, running tools/deps.sh");
+  runLayerScript("tools/deps.sh");
 }
 
 async function main() {
@@ -398,8 +483,20 @@ async function main() {
     await withoutSources();
     return;
   }
-  for (const [label, path] of [["libs", libs], ["dex tools", dexLib]]) {
-    if (!existsSync(path)) die(`no ${label} at ${path}`);
+  const gaps = [["libs", libs], ["dex tools", dexLib]].filter(([, path]) => !existsSync(path));
+  if (gaps.length) {
+    if (mode === "check") {
+      die(`missing ${gaps.map(([label]) => label).join(" and ")} at ${src}`, "Run: pnpm run setup:capstan");
+    }
+    fetchLayerDeps();
+    for (const [label, path] of gaps) {
+      if (!existsSync(path)) {
+        die(
+          `no ${label} at ${path}, and tools/deps.sh did not produce it`,
+          "Run: cd android-extension-compat && sh tools/deps.sh",
+        );
+      }
+    }
   }
   try {
     ({ hostJdk, targetJdk } = await resolveJdks(target, (line) => log(line)));

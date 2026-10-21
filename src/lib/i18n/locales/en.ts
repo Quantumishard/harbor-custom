@@ -72,6 +72,8 @@ import gamePlayer from "./en/game-player";
 import gameDiscovery from "./en/game-discovery";
 import gameDetails from "./en/game-details";
 import gameAchievements from "./en/game-achievements";
+import contextActionsFallback from "./context-actions-fallback";
+
 import settingsRefinements from "./en/settings-refinements";
 
 import nytTv from "./en/nyt-tv";
@@ -110,9 +112,11 @@ const en: Record<string, string> = {
   "sports.boxing.draws": "Draws",
   "sports.boxing.knockouts": "KOs",
   "sports.boxing.tba": "Fighter to be announced",
-  "Translations": "Translations",
+  Translations: "Translations",
   "Translating…": "Translating…",
   "Showing {lang}": "Showing {lang}",
+  "Waiting for {name}…": "Waiting for {name}…",
+  "Keeping the source you were watching.": "Keeping the source you were watching.",
   "Show all": "Show all",
   "games.download.queueOrder": "Queue order {position}",
   "games.download.earlier": "Move {name} earlier",
@@ -145,6 +149,8 @@ const en: Record<string, string> = {
   Soccer: "Football",
   "Build identity. Useful when filing a bug report.":
     "Build identity. Useful when filing a bug report.",
+  ...contextActionsFallback,
+
   "nav.home": "Home",
   "nav.discover": "Discover",
   "nav.catalogs": "Catalogs",
@@ -207,6 +213,10 @@ const en: Record<string, string> = {
   "profile.switch": "Switch profile",
   "profile.primary": "Primary",
   "profile.signedIn": "Signed in to Stremio",
+  "Signed in to Harbor": "Signed in to Harbor",
+  "Signed out of Harbor": "Signed out of Harbor",
+  "Sign in to Harbor": "Sign in to Harbor",
+  "Sign out of Harbor": "Sign out of Harbor",
   "profile.fallback": "Profile",
 
   "welcome.title": "Welcome to Harbor",

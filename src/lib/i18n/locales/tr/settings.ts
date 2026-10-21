@@ -461,8 +461,8 @@ const settings: Record<string, string> = {
   "Check the spelling or try a shorter search.":
     "Yazımı kontrol edin veya daha kısa bir arama yapmayı deneyin.",
   "Check your connection and try again.": "Bağlantınızı kontrol edip tekrar deneyin.",
-  "Checking harbor.site for a newer build.":
-    "Daha yeni bir derleme için harbor.site kontrol ediliyor.",
+  "Checking harborcommunity.site for a newer build.":
+    "Daha yeni bir derleme için harborcommunity.site kontrol ediliyor.",
   "Checking plots, cast, and scenes": "Konular, oyuncular ve sahneler inceleniyor",
   "Checking sources and audio": "Kaynaklar ve ses kontrol ediliyor",
   "Checking with TMDB…": "TMDB ile kontrol ediliyor…",
@@ -1197,8 +1197,8 @@ const settings: Record<string, string> = {
     "Özenle ayarlanmış renkler. Bunları yukarıdaki bölümden düzenleyin.",
   Harbor: "Harbor",
   "Harbor Relay": "Harbor Relay",
-  "Harbor Setup did not finish updating Harbor. Nothing was changed.":
-    "Harbor Setup Harbor güncellemesini tamamlayamadı. Hiçbir değişiklik yapılmadı.",
+  "Harbor Shipyard did not finish updating Harbor. Nothing was changed.":
+    "Harbor Shipyard Harbor güncellemesini tamamlayamadı. Hiçbir değişiklik yapılmadı.",
   "Harbor Voyages": "Harbor Yolculukları",
   "Harbor account": "Harbor hesabı",
   "Harbor catches stremio:// install links so the configure-and-install flow stays inside the app.":
@@ -1209,10 +1209,10 @@ const settings: Record<string, string> = {
     "Harbor açıkken günde birkaç kez kontrol eder ve sizi burada bilgilendirir.",
   "Harbor checks automatically every few hours.":
     "Harbor birkaç saatte bir otomatik olarak kontrol eder.",
-  "Harbor checks harbor.site for new versions and installs them in place.":
-    "Harbor yeni sürümleri harbor.site üzerinden kontrol eder ve mevcut kurulumun üzerine yükler.",
-  "Harbor checks harbor.site for new versions and installs them in place. Nothing installs until you choose to, and a dismissed update never nags you again.":
-    "Harbor, harbor.site üzerinden yeni sürümleri kontrol eder ve mevcut kurulumun üzerine yükler. Siz onaylamadan hiçbir şey yüklenmez ve reddettiğiniz bir güncelleme için bir daha bildirim almazsınız.",
+  "Harbor checks harborcommunity.site for new versions and installs them in place.":
+    "Harbor yeni sürümleri harborcommunity.site üzerinden kontrol eder ve mevcut kurulumun üzerine yükler.",
+  "Harbor checks harborcommunity.site for new versions and installs them in place. Nothing installs until you choose to, and a dismissed update never nags you again.":
+    "Harbor, harborcommunity.site üzerinden yeni sürümleri kontrol eder ve mevcut kurulumun üzerine yükler. Siz onaylamadan hiçbir şey yüklenmez ve reddettiğiniz bir güncelleme için bir daha bildirim almazsınız.",
   "Harbor couldn't analyze the audio for this source. Try again or adjust it manually.":
     "Harbor bu kaynağın sesini analiz edemedi. Tekrar deneyin veya elle ayarlayın.",
   "Harbor couldn't find a reliable timing correction for this subtitle.":
@@ -1226,8 +1226,8 @@ const settings: Record<string, string> = {
     "Harbor, intro ve jenerik zamanlamalarını AniSkip, TheIntroDB ve dosyanın kendi bölümlerinden bulur, ardından doğru anda Atla düğmesini gösterir.",
   "Harbor identity": "Harbor kimliği",
   "Harbor in your browser": "Tarayıcınızda Harbor",
-  "Harbor is closing. Harbor Setup will finish and reopen it.":
-    "Harbor kapanıyor. Harbor Setup işlemi tamamlayıp uygulamayı yeniden açacak.",
+  "Harbor is closing. Harbor Shipyard will finish and reopen it.":
+    "Harbor kapanıyor. Harbor Shipyard işlemi tamamlayıp uygulamayı yeniden açacak.",
   "Harbor is having trouble, try again in a moment":
     "Harbor'da bir sorun var. Birazdan tekrar deneyin",
   "Harbor is open source. PRs that reference a bug get reviewed within 48h and ship with credit in the release notes.":

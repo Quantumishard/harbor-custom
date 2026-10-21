@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { useT } from "@/lib/i18n";
 import { installFromUrl } from "@/lib/addon-store";
 import { isAdultText } from "@/lib/addons-store/adult-filter";
+import { canEmbedConfigurePage } from "@/lib/addons-store/configure-embed";
 import { pushActivityHint } from "@/lib/discord/activity-hint";
 import { clearPendingDeepLink } from "@/lib/deep-link";
 import { isLinuxDesktop, isWeb } from "@/lib/platform";
@@ -92,6 +93,7 @@ function InstallerViewport({
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [loaded, setLoaded] = useState(false);
   const [blocked, setBlocked] = useState(false);
+  const [embed, setEmbed] = useState<"checking" | "ok" | "blocked">("checking");
   const [reloadKey, setReloadKey] = useState(0);
   const successTimerRef = useRef<number | null>(null);
   const blockedTimerRef = useRef<number | null>(null);
@@ -135,13 +137,25 @@ function InstallerViewport({
   }, [onClose, phase.kind]);
 
   useEffect(() => {
+    let cancelled = false;
+    setEmbed("checking");
+    void canEmbedConfigurePage(url).then((allowed) => {
+      if (!cancelled) setEmbed(allowed ? "ok" : "blocked");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [url, reloadKey]);
+
+  useEffect(() => {
+    if (embed !== "ok") return;
     blockedTimerRef.current = window.setTimeout(() => {
       if (!loaded) setBlocked(true);
     }, 7500);
     return () => {
       if (blockedTimerRef.current !== null) window.clearTimeout(blockedTimerRef.current);
     };
-  }, [loaded, reloadKey]);
+  }, [embed, loaded, reloadKey]);
 
   const submit = useCallback(
     async (rawUrl: string) => {
@@ -239,6 +253,7 @@ function InstallerViewport({
 
   const dismissError = () => setPhase({ kind: "idle" });
   const reload = () => {
+    setEmbed("checking");
     setBlocked(false);
     setLoaded(false);
     setReloadKey((k) => k + 1);
@@ -306,12 +321,12 @@ function InstallerViewport({
       </header>
 
       <div className="relative flex-1 overflow-hidden bg-white">
-        {!loaded && !blocked && (
+        {!blocked && embed !== "blocked" && (embed === "checking" || !loaded) && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-canvas">
             <HarborLoader size="lg" caption={t("Loading {title}", { title })} />
           </div>
         )}
-        {blocked && (
+        {(blocked || embed === "blocked") && (
           <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-canvas px-6 text-center">
             <p className="text-[14px] font-semibold text-ink">
               {t("{title} won't load inside Harbor.", { title })}
@@ -331,15 +346,17 @@ function InstallerViewport({
             </button>
           </div>
         )}
-        <iframe
-          key={reloadKey}
-          src={url}
-          title={title}
-          onLoad={() => setLoaded(true)}
-          className="h-full w-full border-0"
-          referrerPolicy="strict-origin-when-cross-origin"
-          allow="clipboard-write; clipboard-read; encrypted-media; fullscreen"
-        />
+        {embed === "ok" && (
+          <iframe
+            key={reloadKey}
+            src={url}
+            title={title}
+            onLoad={() => setLoaded(true)}
+            className="h-full w-full border-0"
+            referrerPolicy="strict-origin-when-cross-origin"
+            allow="clipboard-write; clipboard-read; encrypted-media; fullscreen"
+          />
+        )}
         {(phase.kind === "installing" || phase.kind === "success") && (
           <InstallOverlay phase={phase} logo={logo} />
         )}

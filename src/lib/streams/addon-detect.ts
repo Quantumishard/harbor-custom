@@ -23,3 +23,25 @@ export function isAddonRanked(addon: Pick<Addon, "manifest" | "transportUrl">): 
 export function isStatusOnlyAddon(addon: Pick<Addon, "manifest" | "transportUrl">): boolean {
   return detectAddonFamily(addon) === "aiostatus";
 }
+
+/**
+ * Stremio's Local Files addon: the Stremio app hosts it on loopback (/local-addon). Harbor
+ * serves local files from its own library, so the addon can never answer here and querying
+ * it only surfaces a spurious failure.
+ */
+export function isStremioLocalAddon(addon: Pick<Addon, "manifest" | "transportUrl">): boolean {
+  const id = (addon.manifest.id ?? "").toLowerCase();
+  const url = (addon.transportUrl ?? "").toLowerCase();
+  return id === "org.stremio.local" || url.includes("/local-addon/");
+}
+
+/**
+ * TorBox disabled its hosted Stremio addon (changelog v8.4.4) and removed the hostname from
+ * DNS. TorBox playback and cache checks go through the debrid API instead, so the addon is
+ * dead weight that would otherwise report "couldn't be reached" on every search.
+ */
+export function isRetiredTorboxAddon(addon: Pick<Addon, "manifest" | "transportUrl">): boolean {
+  const id = (addon.manifest.id ?? "").toLowerCase();
+  const url = (addon.transportUrl ?? "").toLowerCase();
+  return id === "app.torbox.stremio" || url.includes("stremio.torbox.app");
+}

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, LoaderCircle } from "@/components/icons/music-icons";
 import { MusicCoverCard } from "@/components/music/music-cover-card";
+import { useMusicItemMenu } from "@/components/music/music-item-menu";
 import { MusicSectionEmpty, MusicSectionError } from "@/components/music/music-track-grid";
+import { useMusicCatalogPlayback } from "@/components/music/use-music-catalog-playback";
 import { useT } from "@/lib/i18n";
 import { loadMusicDiscoveryGenres } from "@/lib/music/discovery";
 import type { MusicDiscoveryGenre } from "@/lib/music/genre-catalog";
@@ -121,6 +123,11 @@ export function MusicTopPlaylists({
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [more, setMore] = useState(false);
   const [retry, setRetry] = useState(0);
+  const playback = useMusicCatalogPlayback();
+  const itemMenu = useMusicItemMenu({
+    onPlay: (item) => { void playback.play(item, items); },
+    onOpen: (item) => onOpen(item, items),
+  });
   const lanes = useRef<TopPlaylistLane[]>([]);
   const cursor = useRef(0);
   const seen = useRef(new Set<string>());
@@ -227,11 +234,12 @@ export function MusicTopPlaylists({
       ) : (
         <>
           <div className="music-top-playlists-grid">
-            {items.map((item) => (
+            {items.map((item, index) => (
               <MusicCoverCard
                 key={topPlaylistKey(item)}
                 item={item}
                 onOpen={() => onOpen(item, items)}
+                onMenu={itemMenu.openFor(item, index)}
               />
             ))}
           </div>
@@ -247,6 +255,7 @@ export function MusicTopPlaylists({
           )}
         </>
       )}
+      {itemMenu.menu}
     </section>
   );
 }

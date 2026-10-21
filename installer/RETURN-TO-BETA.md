@@ -1,5 +1,8 @@
 # Experimental → beta: explicit, recoverable return
 
+> Note: the managed installer was renamed from Harbor Setup to Harbor Shipyard on
+> 2026-10-16. References below keep the name that was in use when they were written.
+
 ## Status and scope
 
 Implemented locally; not release-certified or published. Windows x86_64 only.

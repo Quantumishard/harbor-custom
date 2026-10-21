@@ -2,9 +2,9 @@ import { memo, useEffect, useState } from "react";
 import type { Meta } from "@/lib/cinemeta";
 import { peekCachedLogo, resolveLogo } from "@/lib/logo";
 import { sizeImageUrl } from "@/lib/img-size";
-import { useContextMenu } from "@/lib/context-menu";
+import { useContextMenu, type MembershipContext } from "@/lib/context-menu";
 import { useSettings } from "@/lib/settings";
-import { useView } from "@/lib/view";
+import { useViewActions } from "@/lib/view";
 import { usePosterChain } from "@/components/poster";
 import { ensureStaticHeroArt, peekStaticHeroArt } from "@/lib/providers/anime-hero-art-static";
 import { prepareExpandingCardArtwork } from "@/lib/expanding-card-artwork";
@@ -46,12 +46,14 @@ export const TvCard = memo(function TvCard({
   meta,
   kids = false,
   reason,
+  membership,
 }: {
   meta: Meta;
   kids?: boolean;
   reason?: string;
+  membership?: MembershipContext;
 }) {
-  const { openMeta, openManga } = useView();
+  const { openMeta, openManga } = useViewActions();
   const { open: openContextMenu } = useContextMenu();
   const { settings } = useSettings();
   const logo = useLogo(meta);
@@ -74,7 +76,7 @@ export const TvCard = memo(function TvCard({
     <button
       type="button"
       onClick={open}
-      onContextMenu={(e) => openContextMenu(e, { kind: "meta", meta })}
+      onContextMenu={(e) => openContextMenu(e, { kind: "meta", meta, membership })}
       title={meta.name}
       style={{ borderRadius: settings.posterRadius }}
       className="group relative block aspect-[16/9] w-full overflow-hidden bg-elevated ring-1 ring-edge-soft transition-[box-shadow,--tw-ring-color] duration-200 ease-out hover:ring-edge hover:shadow-[0_10px_28px_-18px_rgba(0,0,0,0.8)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/70"

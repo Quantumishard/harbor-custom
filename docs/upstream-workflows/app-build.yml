@@ -13,6 +13,7 @@ permissions:
   contents: read
 
 env:
+  NODE_OPTIONS: --max-old-space-size=6144
   # The extension compat layer is not in this repository, so a runner cannot stage its runtime.
   # This build compiles without it and says so. Drop this line once the layer ships with the
   # checkout, and the build starts refusing to omit it.
@@ -34,7 +35,8 @@ jobs:
           - name: Windows
             runner: windows-latest
           - name: macOS
-            runner: macos-latest
+            runner: macos-15
+            target: aarch64-apple-darwin
           - name: Linux
             runner: ubuntu-22.04
 
@@ -53,6 +55,7 @@ jobs:
             libmpv-dev \
             librsvg2-dev \
             libssl-dev \
+            libudev-dev \
             libwebkit2gtk-4.1-dev \
             pkg-config \
             xz-utils
@@ -60,6 +63,25 @@ jobs:
       - name: Install macOS build dependencies
         if: matrix.platform.name == 'macOS'
         run: brew install mpv pkg-config
+
+      - name: Prepare bundled macOS libraries
+        if: matrix.platform.name == 'macOS'
+        id: macos-libraries
+        shell: bash
+        run: |
+          FRAMEWORKS_DIR="$RUNNER_TEMP/harbor-macos-frameworks-${{ matrix.platform.target }}"
+          CONFIG_PATH="$RUNNER_TEMP/tauri-macos-libmpv-${{ matrix.platform.target }}.json"
+          python3 tests/test_macos_mpv_bundle.py
+          python3 tests/test_macos_signature.py
+          python3 tests/test_macos_resign.py
+          python3 tests/test_macos_startup.py
+          python3 scripts/macos-bundle-libmpv.py prepare \
+            --frameworks "$FRAMEWORKS_DIR" \
+            --config "$CONFIG_PATH" \
+            --target "${{ matrix.platform.target }}"
+          echo "HARBOR_MACOS_FRAMEWORKS_DIR=$FRAMEWORKS_DIR" >> "$GITHUB_ENV"
+          echo "HARBOR_MACOS_LIB_DIR=$FRAMEWORKS_DIR/link" >> "$GITHUB_ENV"
+          echo "config=--config $CONFIG_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -80,10 +102,16 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - name: Set up Pokémon engine SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '10.0.401'
+          dotnet-version: "10.0.401"
 
       - name: Build Pokémon engine and corresponding source bundle
         run: node tools/pokemon-engine/build.mjs --fetch-source "${{ runner.temp }}/harbor-pokemon-source" --output src-tauri/resources/pokemon-engine --artifacts "${{ runner.temp }}/harbor-pokemon-build"
@@ -94,5 +122,10 @@ jobs:
       - name: Prepare build assets
         run: pnpm run setup
 
+      - name: Build app without installers (macOS)
+        if: matrix.platform.name == 'macOS'
+        run: pnpm tauri build --no-bundle --target ${{ matrix.platform.target }} ${{ steps.macos-libraries.outputs.config }}
+
       - name: Build app without installers
+        if: matrix.platform.name != 'macOS'
         run: pnpm tauri build --no-bundle

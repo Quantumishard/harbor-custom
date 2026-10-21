@@ -1,3 +1,4 @@
+import type { MusicTrack } from "./types";
 import type { MusicPlaybackOrigin } from "./playback-origin";
 
 export type MusicCheckpointOrigin = NonNullable<MusicPlaybackOrigin>;
@@ -8,6 +9,12 @@ export type MusicCheckpoint = {
   origin?: MusicCheckpointOrigin | null;
   sourceKey?: string;
   position?: number;
+  /**
+   * The playing track itself. A track that played through a substitute source carries an
+   * identity that no longer matches anything in the saved queue, so the checkpoint has to
+   * be able to restore it on its own instead of falling back to the top of the queue.
+   */
+  track?: MusicTrack;
   savedAt?: number;
 };
 

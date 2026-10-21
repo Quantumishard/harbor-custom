@@ -90,7 +90,7 @@ const catalog04: Record<string, string> = {
     "Harbor Rank valuta un'intera carriera, non un singolo successo. Il rango dipende da quattro fattori: la qualità media delle opere, quante hanno ottenuto ampi consensi, i premi più importanti vinti e la frequenza con cui la persona ha avuto un ruolo da protagonista. Ogni criterio viene ponderato e sommato agli altri, poi il risultato viene corretto in base all'ampiezza e all'attualità della carriera. Tutti i valori usati per il punteggio sono visibili sulla scheda, così puoi sempre capirne il motivo.",
   "Harbor Reader": "Harbor Reader",
   "Harbor Relay": "Harbor Relay",
-  "Harbor Setup did not finish updating Harbor. Nothing was changed.":
+  "Harbor Shipyard did not finish updating Harbor. Nothing was changed.":
     "La Configurazione di Harbor non ha completato l'aggiornamento di Harbor. Non è stato modificato nulla.",
   "Harbor Staff": "Staff di Harbor",
   "Harbor Voyages": "Viaggi di Harbor",
@@ -113,10 +113,10 @@ const catalog04: Record<string, string> = {
     "Quando è aperto, Harbor controlla alcune volte al giorno e ti avvisa qui.",
   "Harbor checks automatically every few hours.":
     "Harbor controlla automaticamente ogni poche ore.",
-  "Harbor checks harbor.site for new versions and installs them in place.":
-    "Harbor cerca nuove versioni su harbor.site e le installa direttamente.",
-  "Harbor checks harbor.site for new versions and installs them in place. Nothing installs until you choose to, and a dismissed update never nags you again.":
-    "Harbor cerca nuove versioni su harbor.site e le installa direttamente. Non viene installato nulla finché non decidi tu e un aggiornamento ignorato non ti verrà più proposto.",
+  "Harbor checks harborcommunity.site for new versions and installs them in place.":
+    "Harbor cerca nuove versioni su harborcommunity.site e le installa direttamente.",
+  "Harbor checks harborcommunity.site for new versions and installs them in place. Nothing installs until you choose to, and a dismissed update never nags you again.":
+    "Harbor cerca nuove versioni su harborcommunity.site e le installa direttamente. Non viene installato nulla finché non decidi tu e un aggiornamento ignorato non ti verrà più proposto.",
   "Harbor could not find these": "Harbor non ha trovato questi elementi",
   "Harbor could not open its web server. Try again, or set this up on the TV.":
     "Harbor non è riuscito ad aprire il proprio server web. Riprova oppure esegui la configurazione sulla TV.",
@@ -161,7 +161,7 @@ const catalog04: Record<string, string> = {
   "Harbor in your browser": "Harbor nel tuo browser",
   "Harbor is an independent client. It is not affiliated with or endorsed by Stremio.":
     "Harbor è un client indipendente. Non è affiliato a Stremio né approvato da Stremio.",
-  "Harbor is closing. Harbor Setup will finish and reopen it.":
+  "Harbor is closing. Harbor Shipyard will finish and reopen it.":
     "Harbor si sta chiudendo. Il programma di installazione completerà l'operazione e riaprirà Harbor.",
   "Harbor is having trouble, try again in a moment":
     "Harbor ha riscontrato un problema, riprova tra poco",
