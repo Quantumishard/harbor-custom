@@ -8,6 +8,7 @@ export type CloudItem = {
   id: number;
   name: string;
   size: number;
+  createdAt?: string;
   files: CloudFile[];
 };
 
@@ -16,6 +17,7 @@ type RawItem = {
   id: number;
   name?: string;
   size?: number;
+  created_at?: string;
   download_finished?: boolean;
   download_present?: boolean;
   files?: RawFile[];
@@ -58,6 +60,7 @@ export async function listTorboxCloud(key: string, signal: AbortSignal): Promise
               id: item.id,
               name: item.name || `TorBox ${item.id}`,
               size: item.size || 0,
+              createdAt: item.created_at,
               files: (item.files || []).map((file) => ({
                 id: file.id,
                 name: file.name || file.short_name || `File ${file.id}`,
@@ -75,6 +78,23 @@ export async function listTorboxCloud(key: string, signal: AbortSignal): Promise
   );
   if (!fulfilled.length) throw (results[0] as PromiseRejectedResult).reason;
   return fulfilled.flatMap((result) => result.value);
+}
+
+export type CloudDateOrder = "newest" | "oldest";
+
+/** Sort the complete merged library, never each download category separately. */
+export function sortTorboxCloud(items: readonly CloudItem[], order: CloudDateOrder): CloudItem[] {
+  const timestamp = (item: CloudItem) => {
+    const value = item.createdAt ? Date.parse(item.createdAt) : NaN;
+    return Number.isFinite(value) ? value : null;
+  };
+  return [...items].sort((a, b) => {
+    const left = timestamp(a),
+      right = timestamp(b);
+    if (left === null) return right === null ? 0 : 1;
+    if (right === null) return -1;
+    return order === "oldest" ? left - right : right - left;
+  });
 }
 
 export async function torboxCloudLink(

@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { setItemWithRecovery } from "./storage-recovery";
 
 let snapVersion = 0;
 const snapListeners = new Set<() => void>();
@@ -27,7 +28,7 @@ const MAX_TOTAL_BYTES = 2.5 * 1024 * 1024;
 const DEFAULT_RETENTION_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-type IndexEntry = { id: string; t: number };
+type IndexEntry = { id: string; t: number; aliases?: string[] };
 
 function readIndex(): IndexEntry[] {
   try {
@@ -112,15 +113,16 @@ function enforceByteBudget(index: IndexEntry[]): IndexEntry[] {
 export function readSnapshot(id: string): string | null {
   if (snapshotsDisabled()) return null;
   const index = readIndex();
-  const entry = index.find((e) => e.id === id);
+  const entry =
+    index.find((e) => e.id === id) ?? [...index].reverse().find((e) => e.aliases?.includes(id));
   if (!entry) return tryReadOrphan(id);
   if (Date.now() - entry.t > retentionMs()) {
-    dropEntry(id);
-    writeIndex(index.filter((e) => e.id !== id));
+    dropEntry(entry.id);
+    writeIndex(index.filter((e) => e.id !== entry.id));
     return null;
   }
   try {
-    return localStorage.getItem(PREFIX + id);
+    return localStorage.getItem(PREFIX + entry.id);
   } catch {
     return null;
   }
@@ -141,34 +143,35 @@ function tryReadOrphan(id: string): string | null {
   }
 }
 
-export function saveSnapshot(id: string, dataUrl: string): void {
-  if (snapshotsDisabled()) return;
+export function saveSnapshot(
+  id: string,
+  dataUrl: string,
+  aliases: readonly string[] = [],
+): boolean {
+  if (snapshotsDisabled() || !id || !dataUrl) return false;
+  // Large HD frames can hit the shared WebView storage quota even with no old
+  // snapshots to evict. Recover disposable caches instead of silently losing it.
+  try {
+    if (!setItemWithRecovery(PREFIX + id, dataUrl)) return false;
+  } catch {
+    return false;
+  }
   let index = readIndex().filter((e) => e.id !== id);
-  index = pruneExpired(index);
-  index.push({ id, t: Date.now() });
+  index = pruneExpired(index).filter((e) => frameBytes(e.id) > 0);
+  const distinctAliases = [...new Set(aliases.filter((alias) => alias && alias !== id))];
+  index.push({
+    id,
+    t: Date.now(),
+    ...(distinctAliases.length ? { aliases: distinctAliases } : {}),
+  });
   while (index.length > MAX_ENTRIES) {
     const evicted = index.shift();
     if (evicted) dropEntry(evicted.id);
   }
-  let saved = false;
-  for (let attempts = 0; attempts < 50; attempts++) {
-    try {
-      localStorage.setItem(PREFIX + id, dataUrl);
-      saved = true;
-      break;
-    } catch {
-      const evicted = index.shift();
-      if (!evicted || index.every((e) => e.id === id)) break;
-      dropEntry(evicted.id);
-    }
-  }
-  if (saved) {
-    index = enforceByteBudget(index);
-  } else {
-    index = index.filter((e) => e.id !== id);
-  }
+  index = enforceByteBudget(index);
   writeIndex(index);
-  if (saved) bumpSnapVersion();
+  bumpSnapVersion();
+  return true;
 }
 
 export function setSnapshotRetentionDays(days: number): void {
@@ -271,7 +274,11 @@ export async function captureMpvFrame(fullQuality = false): Promise<string | nul
   }
 }
 
-async function downscaleDataUrl(dataUrl: string, targetW: number, quality: number): Promise<string | null> {
+async function downscaleDataUrl(
+  dataUrl: string,
+  targetW: number,
+  quality: number,
+): Promise<string | null> {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {

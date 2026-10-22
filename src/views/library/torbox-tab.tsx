@@ -5,6 +5,8 @@ import torboxLogo from "@/assets/addon-logos/torbox.png";
 import {
   listTorboxCloud,
   torboxCloudLink,
+  sortTorboxCloud,
+  type CloudDateOrder,
   type CloudFile,
   type CloudItem,
 } from "@/lib/debrid/torbox-cloud";
@@ -12,6 +14,7 @@ import { useSettings } from "@/lib/settings";
 import { useView } from "@/lib/view";
 
 const formatSize = (bytes: number) => (bytes ? `${(bytes / 1024 ** 3).toFixed(2)} GB` : "");
+const SORT_KEY = "harbor.torbox.cloud.date-order.v1";
 
 export function TorboxTab() {
   const { settings } = useSettings();
@@ -23,6 +26,13 @@ export function TorboxTab() {
   const [playing, setPlaying] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
+  const [dateOrder, setDateOrder] = useState<CloudDateOrder>(() => {
+    try {
+      return localStorage.getItem(SORT_KEY) === "oldest" ? "oldest" : "newest";
+    } catch {
+      return "newest";
+    }
+  });
   const key = settings.tbKey?.trim() || "";
   const playRequest = useRef<AbortController | null>(null);
 
@@ -63,10 +73,10 @@ export function TorboxTab() {
   );
   const visible = useMemo(
     () =>
-      (selected ? files : items).filter((entry) =>
+      (selected ? files : sortTorboxCloud(items, dateOrder)).filter((entry) =>
         entry.name.toLowerCase().includes(query.toLowerCase()),
       ),
-    [selected, files, items, query],
+    [selected, files, items, query, dateOrder],
   );
   const play = async (item: CloudItem, file: CloudFile) => {
     const id = `${item.kind}:${item.id}:${file.id}`;
@@ -155,6 +165,28 @@ export function TorboxTab() {
         placeholder={selected ? "Search files" : "Search cloud downloads"}
         className="w-full rounded-full bg-elevated/60 px-5 py-3 text-ink outline-none placeholder:text-ink-subtle"
       />
+      {!selected && (
+        <label className="flex items-center gap-3 text-sm text-ink-muted">
+          Date added
+          <select
+            aria-label="Sort TorBox downloads by date added"
+            value={dateOrder}
+            onChange={(event) => {
+              const next = event.target.value === "oldest" ? "oldest" : "newest";
+              setDateOrder(next);
+              try {
+                localStorage.setItem(SORT_KEY, next);
+              } catch {
+                /* Keep sorting usable without storage. */
+              }
+            }}
+            className="rounded-lg bg-elevated px-3 py-2 text-ink"
+          >
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+          </select>
+        </label>
+      )}
       {error && (
         <p role="alert" className="rounded-xl bg-red-500/10 p-4 text-red-300">
           {error}
