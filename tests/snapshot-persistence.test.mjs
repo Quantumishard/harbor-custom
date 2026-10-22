@@ -69,6 +69,14 @@ test("failed oversized replacement preserves the previously saved frame", () => 
   assert.equal(snapshots(store).readSnapshot("tmdb:123"), "old-frame");
 });
 
+test("a fresh canonical capture replaces an older frame saved under the original title ID", () => {
+  const store = storage(),
+    api = snapshots(store);
+  api.saveSnapshot("tmdb:123", "old-frame");
+  api.saveSnapshot("tt123", "new-frame", ["tmdb:123"]);
+  assert.equal(snapshots(store).readSnapshot("tmdb:123"), "new-frame");
+});
+
 test("turning snapshots off removes canonical frames and aliases", () => {
   const store = storage(),
     api = snapshots(store);

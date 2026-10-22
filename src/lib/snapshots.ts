@@ -113,8 +113,7 @@ function enforceByteBudget(index: IndexEntry[]): IndexEntry[] {
 export function readSnapshot(id: string): string | null {
   if (snapshotsDisabled()) return null;
   const index = readIndex();
-  const entry =
-    index.find((e) => e.id === id) ?? [...index].reverse().find((e) => e.aliases?.includes(id));
+  const entry = [...index].reverse().find((e) => e.id === id || e.aliases?.includes(id));
   if (!entry) return tryReadOrphan(id);
   if (Date.now() - entry.t > retentionMs()) {
     dropEntry(entry.id);
