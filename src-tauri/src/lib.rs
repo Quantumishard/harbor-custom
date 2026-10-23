@@ -7,6 +7,7 @@ mod ytmusic;
 // `tauri::menu` and `tauri::tray`. The getters are not, which is why
 // display geometry reads are fine and display geometry writes are not.
 mod binary_lookup;
+mod aiostreams;
 mod cast_hls;
 mod cast_subs;
 #[cfg(desktop)]
@@ -211,6 +212,10 @@ where
     F: Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static,
 {
     move |invoke| {
+        if invoke.message.webview_ref().label().starts_with("aio-login-") {
+            invoke.resolver.reject("Application commands are unavailable in the sign-in window");
+            return true;
+        }
         // Plugin commands use capabilities; local app commands need this explicit popup boundary.
         #[cfg(windows)]
         {
@@ -1783,6 +1788,15 @@ pub fn run() {
             multiview::multiview_visibility,
             multiview::multiview_stop_all,
             http_fetch::harbor_fetch,
+            aiostreams::aiostreams_connect,
+            aiostreams::aiostreams_remember,
+            aiostreams::aiostreams_restore,
+            aiostreams::aiostreams_forget,
+            aiostreams::aiostreams_browser_begin,
+            aiostreams::aiostreams_browser_finish,
+            aiostreams::aiostreams_browser_cancel,
+            aiostreams::aiostreams_library,
+            aiostreams::aiostreams_disconnect,
             http_fetch::harbor_upload,
             http_fetch::clear_thumb_cache,
             http_fetch::thumb_cache_size,
