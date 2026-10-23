@@ -292,17 +292,7 @@ async fn serve_playback(
         Ok(client) => client,
         Err(_) => return StatusCode::BAD_GATEWAY.into_response(),
     };
-    // Playback stays native: the hosting cookie never enters React, history, or mpv arguments.
-    let mut request = client
-        .request(method, playback.url)
-        .header(header::COOKIE, session.cookie)
-        .header(header::ACCEPT_ENCODING, "identity");
-    for name in [header::RANGE, header::IF_RANGE] {
-        if let Some(value) = headers.get(&name) {
-            request = request.header(name, value);
-        }
-    }
-    let response = match request.send().await {
+    let response = match fetch_playback(&client, &session, playback.url, method, &headers).await {
         Ok(response) => response,
         Err(_) => return StatusCode::BAD_GATEWAY.into_response(),
     };
@@ -326,6 +316,60 @@ async fn serve_playback(
         .header(header::CACHE_CONTROL, "no-store")
         .body(Body::from_stream(response.bytes_stream()))
         .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
+}
+
+async fn fetch_playback(
+    client: &Client,
+    session: &Session,
+    mut url: Url,
+    method: axum::http::Method,
+    headers: &axum::http::HeaderMap,
+) -> Result<reqwest::Response, &'static str> {
+    // AIOStreams may redirect to a signed storage URL. Only the instance receives
+    // its login cookie; neither that cookie nor the signed URL reaches the player.
+    for hop in 0..=5 {
+        let mut request = client
+            .request(method.clone(), url.clone())
+            .header(header::ACCEPT_ENCODING, "identity");
+        if url.origin() == session.base.origin() {
+            request = request.header(header::COOKIE, &session.cookie);
+        }
+        for name in [header::RANGE, header::IF_RANGE] {
+            if let Some(value) = headers.get(&name) {
+                request = request.header(name, value);
+            }
+        }
+        let response = request.send().await.map_err(|_| "Stream request failed")?;
+        if !matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
+            return Ok(response);
+        }
+        if hop == 5 {
+            return Err("Too many stream redirects");
+        }
+        url = playback_redirect(&session.base, &url, response.headers())?;
+    }
+    Err("Too many stream redirects")
+}
+
+fn playback_redirect(
+    base: &Url,
+    current: &Url,
+    headers: &header::HeaderMap,
+) -> Result<Url, &'static str> {
+    let location = headers
+        .get(header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .ok_or("Stream redirect has no destination")?;
+    let next = current
+        .join(location)
+        .map_err(|_| "Invalid stream redirect")?;
+    if !(next.scheme() == "https" || (base.scheme() == "http" && next.scheme() == "http"))
+        || !next.username().is_empty()
+        || next.password().is_some()
+    {
+        return Err("Unsafe stream redirect");
+    }
+    Ok(next)
 }
 
 #[derive(Clone)]
@@ -614,6 +658,124 @@ pub fn aiostreams_disconnect(session_id: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn playback_follows_storage_redirects_without_leaking_cookies() {
+        use axum::{
+            http::{HeaderMap, StatusCode},
+            routing::get,
+            Router,
+        };
+        let storage = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let storage_url = format!(
+            "http://127.0.0.1:{}/video?signature=fixture",
+            storage.local_addr().unwrap().port()
+        );
+        let storage_server = tokio::spawn(async move {
+            axum::serve(
+                storage,
+                Router::new().route(
+                    "/video",
+                    get(|headers: HeaderMap| async move {
+                        assert!(headers.get("cookie").is_none());
+                        assert!(headers.get("authorization").is_none());
+                        assert_eq!(headers["range"], "bytes=2-4");
+                        assert_eq!(headers["if-range"], "fixture-etag");
+                        (
+                            StatusCode::PARTIAL_CONTENT,
+                            [("content-range", "bytes 2-4/6")],
+                            "cde",
+                        )
+                    }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        let instance = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let base = Url::parse(&format!(
+            "http://127.0.0.1:{}/",
+            instance.local_addr().unwrap().port()
+        ))
+        .unwrap();
+        let instance_server = tokio::spawn(async move {
+            axum::serve(
+                instance,
+                Router::new()
+                    .route(
+                        "/stream",
+                        get(|headers: HeaderMap| async move {
+                            assert_eq!(headers["cookie"], "host=private");
+                            (StatusCode::FOUND, [("location", "/storage")])
+                        }),
+                    )
+                    .route(
+                        "/storage",
+                        get(move |headers: HeaderMap| {
+                            let target = storage_url.clone();
+                            async move {
+                                assert_eq!(headers["cookie"], "host=private");
+                                (StatusCode::TEMPORARY_REDIRECT, [("location", target)])
+                            }
+                        }),
+                    )
+                    .route(
+                        "/loop",
+                        get(|| async { (StatusCode::FOUND, [("location", "/loop")]) }),
+                    ),
+            )
+            .await
+            .unwrap();
+        });
+        let session = Session {
+            base: base.clone(),
+            cookie: "host=private".into(),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("range", "bytes=2-4".parse().unwrap());
+        headers.insert("if-range", "fixture-etag".parse().unwrap());
+        headers.insert("cookie", "untrusted=ignored".parse().unwrap());
+        let response = fetch_playback(
+            &client().unwrap(),
+            &session,
+            base.join("stream").unwrap(),
+            axum::http::Method::GET,
+            &headers,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.headers()["content-range"], "bytes 2-4/6");
+        assert_eq!(response.text().await.unwrap(), "cde");
+        assert_eq!(
+            fetch_playback(
+                &client().unwrap(),
+                &session,
+                base.join("loop").unwrap(),
+                axum::http::Method::GET,
+                &headers
+            )
+            .await
+            .err(),
+            Some("Too many stream redirects")
+        );
+        let secure = Url::parse("https://example.com/").unwrap();
+        for target in [
+            "http://example.com/video",
+            "https://user:secret@example.com/video",
+            "file:///video",
+        ] {
+            let mut redirect = HeaderMap::new();
+            redirect.insert("location", target.parse().unwrap());
+            assert!(playback_redirect(&secure, &secure, &redirect).is_err());
+        }
+        instance_server.abort();
+        storage_server.abort();
+    }
 
     #[cfg(windows)]
     #[tokio::test]
