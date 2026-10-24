@@ -1,3 +1,4 @@
+import { isEasynewsNzbOption } from "./easynews-nzb-options";
 import { safeFetch as fetch } from "@/lib/safe-fetch";
 import { dwarn } from "@/lib/debug";
 import { completedTorrentDownloadFor } from "@/lib/download/downloads-store";
@@ -97,6 +98,21 @@ export async function resolveStream(
   allowP2pFallback = true,
   allowCompletedDownload = true,
 ): Promise<ResolveResult> {
+  if (isEasynewsNzbOption(stream)) {
+    if (!userCommitted)
+      return { ok: false, code: "Select NZB manually to import it into AIOStreams.", tried: [] };
+    try {
+      const { playEasynewsNzb } = await import("@/lib/easynews-nzb");
+      const result = await playEasynewsNzb(stream.url!, stream.behaviorHints?.easynewsSig, signal);
+      return { ok: true, via: "direct", data: { ...result, notWebReady: true } };
+    } catch (cause) {
+      return {
+        ok: false,
+        code: signal.aborted ? "aborted" : String(cause instanceof Error ? cause.message : cause),
+        tried: [],
+      };
+    }
+  }
   const expectedSize = stream.size ?? null;
   const tried: Array<{ slug: string; code: string }> = [];
   if (allowCompletedDownload && stream.infoHash) {

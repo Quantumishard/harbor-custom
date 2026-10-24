@@ -8,6 +8,16 @@ The source includes the exact [upstream v1.0.1-beta release](https://github.com/
 
 ## Windows download
 
+The Easynews NZB update adds a separate **NZB via AIOStreams** choice using Harbor's
+existing authenticated AIOStreams library connection, including ElfHosted browser
+sign-in. HTTP playback and the earlier custom features remain available. See
+[setup and behavior](docs/custom-easynews-nzb.md).
+
+The [Easynews NZB release](https://github.com/Quantumishard/harbor-custom/releases/tag/custom-easynews-nzb-20261024)
+provides an updated `harbor.exe`. Fully quit Harbor and replace the executable in
+your existing complete portable Harbor folder, keeping its companion runtime files.
+This release does not require a new local ZIP or changes to the hosted instance.
+
 Download the Windows x64 ZIP and `SHA256SUMS.txt` from [Releases](https://github.com/Quantumishard/harbor-custom/releases). Fully quit Harbor, extract the complete ZIP into a new folder, and run `harbor.exe`. Keep all accompanying runtime files together. Windows WebView2 is required. Back up existing Harbor data before using any build.
 
 Latest packaged build: [`custom-cw-torbox-20261022`](https://github.com/Quantumishard/harbor-custom/releases/tag/custom-cw-torbox-20261022).

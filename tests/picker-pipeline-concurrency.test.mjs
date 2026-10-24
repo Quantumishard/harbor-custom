@@ -78,6 +78,7 @@ function harness({ anime = false, deferredParse = false, preferredAddonId = null
     },
   };
   const library = load("src/lib/streams/library.ts", {
+    "@/lib/media-file": load("src/lib/media-file.ts"),
     "parse-torrent-title": { parse: (name) => ({ title: name }) },
   });
   const api = load(
@@ -91,6 +92,7 @@ function harness({ anime = false, deferredParse = false, preferredAddonId = null
           return addons.promise;
         },
       },
+      "./easynews-nzb-options": { withEasynewsNzbOptions: (picker) => picker },
       "./priority-partition": { applyStreamPriority: (picker) => picker },
       "./anitomy": {
         enhanceAnimeStreams: async () => {
@@ -321,10 +323,7 @@ test("the remembered addon owns a duplicate stream instead of the fastest addon"
   const merged = final.picker.all.find((s) => s.infoHash === "same");
   assert.equal(merged.addonId, "aiostreams");
   assert.equal(merged.url, "https://aiostreams.example/stream");
-  assert.deepEqual(
-    merged.contributors.map((c) => c.id).sort(),
-    ["aiostreams", "torrentio"],
-  );
+  assert.deepEqual(merged.contributors.map((c) => c.id).sort(), ["aiostreams", "torrentio"]);
 });
 
 test("without a remembered addon, the configured addon order owns duplicates", async () => {

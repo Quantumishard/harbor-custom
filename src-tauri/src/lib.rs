@@ -1796,6 +1796,8 @@ pub fn run() {
             aiostreams::aiostreams_browser_finish,
             aiostreams::aiostreams_browser_cancel,
             aiostreams::aiostreams_library,
+            aiostreams::aiostreams_easynews_play,
+            aiostreams::aiostreams_easynews_cancel,
             aiostreams::aiostreams_disconnect,
             http_fetch::harbor_upload,
             http_fetch::clear_thumb_cache,

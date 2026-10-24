@@ -1,3 +1,20 @@
+#[path = "aiostreams_easynews.rs"]
+mod easynews;
+
+#[tauri::command]
+pub async fn aiostreams_easynews_play(
+    session_id: String,
+    request_id: String,
+    source_url: String,
+    sig: Option<String>,
+) -> Result<Value, String> {
+    easynews::play(session_id, request_id, source_url, sig).await
+}
+
+#[tauri::command]
+pub fn aiostreams_easynews_cancel(request_id: String) {
+    easynews::cancel(request_id);
+}
 use reqwest::{header, Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

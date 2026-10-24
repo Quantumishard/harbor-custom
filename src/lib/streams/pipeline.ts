@@ -1,3 +1,4 @@
+import { withEasynewsNzbOptions } from "./easynews-nzb-options";
 import type { Addon } from "@/lib/addons";
 import { dlog } from "@/lib/debug";
 import type { DebridStore } from "@/lib/debrid/types";
@@ -87,7 +88,13 @@ function applyAnimeEpisodeFilter(
   for (const a of input.animeEpisodeAliases ?? []) {
     if (Number.isFinite(a) && a >= 1) validNums.add(a);
   }
-  const { keep, drop } = partitionByExactAnimeEpisode(parsed, validNums, input.animeEpisodeCoordinates, input.animeSplitPart, input.trust?.expectedTitles);
+  const { keep, drop } = partitionByExactAnimeEpisode(
+    parsed,
+    validNums,
+    input.animeEpisodeCoordinates,
+    input.animeSplitPart,
+    input.trust?.expectedTitles,
+  );
   return {
     kept: keep,
     extraRejected: drop.map((stream) => ({
@@ -243,7 +250,9 @@ export async function runPipeline(
     );
     const fin = finalizeWithRescue(picker, rejected, input.trust ?? {}, input.score);
     return {
-      picker: applyStreamPriority(fin.picker, priorityActive, input.score.activeDebrids),
+      picker: withEasynewsNzbOptions(
+        applyStreamPriority(fin.picker, priorityActive, input.score.activeDebrids),
+      ),
       rejected: [...fin.rejected, ...extraRejected],
       raw: { addon: addonStreams, library },
       debridErrors: debridErrors.length > 0 ? debridErrors : undefined,
@@ -419,7 +428,9 @@ export async function runPipeline(
     const fin = finalizeWithRescue(core.picker, core.rejected, input.trust ?? {}, input.score);
     restoreCacheVerification(fin.picker);
     return {
-      picker: applyStreamPriority(fin.picker, priorityActive, input.score.activeDebrids),
+      picker: withEasynewsNzbOptions(
+        applyStreamPriority(fin.picker, priorityActive, input.score.activeDebrids),
+      ),
       rejected: [...fin.rejected, ...animeRejected],
       raw: { addon: addonStreams, library },
       debridErrors: debridErrors.length > 0 ? debridErrors : undefined,
@@ -452,7 +463,9 @@ export async function runPipeline(
   const fin = finalizeWithRescue(picker, rejected, input.trust ?? {}, input.score);
   restoreCacheVerification(fin.picker);
   return {
-    picker: applyStreamPriority(fin.picker, priorityActive, input.score.activeDebrids),
+    picker: withEasynewsNzbOptions(
+      applyStreamPriority(fin.picker, priorityActive, input.score.activeDebrids),
+    ),
     rejected: [...fin.rejected, ...animeRejected],
     raw: { addon: addonStreams, library },
     debridErrors: debridErrors.length > 0 ? debridErrors : undefined,
@@ -488,8 +501,7 @@ function mergeAndDedupe(
   preferredAddonId?: string | null,
 ): Stream[] {
   const seen = new Map<string, Stream>();
-  const contributorsOf = (s: Stream) =>
-    s.contributors ?? [{ id: s.addonId, name: s.addonName }];
+  const contributorsOf = (s: Stream) => s.contributors ?? [{ id: s.addonId, name: s.addonName }];
   const addContributor = (target: Stream, id: string, name: string) => {
     const list = contributorsOf(target);
     if (!list.some((c) => c.id === id)) list.push({ id, name });
