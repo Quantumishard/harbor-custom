@@ -14,9 +14,9 @@ sign-in. HTTP playback and the earlier custom features remain available. See
 [setup and behavior](docs/custom-easynews-nzb.md).
 
 The [Easynews NZB release](https://github.com/Quantumishard/harbor-custom/releases/tag/custom-easynews-nzb-20261024)
-provides an updated `harbor.exe`. Fully quit Harbor and replace the executable in
-your existing complete portable Harbor folder, keeping its companion runtime files.
-This release does not require a new local ZIP or changes to the hosted instance.
+provides a complete Windows x64 portable ZIP. Fully quit Harbor, extract the whole
+archive into a new folder, and run `harbor.exe`, keeping all runtime files together.
+An executable-only update is also available. No hosted-instance changes are required.
 
 Download the Windows x64 ZIP and `SHA256SUMS.txt` from [Releases](https://github.com/Quantumishard/harbor-custom/releases). Fully quit Harbor, extract the complete ZIP into a new folder, and run `harbor.exe`. Keep all accompanying runtime files together. Windows WebView2 is required. Back up existing Harbor data before using any build.
 
