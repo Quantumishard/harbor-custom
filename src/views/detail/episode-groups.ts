@@ -4,6 +4,15 @@ export type CinemetaVideo = NonNullable<Meta["videos"]>[number];
 
 export type EpisodeGroup = { seasonNumber: number; episodes: CinemetaVideo[] };
 
+export function hasNumberedEpisodes(videos: Meta["videos"]): boolean {
+  return (
+    videos?.some(
+      (video) =>
+        video.season != null && video.season >= 0 && (video.episode ?? video.number) != null,
+    ) ?? false
+  );
+}
+
 /** The group a provider's unnumbered episodes belong to. CloudStream calls it "No Season", and it
  * is a group of its own rather than a fallback used when there are no seasons at all. */
 export const NO_SEASON = -1;

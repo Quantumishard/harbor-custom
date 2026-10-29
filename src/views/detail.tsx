@@ -1,3 +1,4 @@
+import { hasNumberedEpisodes } from "./detail/episode-groups";
 import {
   useCallback,
   useEffect,
@@ -2435,9 +2436,7 @@ export function DetailView({
           cinemetaFull?.videos &&
           (addonNative
             ? cinemetaFull.videos.length > 0
-            : cinemetaFull.videos.some(
-                (v) => v.season != null && v.season > 0 && v.episode != null,
-              )) && (
+            : hasNumberedEpisodes(cinemetaFull.videos)) && (
             <FadeInUp>
               <CinemetaEpisodes
                 meta={playMeta}
