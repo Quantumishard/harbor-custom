@@ -453,11 +453,11 @@ test("source toggles preserve the shared-profile protection on desktop and mobil
   }
 });
 
-test("episode artwork is opt-in and changing candidates retries the first image", () => {
+test("saved frames take priority over opt-in episode artwork and changed candidates retry", () => {
   assert.match(read("src/lib/settings/defaults.ts"), /cwPreferEpisodeStill: false/);
   const card = read("src/components/continue-card.tsx");
   assert.match(card, /upNext \|\| !settings\.cwPreferEpisodeStill/);
-  assert.match(card, /if \(still && !seen\.has\(still\)\) out\.unshift\(still\)/);
+  assert.match(card, /if \(still && !seen\.has\(still\)\) out\.splice\(thumb \? 1 : 0, 0, still\)/);
   assert.match(card, /setImgIdx\(0\);\s*\}, \[candidates\]\)/);
 });
 

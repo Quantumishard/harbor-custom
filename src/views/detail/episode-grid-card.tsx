@@ -45,7 +45,8 @@ export function EpisodeGridCard({
   const { settings } = useSettings();
   const cardMeta = g.meta ?? meta;
   const [imgIdx, setImgIdx] = useState(0);
-  useEffect(() => setImgIdx(0), [g.key]);
+  const imageKey = JSON.stringify(g.stills);
+  useEffect(() => setImgIdx(0), [g.key, imageKey]);
   const [preview, setPreview] = useState(false);
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(timer.current), []);

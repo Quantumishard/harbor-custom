@@ -1,3 +1,4 @@
+import { episodeImageCandidates } from "@/lib/episode-images";
 import { Check, Eye } from "lucide-react";
 import { EpisodeReleaseCountdown } from "@/components/episode-release-countdown";
 import { Play } from "@/components/icons/play-filled";
@@ -45,25 +46,14 @@ export function EpisodeRow({
   const { settings } = useSettings();
   const ratingValue = ep.imdbRating ?? ep.voteAverage;
   const ratingIsImdb = ep.imdbRating != null;
-  const tmdbStill = ep.stillPath
-    ? ep.stillPath.startsWith("http")
-      ? ep.stillPath
-      : `https://image.tmdb.org/t/p/${settings.hdEpisodeImages ? "original" : "w300"}${ep.stillPath}`
-    : ep.stillUrl;
-  const candidates = useMemo(() => {
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const u of [tmdbStill, cinemetaThumbnail]) {
-      if (!u || seen.has(u)) continue;
-      seen.add(u);
-      out.push(u);
-    }
-    return out;
-  }, [tmdbStill, cinemetaThumbnail]);
+  const candidates = useMemo(
+    () => episodeImageCandidates(ep, cinemetaThumbnail, settings.hdEpisodeImages),
+    [ep.stillPath, ep.stillUrl, cinemetaThumbnail, settings.hdEpisodeImages],
+  );
   const [imgIdx, setImgIdx] = useState(0);
   useEffect(() => {
     setImgIdx(0);
-  }, [ep.id]);
+  }, [ep.id, candidates]);
   const still = candidates[imgIdx];
   const watchedAgo = progress.startedAt > 0 ? formatRelativeWatched(progress.startedAt) : "";
   const resolvedImdbId = useMemo(() => {

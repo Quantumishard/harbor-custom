@@ -1,3 +1,4 @@
+import { episodeImageCandidates } from "@/lib/episode-images";
 import { Check, Eye } from "lucide-react";
 import { HoverTooltip } from "@/components/hover-tooltip";
 import { EpisodeRatingBadge } from "./episode-rating-badge";
@@ -50,12 +51,7 @@ export function EpisodeStrip({
   const gridEpisodes = useMemo<GridEpisode[]>(
     () =>
       episodes.map((ep) => {
-        const tmdbStill = ep.stillPath
-          ? ep.stillPath.startsWith("http")
-            ? ep.stillPath
-            : `https://image.tmdb.org/t/p/${settings.hdEpisodeImages ? "original" : "w300"}${ep.stillPath}`
-          : ep.stillUrl;
-        const stills = [tmdbStill, thumbnailFor(ep)].filter((u): u is string => !!u);
+        const stills = episodeImageCandidates(ep, thumbnailFor(ep), settings.hdEpisodeImages);
         return {
           key: String(ep.id),
           number: ep.episodeNumber,
@@ -215,21 +211,15 @@ function EpisodeStripCard({
     };
   }, [preview]);
 
+  const candidates = useMemo(
+    () => episodeImageCandidates(ep, thumbnail, settings.hdEpisodeImages),
+    [ep.stillPath, ep.stillUrl, thumbnail, settings.hdEpisodeImages],
+  );
   const [imgIdx, setImgIdx] = useState(0);
   useEffect(() => {
     setImgIdx(0);
-  }, [ep.id]);
-
-  const still = useMemo(() => {
-    const tmdbSize = settings.hdEpisodeImages ? "original" : "w300";
-    if (imgIdx === 0 && ep.stillPath)
-      return ep.stillPath.startsWith("http")
-        ? ep.stillPath
-        : `https://image.tmdb.org/t/p/${tmdbSize}${ep.stillPath}`;
-    if (imgIdx === 0 && !ep.stillPath && ep.stillUrl) return ep.stillUrl;
-    if (imgIdx <= 1 && thumbnail) return thumbnail;
-    return undefined;
-  }, [ep.stillPath, ep.stillUrl, imgIdx, thumbnail, settings.hdEpisodeImages]);
+  }, [ep.id, candidates]);
+  const still = candidates[imgIdx];
 
   const handlePlayClick = (opts?: { resume?: boolean }) => {
     playLocalAware({

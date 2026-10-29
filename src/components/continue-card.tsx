@@ -205,7 +205,7 @@ export const ContinueCard = memo(function ContinueCard({
       seen.add(d);
       out.push(d);
     }
-    if (still && !seen.has(still)) out.unshift(still);
+    if (still && !seen.has(still)) out.splice(thumb ? 1 : 0, 0, still);
     return out;
   }, [
     snapshot,

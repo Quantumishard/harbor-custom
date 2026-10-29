@@ -20,7 +20,7 @@ function storage(limit = Infinity) {
     },
   };
 }
-function load(file, store, mocks = {}) {
+function load(file, store, mocks = {}, durable = false) {
   const code = ts.transpileModule(
     readFileSync(new URL(`../src/lib/${file}.ts`, import.meta.url), "utf8"),
     {
@@ -28,13 +28,14 @@ function load(file, store, mocks = {}) {
     },
   ).outputText;
   const api = {};
-  new Function("require", "exports", "localStorage", code)(
+  new Function("require", "exports", "localStorage", "indexedDB", code)(
     (name) => {
       assert.ok(name in mocks, name);
       return mocks[name];
     },
     api,
     store,
+    durable ? {} : undefined,
   );
   return api;
 }
@@ -42,6 +43,16 @@ function snapshots(store) {
   return load("snapshots", store, {
     react: {},
     "./storage-recovery": load("storage-recovery", store),
+    "./snapshot-store": {
+      hydrateSavedFrames() {},
+      savedFrame() {},
+      savedFrameIds() {
+        return [];
+      },
+      storeSavedFrame() {},
+      pruneSavedFrames() {},
+      clearSavedFrames() {},
+    },
   });
 }
 
@@ -85,4 +96,63 @@ test("turning snapshots off removes canonical frames and aliases", () => {
   assert.equal(api.readSnapshot("tmdb:123"), null);
   assert.equal(store.getItem("harbor.snap.tt123"), null);
   assert.equal(api.saveSnapshot("tt456", "frame"), false);
+});
+
+test("Continue Watching still reads a durable frame after unrelated storage recovery evicts its local copy", () => {
+  const store = storage();
+  const frames = new Map();
+  const durable = {
+    hydrateSavedFrames() {},
+    savedFrame: (id) =>
+      [...frames.values()].find((frame) => frame.id === id || frame.aliases?.includes(id)),
+    savedFrameIds: () => [...frames.keys()],
+    storeSavedFrame: (frame) => frames.set(frame.id, frame),
+    pruneSavedFrames() {},
+    clearSavedFrames: () => frames.clear(),
+  };
+  const boot = () =>
+    load(
+      "snapshots",
+      store,
+      {
+        react: {},
+        "./storage-recovery": load("storage-recovery", store),
+        "./snapshot-store": durable,
+      },
+      true,
+    );
+  boot().saveSnapshot("tt123", "captured-frame", ["tmdb:123"]);
+  store.removeItem("harbor.snap.tt123");
+  const restarted = boot();
+  assert.equal(restarted.readSnapshot("tmdb:123"), "captured-frame");
+  assert.equal(restarted.snapshotCount(), 1);
+  restarted.clearAllSnapshots();
+  assert.equal(restarted.readSnapshot("tmdb:123"), null);
+});
+
+test("all legacy frames migrate before the local snapshot budget evicts old titles", () => {
+  const store = storage();
+  store.setItem("harbor.snap.ttOld", "legacy-frame");
+  store.setItem("harbor.snap.index", JSON.stringify([{ id: "ttOld", t: Date.now() }]));
+  const frames = new Map();
+  const api = load(
+    "snapshots",
+    store,
+    {
+      react: {},
+      "./storage-recovery": load("storage-recovery", store),
+      "./snapshot-store": {
+        hydrateSavedFrames() {},
+        savedFrame: (id) => frames.get(id),
+        savedFrameIds: () => [...frames.keys()],
+        storeSavedFrame: (frame) => frames.set(frame.id, frame),
+        pruneSavedFrames() {},
+        clearSavedFrames() {},
+      },
+    },
+    true,
+  );
+  api.saveSnapshot("ttNew", "x".repeat(3 * 1024 * 1024));
+  assert.equal(store.getItem("harbor.snap.ttOld"), null);
+  assert.equal(api.readSnapshot("ttOld"), "legacy-frame");
 });

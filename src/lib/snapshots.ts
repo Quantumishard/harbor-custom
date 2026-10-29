@@ -1,5 +1,13 @@
 import { useSyncExternalStore } from "react";
 import { setItemWithRecovery } from "./storage-recovery";
+import {
+  hydrateSavedFrames,
+  savedFrame,
+  savedFrameIds,
+  storeSavedFrame,
+  pruneSavedFrames,
+  clearSavedFrames,
+} from "./snapshot-store";
 
 let snapVersion = 0;
 const snapListeners = new Set<() => void>();
@@ -110,8 +118,32 @@ function enforceByteBudget(index: IndexEntry[]): IndexEntry[] {
   return index;
 }
 
+let loadedSavedFrames = false;
+function loadSavedFrames(): void {
+  if (loadedSavedFrames || snapshotsDisabled()) return;
+  loadedSavedFrames = true;
+  hydrateSavedFrames(() => {
+    if (snapshotsDisabled()) clearSavedFrames();
+    else pruneSavedFrames(Date.now() - retentionMs());
+    bumpSnapVersion();
+  });
+  // Migrate existing captures before shared-cache eviction can remove them.
+  for (const entry of readIndex()) {
+    if (Date.now() - entry.t > retentionMs()) continue;
+    try {
+      const image = localStorage.getItem(PREFIX + entry.id);
+      if (image) storeSavedFrame({ ...entry, image });
+    } catch {
+      /* The durable store remains available when localStorage is blocked. */
+    }
+  }
+}
+
 export function readSnapshot(id: string): string | null {
   if (snapshotsDisabled()) return null;
+  loadSavedFrames();
+  const durable = savedFrame(id);
+  if (durable && Date.now() - durable.t <= retentionMs()) return durable.image;
   const index = readIndex();
   const entry = [...index].reverse().find((e) => e.id === id || e.aliases?.includes(id));
   if (!entry) return tryReadOrphan(id);
@@ -121,7 +153,9 @@ export function readSnapshot(id: string): string | null {
     return null;
   }
   try {
-    return localStorage.getItem(PREFIX + entry.id);
+    const image = localStorage.getItem(PREFIX + entry.id);
+    if (image) storeSavedFrame({ ...entry, image });
+    return image;
   } catch {
     return null;
   }
@@ -148,16 +182,24 @@ export function saveSnapshot(
   aliases: readonly string[] = [],
 ): boolean {
   if (snapshotsDisabled() || !id || !dataUrl) return false;
+  loadSavedFrames();
+  const distinctAliases = [...new Set(aliases.filter((alias) => alias && alias !== id))];
+  const durableAvailable = typeof indexedDB !== "undefined";
+  // Keep durable frames outside the shared, evictable WebView localStorage quota.
+  if (durableAvailable) {
+    storeSavedFrame({ id, image: dataUrl, t: Date.now(), aliases: distinctAliases });
+    pruneSavedFrames(Date.now() - retentionMs());
+    bumpSnapVersion();
+  }
   // Large HD frames can hit the shared WebView storage quota even with no old
   // snapshots to evict. Recover disposable caches instead of silently losing it.
   try {
-    if (!setItemWithRecovery(PREFIX + id, dataUrl)) return false;
+    if (!setItemWithRecovery(PREFIX + id, dataUrl)) return durableAvailable;
   } catch {
-    return false;
+    return durableAvailable;
   }
   let index = readIndex().filter((e) => e.id !== id);
   index = pruneExpired(index).filter((e) => frameBytes(e.id) > 0);
-  const distinctAliases = [...new Set(aliases.filter((alias) => alias && alias !== id))];
   index.push({
     id,
     t: Date.now(),
@@ -191,11 +233,15 @@ export function setSnapshotRetentionDays(days: number): void {
 }
 
 export function pruneExpiredSnapshots(): void {
+  pruneSavedFrames(Date.now() - retentionMs());
   const pruned = pruneExpired(readIndex());
   writeIndex(pruned);
 }
 
 export function clearAllSnapshots(): number {
+  const durableIds = savedFrameIds();
+  clearSavedFrames();
+  bumpSnapVersion();
   const index = readIndex();
   for (const e of index) dropEntry(e.id);
   writeIndex([]);
@@ -212,14 +258,19 @@ export function clearAllSnapshots(): number {
         /* noop */
       }
     }
-    return index.length + orphans.length;
+    return new Set([
+      ...durableIds,
+      ...index.map((entry) => entry.id),
+      ...orphans.map((key) => key.slice(PREFIX.length)),
+    ]).size;
   } catch {
     return index.length;
   }
 }
 
 export function snapshotCount(): number {
-  return readIndex().length;
+  loadSavedFrames();
+  return new Set([...savedFrameIds(), ...readIndex().map((entry) => entry.id)]).size;
 }
 
 export function getSnapshotRetentionDays(): number {

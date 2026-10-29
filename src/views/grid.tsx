@@ -1,4 +1,4 @@
-import { NaturalCatalogFilter } from "@/components/natural-catalog-filter";
+import { CatalogTitleSearch } from "@/components/catalog-title-search";
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, ListFilter } from "lucide-react";
 import { Dropdown } from "@/components/dropdown";
@@ -236,7 +236,7 @@ export function GridView({ grid, active = true }: { grid: GridSpec; active?: boo
             )}
           </div>
           {grid.naturalCatalog && (
-            <NaturalCatalogFilter
+            <CatalogTitleSearch
               key={filterValue}
               catalog={grid.naturalCatalog}
               genre={filterValue || null}
