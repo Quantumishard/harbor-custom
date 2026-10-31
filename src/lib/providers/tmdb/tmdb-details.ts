@@ -225,6 +225,10 @@ export async function tmdbDetails(
   } else if (meta.id.startsWith("tmdb:tv:")) {
     kind = "tv";
     id = meta.id.slice("tmdb:tv:".length);
+  } else if (/^tmdb:\d+$/.test(meta.id) && (meta.type === "movie" || meta.type === "series")) {
+    // Addons can supply a bare TMDB ID with its media type in a separate field.
+    kind = meta.type === "movie" ? "movie" : "tv";
+    id = meta.id.slice("tmdb:".length);
   } else if (meta.id.startsWith("tt")) {
     const findKey = `${meta.id}:${meta.type}`;
     const cached = findCache()[findKey];
