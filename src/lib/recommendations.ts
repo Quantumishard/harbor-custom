@@ -3,12 +3,13 @@ import { cinemetaDetails } from "@/lib/providers/cinemeta-details";
 import { tmdbDetails } from "@/lib/providers/tmdb/tmdb-details";
 import { animeRecommendations } from "@/lib/providers/anime-recommendations";
 import { parseKitsuId } from "@/lib/providers/kitsu";
+import { traktRelated } from "@/lib/providers/trakt-related";
 
 const MAX_ITEMS = 18;
 
 /**
  * Recommendations for the end screen. Uses the same sources the detail page
- * does: AniList/Kitsu for Kitsu titles, otherwise TMDB or Cinemeta.
+ * does: AniList/Kitsu for Kitsu titles, otherwise Trakt with metadata fallbacks.
  *
  * An empty list means the caller should fall back to its normal behaviour
  * rather than show a card with nothing in it.
@@ -18,13 +19,23 @@ export async function loadMoreLikeThis(meta: Meta, tmdbKey: string | null): Prom
   if (kitsuId != null) {
     return (await animeRecommendations(kitsuId).catch(() => [])).slice(0, MAX_ITEMS);
   }
+  const kind = meta.type === "series" ? "show" : "movie";
+  if (/^tt\d+$/.test(meta.id)) {
+    const related = await traktRelated(kind, meta.id);
+    if (related.length > 0) return related.slice(0, MAX_ITEMS);
+  }
   const detail = tmdbKey
     ? ((await tmdbDetails(tmdbKey, meta).catch(() => null)) ??
       (await cinemetaDetails(meta).catch(() => null)))
     : await cinemetaDetails(meta).catch(() => null);
   if (!detail) return [];
 
-  const seen = new Set<string>([meta.id]);
+  if (detail.imdbId && detail.imdbId !== meta.id) {
+    const related = await traktRelated(kind, detail.imdbId);
+    if (related.length > 0) return related.slice(0, MAX_ITEMS);
+  }
+
+  const seen = new Set([meta.id, detail.imdbId, `tmdb:${detail.kind}:${detail.id}`]);
   const out: Meta[] = [];
   for (const item of [...detail.recommendations, ...detail.similar]) {
     if (!item?.id || seen.has(item.id)) continue;

@@ -194,7 +194,7 @@ import { AnilistComments } from "./detail/anilist-comments";
 import { stremioIdToTraktTarget } from "@/lib/trakt/ids";
 import type { IdResolution } from "@/lib/trakt/ids";
 import { searchAnime } from "@/lib/search";
-import { useTraktRelated } from "@/lib/providers/trakt-related";
+import { useMoreLikeThis } from "@/lib/use-more-like-this";
 
 const NO_METAS: Meta[] = [];
 
@@ -1253,23 +1253,12 @@ export function DetailView({
   const rating = isAnime ? malRating : (imdbRatingValue ?? detail?.rating ?? meta.imdbRating);
   const runtime = detail?.runtime ?? capstanMeta?.meta.runtime;
   const genres = detail?.genres ?? meta.genres ?? cinemetaFull?.genres ?? [];
-  const tmdbRecommendations = detail?.recommendations ?? NO_METAS;
   const similar = detail?.similar ?? NO_METAS;
-  const relatedSeedId = detail?.imdbId ?? (meta.id.startsWith("tt") ? meta.id : null);
-  const wantsRelatedFallback =
-    !isAnime && !detectingAnime && !addonNative && !loading && tmdbRecommendations.length === 0;
-  const relatedFallback = useTraktRelated(
-    wantsRelatedFallback ? relatedSeedId : null,
-    meta.type === "series" ? "show" : "movie",
+  const recommendations = useMoreLikeThis(
+    meta,
+    detail,
+    !isAnime && !detectingAnime && !addonNative,
   );
-  const recommendations = useMemo(() => {
-    if (tmdbRecommendations.length > 0) return tmdbRecommendations;
-    if (relatedFallback.length === 0) return NO_METAS;
-    const taken = new Set(similar.map((m) => m.id));
-    taken.add(meta.id);
-    const rest = relatedFallback.filter((m) => !taken.has(m.id));
-    return rest.length > 0 ? rest : NO_METAS;
-  }, [tmdbRecommendations, relatedFallback, similar, meta.id]);
   const shownRecommendations = useHideAnimeMetas(recommendations);
   const shownSimilar = useHideAnimeMetas(similar);
   const { crew: sharedCrewFilms, reasons: graphReasons } = useGraphReasons(

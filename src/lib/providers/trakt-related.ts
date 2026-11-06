@@ -45,7 +45,7 @@ function firstImage(list: string[] | undefined): string | undefined {
 function toMeta(row: RelatedRow, kind: RelatedKind): Meta | null {
   const imdb = row.ids?.imdb;
   const name = row.title?.trim();
-  if (!imdb || !imdb.startsWith("tt") || !name) return null;
+  if (!imdb || !/^tt\d+$/.test(imdb) || !name) return null;
   const rating =
     typeof row.rating === "number" && row.rating > 0 ? row.rating.toFixed(1) : undefined;
   return {
@@ -70,7 +70,7 @@ function cachedRelated(kind: RelatedKind, imdbId: string): Meta[] | undefined {
 }
 
 export async function traktRelated(kind: RelatedKind, imdbId: string): Promise<Meta[]> {
-  if (!imdbId.startsWith("tt")) return [];
+  if (!/^tt\d+$/.test(imdbId)) return [];
   const key = `${kind}:${imdbId}`;
   const hit = cachedRelated(kind, imdbId);
   if (hit) return hit;
@@ -104,22 +104,25 @@ export async function traktRelated(kind: RelatedKind, imdbId: string): Promise<M
 }
 
 export function useTraktRelated(imdbId: string | null, kind: RelatedKind): Meta[] {
-  const [metas, setMetas] = useState<Meta[]>(NO_RELATED);
+  const requestKey = imdbId ? `${kind}:${imdbId}` : null;
+  const [result, setResult] = useState<{ key: string | null; metas: Meta[] }>({
+    key: null,
+    metas: NO_RELATED,
+  });
   useEffect(() => {
-    if (!imdbId || !imdbId.startsWith("tt")) {
-      setMetas(NO_RELATED);
-      return;
-    }
+    if (!imdbId || !/^tt\d+$/.test(imdbId)) return;
     let cancelled = false;
-    setMetas(cachedRelated(kind, imdbId) ?? NO_RELATED);
     traktRelated(kind, imdbId)
       .then((rows) => {
-        if (!cancelled) setMetas(rows.length > 0 ? rows : NO_RELATED);
+        if (!cancelled) setResult({ key: requestKey, metas: rows });
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [imdbId, kind]);
-  return metas;
+  }, [imdbId, kind, requestKey]);
+  // A new title must never render the previous title's related list, even
+  // during the render before the effect cleans up its old request.
+  if (!imdbId || !/^tt\d+$/.test(imdbId)) return NO_RELATED;
+  return result.key === requestKey ? result.metas : (cachedRelated(kind, imdbId) ?? NO_RELATED);
 }

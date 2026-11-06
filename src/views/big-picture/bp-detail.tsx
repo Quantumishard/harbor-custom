@@ -48,6 +48,7 @@ import { bpResumeMark } from "./detail/bp-resume-mark";
 import { useBpGroundFade } from "./detail/use-bp-ground-fade";
 import { BpVideosRow } from "./detail/bp-videos-row";
 import { BpWatchOnRow } from "./detail/bp-watch-on-row";
+import { useMoreLikeThis } from "@/lib/use-more-like-this";
 
 export function BpDetail({
   metaId,
@@ -132,7 +133,7 @@ export function BpDetail({
   // the card family here dropped six of the ten providers and ignored a user who
   // had switched a provider off for detail pages only.
   const { badges } = useBpCardBadges(shell, undefined, imdbId, "detail");
-  const recSource = useMemo(() => detail?.recommendations ?? [], [detail]);
+  const recSource = useMoreLikeThis(shell, detail, !anime.owns);
   const similarSource = useMemo(() => detail?.similar ?? [], [detail]);
   const recommendations = useHideAnimeMetas(recSource);
   const similar = useHideAnimeMetas(similarSource);
