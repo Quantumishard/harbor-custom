@@ -1,4 +1,5 @@
 import type { Settings } from "@/lib/settings";
+import { isWindowsDesktop } from "@/lib/platform";
 import { SHADER_CATALOG, STAGE_ORDER, type ShaderCatalogEntry } from "./shader-catalog";
 
 function selectedFiles(entry: ShaderCatalogEntry, variant?: string): string[] {
@@ -76,6 +77,11 @@ export function shaderCompanionProps(
     // This pack uses pq_inv; do not send SDR/HLG or unprobed sources through PQ.
     if (entry.id === "hdr-toys" && sourceGamma !== "pq" && sourceGamma !== "smpte2084") continue;
     Object.assign(out, entry.companionProps);
+    if (entry.id === "hdr-toys" && isWindowsDesktop()) {
+      // The bundled player keeps source subtitles before OUTPUT hooks in both
+      // play and pause, without changing video timing, interpolation or samplers.
+      Object.assign(out, { "blend-subtitles": "yes", "force-render-cache": "yes" });
+    }
   }
   return out;
 }

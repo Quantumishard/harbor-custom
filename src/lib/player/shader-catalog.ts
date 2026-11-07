@@ -255,11 +255,6 @@ export const SHADER_CATALOG: ShaderCatalogEntry[] = [
       // The OUTPUT shaders emit SDR, but mpv still encodes native subtitles as PQ.
       // PQ code white is 10,000 nits; this is not the SDR display brightness.
       "sub-hdr-peak": "10000",
-      // Keep image subtitles outside OUTPUT hooks in both fresh and cached frames.
-      // SDR bitmap overlays also need code white in the pack's PQ-tagged SDR output.
-      "blend-subtitles": "no",
-      "hdr-reference-white": "10000",
-      "image-subs-hdr-peak": "10000",
     },
     conflictsWith: ["hdrToSdr", "rtxHdr"],
     verify: true,

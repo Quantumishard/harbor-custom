@@ -5,6 +5,7 @@ const fs = require("node:fs"),
 const root = process.argv[2] || path.resolve(__dirname, "..");
 const ts = require(path.join(root, "node_modules/typescript"));
 const cache = new Map();
+let windowsDesktop = true;
 function load(file) {
   if (cache.has(file)) return cache.get(file);
   const source = fs.readFileSync(path.join(root, "src/lib/player", file + ".ts"), "utf8");
@@ -13,7 +14,14 @@ function load(file) {
     ts.transpileModule(source, {
       compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
     }).outputText,
-    { exports, console, require: (name) => load(name.replace("./", "")) },
+    {
+      exports,
+      console,
+      require: (name) =>
+        name === "@/lib/platform"
+          ? { isWindowsDesktop: () => windowsDesktop }
+          : load(name.replace("./", "")),
+    },
   );
   cache.set(file, exports);
   return exports;
@@ -27,10 +35,19 @@ const settings = {
 };
 assert.equal(generalShaderChain(settings, "pq").length, 5);
 assert.equal(shaderCompanionProps(settings, "pq")["sub-hdr-peak"], "10000");
-assert.equal(shaderCompanionProps(settings, "pq")["blend-subtitles"], "no");
-assert.equal(shaderCompanionProps(settings, "pq")["hdr-reference-white"], "10000");
-assert.equal(shaderCompanionProps(settings, "pq")["image-subs-hdr-peak"], "10000");
-for (const name of ["video-sync", "interpolation", "cscale"]) {
+assert.equal(shaderCompanionProps(settings, "pq")["blend-subtitles"], "yes");
+assert.equal(shaderCompanionProps(settings, "pq")["force-render-cache"], "yes");
+windowsDesktop = false;
+assert.ok(!("force-render-cache" in shaderCompanionProps(settings, "pq")));
+assert.ok(!("blend-subtitles" in shaderCompanionProps(settings, "pq")));
+windowsDesktop = true;
+for (const name of [
+  "video-sync",
+  "interpolation",
+  "cscale",
+  "hdr-reference-white",
+  "image-subs-hdr-peak",
+]) {
   assert.ok(!(name in shaderCompanionProps(settings, "pq")));
 }
 for (const gamma of [undefined, "", "bt.1886", "srgb", "hlg"]) {
@@ -47,9 +64,8 @@ assert.equal(generalShaderChain({ ...settings, playerRtxHdr: true }, "pq").lengt
     ["tone-mapping", "auto"],
     ["gamut-mapping-mode", "auto"],
     ["sub-hdr-peak", "auto"],
-    ["blend-subtitles", "yes"],
-    ["hdr-reference-white", 203],
-    ["image-subs-hdr-peak", 1000],
+    ["blend-subtitles", "no"],
+    ["force-render-cache", "no"],
   ]);
   const initial = Array.from(values);
   const writes = [];
@@ -63,13 +79,23 @@ assert.equal(generalShaderChain({ ...settings, playerRtxHdr: true }, "pq").lengt
   await controller.apply(shaderCompanionProps(settings, "pq"));
   assert.equal(values.get("target-trc"), "pq");
   assert.equal(values.get("sub-hdr-peak"), "10000");
-  assert.equal(values.get("blend-subtitles"), "no");
-  assert.equal(values.get("hdr-reference-white"), "10000");
-  assert.equal(values.get("image-subs-hdr-peak"), "10000");
+  assert.equal(values.get("blend-subtitles"), "yes");
+  assert.equal(values.get("force-render-cache"), "yes");
   await controller.apply(shaderCompanionProps(settings, "bt.1886"));
   assert.deepEqual(Array.from(values), initial);
   assert.ok(
-    writes.every((name) => !["sub-pos", "sub-margin-y", "sub-ass-override"].includes(name)),
+    writes.every(
+      (name) =>
+        ![
+          "sub-pos",
+          "sub-margin-y",
+          "sub-ass-override",
+          "image-subs-hdr-peak",
+          "cscale",
+          "video-sync",
+          "interpolation",
+        ].includes(name),
+    ),
   );
   values.set("sub-hdr-peak", 300);
   await controller.apply(shaderCompanionProps(settings, "pq"));
