@@ -6,6 +6,10 @@ import { Section } from "../shared";
 import { ToggleRow } from "../shared";
 import { SettingRow } from "../kit";
 import { LanguagesPicker } from "../streaming-panel";
+import { ALL_LANGUAGE_NAMES } from "@/lib/subtitles/language";
+import { ORIGINAL_AUDIO_LANG } from "@/lib/player/audio-language";
+
+const AUDIO_LANGUAGE_OPTIONS = [ORIGINAL_AUDIO_LANG, ...ALL_LANGUAGE_NAMES];
 
 export function AudioLanguageTab() {
   const { settings, update } = useSettings();
@@ -35,6 +39,7 @@ export function AudioLanguageTab() {
         <LanguagesPicker
           value={settings.preferredAudioLangs}
           onChange={(langs) => update({ preferredAudioLangs: langs })}
+          options={AUDIO_LANGUAGE_OPTIONS}
         />
       </Section>
 

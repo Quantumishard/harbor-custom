@@ -1,43 +1,118 @@
 const KEY = "harbor.profiles.v1";
 
-type MinimalProfile = { id: string; isPrimary?: boolean };
+type MinimalProfile = { id: string; isPrimary?: boolean; shareStremioWith?: string | null };
 type MinimalState = { profiles?: MinimalProfile[]; activeId?: string | null };
 
-function readState(): MinimalState | null {
+let cachedProfileRaw: string | null = null;
+let cachedActiveProfileId = "default";
+let cachedStremioProfileId = "";
+let cachedPrimaryProfileId = "";
+let cachedState: MinimalState | null = null;
+
+function syncProfiles(): void {
   try {
     const raw = localStorage.getItem(KEY);
-    if (!raw) return null;
-    return JSON.parse(raw) as MinimalState;
+    if (raw === cachedProfileRaw) return;
+    cachedProfileRaw = raw;
+    if (!raw) {
+      cachedState = null;
+      cachedActiveProfileId = "default";
+      cachedStremioProfileId = "";
+      cachedPrimaryProfileId = "";
+      return;
+    }
+    const parsed = JSON.parse(raw) as {
+      activeId?: string | null;
+      profiles?: Array<{ id?: string; isPrimary?: boolean; shareStremioWith?: string | null }>;
+    };
+    const validProfiles: MinimalProfile[] = Array.isArray(parsed.profiles)
+      ? parsed.profiles.filter(
+          (p): p is MinimalProfile => typeof p?.id === "string" && p.id.length > 0,
+        )
+      : [];
+    cachedState = {
+      activeId: parsed.activeId,
+      profiles: validProfiles,
+    };
+    const active = validProfiles.find((p) => p.id === parsed.activeId) ?? null;
+    let own = active?.id ?? validProfiles.find((p) => p.isPrimary)?.id ?? "";
+    if (active && typeof active.shareStremioWith === "string" && active.shareStremioWith) {
+      const shared = validProfiles.find((p) => p.id === active.shareStremioWith);
+      if (shared?.id) own = shared.id;
+    }
+    const primary = validProfiles.find((p) => p.isPrimary);
+    cachedActiveProfileId = parsed.activeId || "default";
+    cachedStremioProfileId = own;
+    cachedPrimaryProfileId = primary?.id || own;
   } catch {
-    return null;
+    cachedProfileRaw = null;
+    cachedState = null;
+    cachedActiveProfileId = "default";
+    cachedStremioProfileId = "";
+    cachedPrimaryProfileId = "";
   }
 }
 
+function readState(): MinimalState | null {
+  syncProfiles();
+  return cachedState;
+}
+
+const cachedSettings = new Map<string, { raw: string; provider: unknown }>();
+
 export function isNuvioProviderActive(): boolean {
   try {
-    const explicit = localStorage.getItem("harbor.account-provider");
+    const explicit =
+      typeof localStorage !== "undefined" ? localStorage.getItem("harbor.account-provider") : null;
     if (explicit === "nuvio") return true;
     if (explicit === "stremio") return false;
     for (const key of ["harbor.settings.shared", "harbor.settings", "harbor.settings.v1"]) {
-      const raw = localStorage.getItem(key);
+      const raw = typeof localStorage !== "undefined" ? localStorage.getItem(key) : null;
       if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed.accountProvider === "nuvio") return true;
-        if (parsed.accountProvider === "stremio") return false;
+        let cached = cachedSettings.get(key);
+        if (cached?.raw !== raw) {
+          let provider: unknown;
+          try {
+            provider = JSON.parse(raw).accountProvider;
+          } catch {
+            provider = /"accountProvider"\s*:\s*"nuvio"/.test(raw)
+              ? "nuvio"
+              : /"accountProvider"\s*:\s*"stremio"/.test(raw)
+                ? "stremio"
+                : undefined;
+          }
+          cached = { raw, provider };
+          cachedSettings.set(key, cached);
+        }
+        if (cached.provider === "nuvio") return true;
+        if (cached.provider === "stremio") return false;
       }
     }
   } catch {}
   return false;
 }
 
+let cachedNuvioSlotRaw: string | null = null;
+let cachedNuvioSlot = 1;
+
 export function getNuvioActiveSlot(): number {
   try {
-    const raw = localStorage.getItem("harbor.nuvio.state.v1") || localStorage.getItem("harbor.nuvio.state");
+    const raw =
+      localStorage.getItem("harbor.nuvio.state.v1") || localStorage.getItem("harbor.nuvio.state");
+    if (raw === cachedNuvioSlotRaw) return cachedNuvioSlot;
+    cachedNuvioSlotRaw = raw;
     if (raw) {
       const parsed = JSON.parse(raw);
-      return typeof parsed.activeProfileIndex === "number" ? parsed.activeProfileIndex : 1;
+      cachedNuvioSlot =
+        Number.isInteger(parsed.activeProfileIndex) &&
+        parsed.activeProfileIndex >= 1 &&
+        parsed.activeProfileIndex <= 6
+          ? parsed.activeProfileIndex
+          : 1;
+      return cachedNuvioSlot;
     }
   } catch {}
+  cachedNuvioSlot = 1;
   return 1;
 }
 
@@ -49,8 +124,19 @@ export function activeScopedProfileId(): string {
 }
 
 export function activeProfileId(): string {
-  const s = readState();
-  return s?.activeId || "default";
+  syncProfiles();
+  return cachedActiveProfileId;
+}
+
+export function primaryProfileId(): string {
+  syncProfiles();
+  return cachedPrimaryProfileId;
+}
+
+/** Watched state follows the shared Stremio account, not the selected profile. */
+export function stremioProfileId(): string {
+  syncProfiles();
+  return cachedStremioProfileId;
 }
 
 export function isStremioActivePrimary(
@@ -59,10 +145,16 @@ export function isStremioActivePrimary(
 ): boolean {
   if (profilesList && profilesList.length > 0) {
     if (profilesList.length === 1) return true;
-    if (!activeProfile) return false;
     const primary = profilesList.find((p) => p.isPrimary) ?? profilesList[0];
-    return activeProfile.id === primary.id && activeProfile.isPrimary === true;
+    if (activeProfile) {
+      return activeProfile.id === primary.id || activeProfile.isPrimary === true;
+    }
+    const s = readState();
+    const diskPrimary = s?.profiles?.find((p) => p.isPrimary) ?? s?.profiles?.[0];
+    const activeId = s?.activeId || diskPrimary?.id;
+    return activeId === diskPrimary?.id;
   }
+  if (activeProfile?.isPrimary === true) return true;
   const s = readState();
   if (!s || !Array.isArray(s.profiles) || s.profiles.length === 0) return true;
   if (s.profiles.length === 1) return true;
@@ -72,6 +164,9 @@ export function isStremioActivePrimary(
 }
 
 export function activeProfileIsPrimary(): boolean {
+  if (isNuvioProviderActive()) {
+    return getNuvioActiveSlot() === 1;
+  }
   return isStremioActivePrimary();
 }
 
@@ -92,4 +187,49 @@ export function profilesForSessionAdoption(): string[] {
     out.push(id);
   }
   return out;
+}
+
+let cachedWatchedOwnerRaw: string | null = null;
+let cachedWatchedOwner: string | undefined;
+
+function resetWatchedOwnerCache(): void {
+  cachedWatchedOwnerRaw = null;
+  cachedWatchedOwner = undefined;
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("harbor:nuvio-state-changed", resetWatchedOwnerCache);
+  window.addEventListener("harbor:account-provider-changed", resetWatchedOwnerCache);
+}
+
+/** Watched history belongs to a Nuvio account and slot, including while offline. */
+export function nuvioWatchedScope(slot = getNuvioActiveSlot(), accountId?: string): string {
+  let id = accountId;
+  if (id === undefined) {
+    try {
+      const raw =
+        localStorage.getItem("harbor.nuvio.state.v1") || localStorage.getItem("harbor.nuvio.state");
+      if (raw !== cachedWatchedOwnerRaw) {
+        cachedWatchedOwnerRaw = raw;
+        cachedWatchedOwner = undefined;
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          cachedWatchedOwner =
+            parsed.session?.user?.id ||
+            (Array.isArray(parsed.profiles) && parsed.profiles[0]?.user_id) ||
+            undefined;
+        }
+      }
+      id = cachedWatchedOwner;
+    } catch {
+      /* An unknown owner must never adopt legacy history. */
+    }
+  }
+  return typeof id === "string" && id.length > 0
+    ? `nuvio.v2.${encodeURIComponent(id)}.slot.${slot}`
+    : "nuvio.v2.unowned";
+}
+
+export function canPersistWatched(): boolean {
+  return !isNuvioProviderActive() || nuvioWatchedScope() !== "nuvio.v2.unowned";
 }

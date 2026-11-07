@@ -57,7 +57,9 @@ function harness(chapters, positionSec = 0) {
       },
     },
     "lucide-react": { ListTree: "list-icon", X: "close-icon" },
-    "@/lib/settings": { useSettings: () => ({ settings: {}, update: () => {} }) },
+    "@/lib/settings": {
+      useSettings: () => ({ settings: { seekBarChapters: true }, update: () => {} }),
+    },
     "@/lib/i18n": {
       useT: () => (text, values) => (values ? text.replace("{chapter}", values.chapter) : text),
     },

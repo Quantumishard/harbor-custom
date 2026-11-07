@@ -19,6 +19,9 @@ function load(path: string, mocks: Record<string, unknown>, expose = ""): any {
   }).outputText;
   const exports = {};
   new Function("require", "exports", compiled + expose)((id: string) => {
+    if (id === "@/lib/metadata-policy" || id === "./metadata-policy")
+      return { addonOnlyMetadata: () => false };
+    if (id === "./metadata-addons") return { readMetadataAddonOrder: () => [] };
     assert.ok(Object.hasOwn(mocks, id), `Unexpected dependency: ${id}`);
     return mocks[id];
   }, exports);
@@ -91,6 +94,16 @@ function series(videos: Meta["videos"]) {
       lruSet: (map: Map<unknown, unknown>, key: unknown, value: unknown) => map.set(key, value),
     },
     "@/lib/memory-profiler": { registerCache() {} },
+    "@/lib/media-cache": {
+      onMediaCacheClear() {},
+      mediaCacheGeneration: () => 0,
+      MEDIA_TTL: {
+        recent: 60 * 60_000,
+        episodes: 12 * 60 * 60_000,
+        settled: 7 * 24 * 60 * 60_000,
+        stale: 30 * 24 * 60 * 60_000,
+      },
+    },
     "@/lib/safe-fetch": {
       safeFetch: async () => {
         requests++;
@@ -102,10 +115,25 @@ function series(videos: Meta["videos"]) {
         requests++;
         return { videos };
       },
+      metadataAddons: async () => [],
+      resolveAddonMetaSource: async () => null,
       preferCustomMeta: () => false,
     },
+    "./metadata-sources": {
+      addonKeyFromSource: () => null,
+      normalizeMetadataSourceChain: (_section: string, chain: string[] = []) => chain,
+    },
+    "./providers/tvdb-order": {
+      fetchTvdbOrder: async () => null,
+    },
+    "./providers/tvdb": {
+      tvdbLangFromIso1: () => "eng",
+    },
     "./providers/tmdb": {},
-    "./providers/tmdb/tmdb-client": {},
+    "./providers/tmdb/tmdb-client": {
+      effectiveTmdbLanguage: () => "en",
+      tmdbLanguageIso: () => "en",
+    },
     "./providers/tmdb/tmdb-image-rungs": {},
     "./localized-text": {},
     "./providers/anime-kitsu-addon": {},

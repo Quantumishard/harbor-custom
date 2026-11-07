@@ -19,6 +19,7 @@ import { bidiIsolate } from "@/lib/bidi";
 import { prefetchSegments } from "@/lib/skip-intro";
 import { NewBadge, UpcomingBadge } from "./badges";
 import { EpisodeDownloadButton } from "./episode-download-button";
+import { EpisodeReviewsButton } from "./episode-reviews-dialog";
 import { isNewEpisode, isUpcomingEpisode } from "./helpers";
 
 export function EpisodeRow({
@@ -51,10 +52,12 @@ export function EpisodeRow({
     [ep.stillPath, ep.stillUrl, cinemetaThumbnail, settings.hdEpisodeImages],
   );
   const [imgIdx, setImgIdx] = useState(0);
+  const candidatesKey = candidates.join("\n");
   useEffect(() => {
+    // A late Cinemeta/TVDB still must retry the primary, not stay on a fallback.
     setImgIdx(0);
-  }, [ep.id, candidates]);
-  const still = candidates[imgIdx];
+  }, [ep.id, candidatesKey]);
+  const still = candidates[Math.min(imgIdx, Math.max(0, candidates.length - 1))];
   const watchedAgo = progress.startedAt > 0 ? formatRelativeWatched(progress.startedAt) : "";
   const resolvedImdbId = useMemo(() => {
     const v = cinemetaVideos?.find(
@@ -104,7 +107,7 @@ export function EpisodeRow({
               seed={String(ep.id)}
               ratio="landscape"
               lazy
-              onError={() => setImgIdx((i) => i + 1)}
+              onError={() => setImgIdx((i) => Math.min(i + 1, Math.max(0, candidates.length - 1)))}
             />
           </div>
           <div className="absolute inset-0 flex items-center justify-center bg-canvas/40 opacity-0 transition-opacity group-hover:opacity-100">
@@ -174,6 +177,13 @@ export function EpisodeRow({
           )}
         </div>
       </button>
+      <EpisodeReviewsButton
+        meta={meta}
+        seriesImdbId={seriesImdbId}
+        season={ep.seasonNumber}
+        episode={ep.episodeNumber}
+        episodeTitle={ep.name || undefined}
+      />
       <HoverTooltip label={t("Episode details")} align="center" className="shrink-0 self-center">
         <button
           type="button"

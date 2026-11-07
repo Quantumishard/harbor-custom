@@ -4,6 +4,7 @@
  */
 
 import { safeFetch as fetch } from "@/lib/safe-fetch";
+export { isNuvioProviderActive } from "@/lib/active-profile-id";
 import type { NuvioAccountState, NuvioSession } from "./nuvio-types";
 
 export const NUVIO_DEFAULT_API = "https://api.nuvio.tv";
@@ -20,13 +21,14 @@ const NUVIO_PROFILE_MAP_KEY_PREFIX = "harbor.nuvio.profile-map.";
  */
 export function loadNuvioState(): NuvioAccountState {
   try {
-    const raw = localStorage.getItem(NUVIO_STATE_KEY);
+    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(NUVIO_STATE_KEY) : null;
     if (!raw) return { session: null, profiles: [], activeProfileIndex: 1, lastSyncedAt: null };
     const parsed = JSON.parse(raw) as Partial<NuvioAccountState>;
     return {
       session: parsed.session ?? null,
       profiles: Array.isArray(parsed.profiles) ? parsed.profiles : [],
-      activeProfileIndex: typeof parsed.activeProfileIndex === "number" ? parsed.activeProfileIndex : 1,
+      activeProfileIndex:
+        typeof parsed.activeProfileIndex === "number" ? parsed.activeProfileIndex : 1,
       lastSyncedAt: typeof parsed.lastSyncedAt === "number" ? parsed.lastSyncedAt : null,
     };
   } catch {
@@ -37,10 +39,40 @@ export function loadNuvioState(): NuvioAccountState {
 /**
  * Persists Nuvio account state
  */
-export function saveNuvioState(state: NuvioAccountState): void {
+export function saveNuvioState(state: NuvioAccountState, options?: { silent?: boolean }): void {
   try {
-    localStorage.setItem(NUVIO_STATE_KEY, JSON.stringify(state));
-    window.dispatchEvent(new CustomEvent("harbor:nuvio-state-changed", { detail: state }));
+    if (typeof localStorage !== "undefined") {
+      const prevRaw = localStorage.getItem(NUVIO_STATE_KEY);
+      if (prevRaw) {
+        try {
+          const prevState = JSON.parse(prevRaw) as NuvioAccountState;
+          const prevUser = prevState.session?.user?.id;
+          const nextUser = state.session?.user?.id;
+          if (prevUser && nextUser && prevUser !== nextUser) {
+            const keysToRemove: string[] = [];
+            for (let i = 0; i < localStorage.length; i++) {
+              const k = localStorage.key(i);
+              if (
+                k &&
+                (k.startsWith("harbor.installed-addons.nuvio-") ||
+                  k.startsWith("harbor.cw.dismissed.private.v1.nuvio-"))
+              ) {
+                keysToRemove.push(k);
+              }
+            }
+            for (const k of keysToRemove) {
+              localStorage.removeItem(k);
+            }
+          }
+        } catch {
+          // ignore parse error
+        }
+      }
+      localStorage.setItem(NUVIO_STATE_KEY, JSON.stringify(state));
+    }
+    if (!options?.silent && typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("harbor:nuvio-state-changed", { detail: state }));
+    }
   } catch (e) {
     console.error("[nuvio] failed to save state", e);
   }
@@ -85,7 +117,11 @@ export function getNuvioAccountId(): string | null {
 
 export function isNuvioSignedIn(): boolean {
   const state = loadNuvioState();
-  return state.session != null && typeof state.session.access_token === "string" && state.session.access_token.length > 0;
+  return (
+    state.session != null &&
+    typeof state.session.access_token === "string" &&
+    state.session.access_token.length > 0
+  );
 }
 
 /**
@@ -162,9 +198,16 @@ export async function refreshNuvioSession(): Promise<NuvioSession | null> {
 export async function nuvioFetch(
   endpoint: string,
   options: RequestInit = {},
+  canSend: () => boolean = () => true,
 ): Promise<Response> {
-  let state = loadNuvioState();
+  const state = loadNuvioState();
   let session = state.session;
+  const accountId = session?.user?.id;
+  const checkOwner = () => {
+    if (loadNuvioState().session?.user?.id !== accountId || !canSend())
+      throw new Error("Nuvio request owner changed");
+  };
+  checkOwner();
 
   if (session) {
     const nowSec = Math.floor(Date.now() / 1000);
@@ -175,6 +218,7 @@ export async function nuvioFetch(
     }
   }
 
+  checkOwner();
   const url = endpoint.startsWith("http") ? endpoint : `${NUVIO_DEFAULT_API}${endpoint}`;
   const headers = new Headers(options.headers || {});
   headers.set("Accept", "application/json");
@@ -190,7 +234,9 @@ export async function nuvioFetch(
 
   if (res.status === 401 && session?.refresh_token) {
     // Retry once after refresh
+    checkOwner();
     const refreshed = await refreshNuvioSession();
+    checkOwner();
     if (refreshed?.access_token) {
       headers.set("Authorization", `Bearer ${refreshed.access_token}`);
       res = await fetch(url, { ...options, headers });
@@ -220,4 +266,68 @@ export function getOrCreateSyncClientId(): string {
   } catch {
     return "harbor-desktop-sync-client-id-012345";
   }
+}
+
+/**
+ * Scans local storage across all Nuvio profiles, cw trays, watched states,
+ * and library slots to collect every item ID associated with Nuvio.
+ */
+export function collectAllNuvioItemIds(): Set<string> {
+  const ids = new Set<string>();
+  if (typeof window === "undefined" || !window.localStorage) return ids;
+
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key) continue;
+
+      if (
+        key.startsWith("harbor.nuvio.") ||
+        key.includes(".nuvio.") ||
+        key.includes("nuvio-") ||
+        key.includes("nuvio_") ||
+        key.startsWith("harbor.watchedFlag.nuvio") ||
+        key.startsWith("harbor.moviewatched.nuvio") ||
+        key.startsWith("harbor.manualwatched.v1.nuvio")
+      ) {
+        try {
+          const raw = localStorage.getItem(key);
+          if (!raw) continue;
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            for (const item of parsed) {
+              if (item && typeof item === "object") {
+                const id =
+                  item._id ||
+                  item.id ||
+                  item.contentId ||
+                  item.imdb_id ||
+                  item.imdbId ||
+                  item.content_id;
+                if (typeof id === "string" && id.length > 0) ids.add(id);
+              } else if (typeof item === "string" && item.length > 0) {
+                const baseId = item.split(":")[0];
+                if (baseId) ids.add(baseId);
+              }
+            }
+          } else if (parsed && typeof parsed === "object") {
+            for (const k of Object.keys(parsed)) {
+              if (k.startsWith("tt") || k.includes(":")) {
+                const baseId = k.split(":")[0];
+                if (baseId) ids.add(baseId);
+              }
+              const val = parsed[k];
+              if (val && typeof val === "object") {
+                const id =
+                  val._id || val.id || val.contentId || val.imdb_id || val.imdbId || val.content_id;
+                if (typeof id === "string" && id.length > 0) ids.add(id);
+              }
+            }
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+
+  return ids;
 }

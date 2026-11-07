@@ -1,3 +1,5 @@
+import { startNuvioMutationRetry } from "@/lib/nuvio/nuvio-sync";
+import { useNuvioSyncLoop } from "@/lib/nuvio/nuvio-sync-runtime";
 import { GAMES_IN_NAV } from "@/chrome/nav-items";
 import { GameAccessProvider } from "@/views/games/game-access-context";
 import { GameLibraryDock } from "@/views/games/game-library-dock";
@@ -10,6 +12,7 @@ import { SportsAccessGate } from "@/views/sports/access-gate";
 import { SportsEventSkeleton } from "@/views/sports/sports-skeletons";
 import { SportsReminderLoop } from "@/components/sports-reminder-loop";
 import {
+  Component,
   memo,
   Suspense,
   useCallback,
@@ -17,6 +20,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ErrorInfo,
   type ReactNode,
 } from "react";
 import { lazyView as lazy } from "@/lib/lazy-view";
@@ -46,6 +50,7 @@ import { MiddleClickScroll } from "@/lib/use-middle-click-scroll";
 import { exitWindowFullscreenOnPlayerClose, toggleWindowFullscreen } from "@/lib/fullscreen-state";
 import { flushCloudSync } from "@/views/player/hooks/use-stremio-sync";
 import { startWriteQueueFlusher } from "@/lib/stremio-write-queue";
+import { expungeLeachedNuvioItemsFromStremio } from "@/lib/stremio";
 import {
   mediaServerConnections,
   mediaServerRefreshIntervalMs,
@@ -125,6 +130,7 @@ import { HarborNameSync } from "@/components/harbor-name-sync";
 import { SettingsProfileBridge } from "@/lib/settings-profile-bridge";
 import { TrackerProfileBridge } from "@/lib/tracker-profile-bridge";
 import { ProfilePickerModal } from "@/components/profile-picker/picker-modal";
+import { ConfirmActionModal } from "@/components/confirm-action-modal";
 import { WatchlistSync } from "@/lib/watchlist-sync";
 import { ContextMenuProvider } from "@/lib/context-menu";
 import { PageContextNavigationDialogs } from "@/chrome/context-page-navigation";
@@ -174,9 +180,7 @@ import { SpooktoberHome } from "@/views/spooktober/spooktober-home";
 // Memoizing the view stops that from cascading into a full re-render of the home feed, which the
 // profiler measured rendering ~18 times a second while the user was on other tabs.
 const MemoSpooktoberHome = memo(SpooktoberHome);
-import { MusicDock } from "@/components/music/music-dock";
-import { useInstallFeatures } from "@/lib/features/install";
-import { MusicSurprisePrompt } from "@/components/music/music-surprise-prompt";
+import { useInstallFeatures, useInstallFeaturesReady } from "@/lib/features/install";
 import { ParentalProvider } from "@/lib/parental";
 import { TraktProvider } from "@/lib/trakt/provider";
 import { AnilistProvider } from "@/lib/anilist/provider";
@@ -198,9 +202,43 @@ import { BigPictureEntryButton } from "@/views/big-picture/bp-entry-button";
 import { releaseBigPictureFullscreen } from "@/views/big-picture/use-bp-fullscreen";
 import { getNavFocusTarget } from "@/lib/keyboard-navigation/geometry";
 import { SFX } from "@/lib/sfx";
-import { startMusicTaskbarButtons, syncMusicTaskbarArtwork } from "@/lib/music/taskbar-buttons";
-import { resetMusicForProfile } from "@/lib/music/player";
 import { startMediaSessionWindowTracking } from "@/lib/media-session";
+import { QueueBasket } from "@/components/queue-basket/queue-basket";
+
+// Keep the Music UI outside the core startup graph. These chunks are not loaded
+// at all when the installer reports Music as unavailable.
+const MusicDock = lazy(() =>
+  import("@/components/music/music-dock").then((m) => ({ default: m.MusicDock })),
+);
+const MusicSurprisePrompt = lazy(() =>
+  import("@/components/music/music-surprise-prompt").then((m) => ({
+    default: m.MusicSurprisePrompt,
+  })),
+);
+const MusicVideoMini = lazy(() =>
+  import("@/components/music/music-video-mini").then((m) => ({ default: m.MusicVideoMini })),
+);
+
+class ThemeErrorBoundary extends Component<
+  { fallback: ReactNode; children: ReactNode; onError?: () => void },
+  { error: boolean }
+> {
+  state = { error: false };
+  static getDerivedStateFromError() {
+    return { error: true };
+  }
+  componentDidCatch(err: unknown, info: ErrorInfo) {
+    console.error(
+      "[Harbor] Theme render failed, falling back to default chrome",
+      err,
+      info.componentStack,
+    );
+    this.props.onError?.();
+  }
+  render() {
+    return this.state.error ? this.props.fallback : this.props.children;
+  }
+}
 
 const importAnime = () => import("@/views/anime");
 const importCalendar = () => import("@/views/calendar");
@@ -216,6 +254,7 @@ const importCuratedList = () => import("@/views/curated-list");
 const importFilter = () => import("@/views/filter");
 const importBrands = () => import("@/views/brands");
 const importGrid = () => import("@/views/grid");
+const importFolderHub = () => import("@/views/folder-hub");
 const importPerson = () => import("@/views/person");
 const importPeople = () => import("@/views/people");
 const importCollection = () => import("@/views/collection");
@@ -255,6 +294,7 @@ const CuratedListView = lazy(() =>
 const FilterView = lazy(() => importFilter().then((m) => ({ default: m.FilterView })));
 const BrandsView = lazy(() => importBrands().then((m) => ({ default: m.BrandsView })));
 const GridView = lazy(() => importGrid().then((m) => ({ default: m.GridView })));
+const FolderHubView = lazy(() => importFolderHub().then((m) => ({ default: m.FolderHubView })));
 const PersonView = lazy(() => importPerson().then((m) => ({ default: m.PersonView })));
 const PeopleView = lazy(() => importPeople().then((m) => ({ default: m.PeopleView })));
 const ProfileView = lazy(() =>
@@ -308,6 +348,8 @@ const OnboardingModal = lazy(() =>
 const BigPictureShell = lazy(() =>
   import("@/views/big-picture/bp-shell").then((m) => ({ default: m.BigPictureShell })),
 );
+const importMidnightShell = () => import("@/themes/midnight/MidnightShell");
+let MidnightShellLazy = lazy(importMidnightShell);
 
 function useViewPreloader(tmdbKey: string) {
   const keyRef = useRef(tmdbKey);
@@ -528,6 +570,8 @@ export function App({ onReady }: { onReady?: () => void }) {
                                                         <TogetherLocationPublisher />
                                                         <IdleAwayRunner />
                                                         <SessionRefreshRunner />
+                                                        <StremioLeachedExpungeRunner />
+                                                        <NuvioSyncLoopRunner />
                                                         <RemoteHostMount />
                                                         <RemoteOpenBridge />
                                                       </AfterFirstPaint>
@@ -539,6 +583,7 @@ export function App({ onReady }: { onReady?: () => void }) {
                                                       </AfterFirstPaint>
                                                       <AfterFirstPaint>
                                                         <MediaServerSyncRunner />
+                                                        <NuvioMutationRetryRunner />
                                                         <AutoDownloadRunner />
                                                         <RemindersRunner />
                                                         <GameDownloadNotificationsRunner />
@@ -564,6 +609,7 @@ export function App({ onReady }: { onReady?: () => void }) {
                                                       <CustomHoverCssMount />
                                                       <TopRankModal />
                                                       <ProfilePickerModal />
+                                                      <ConfirmActionModal />
                                                       <CurfewGuard />
                                                       <Profiled id="search.overlay">
                                                         <SearchOverlay />
@@ -716,6 +762,19 @@ function MediaServerSyncRunner() {
 
 function SessionRefreshRunner() {
   useEffect(startSessionRefresh, []);
+  return null;
+}
+
+function StremioLeachedExpungeRunner() {
+  useEffect(() => {
+    void expungeLeachedNuvioItemsFromStremio().catch(() => {});
+  }, []);
+  return null;
+}
+
+function NuvioSyncLoopRunner() {
+  const { player } = useView();
+  useNuvioSyncLoop(!player);
   return null;
 }
 
@@ -893,6 +952,7 @@ function Shell({ onReady }: { onReady?: () => void }) {
     filter,
     brands,
     grid,
+    folderHub,
     awardType,
     animeAwardSource,
     curatedListId,
@@ -1442,6 +1502,7 @@ function Shell({ onReady }: { onReady?: () => void }) {
       topKind === "meta" ||
       topKind === "picker" ||
       topKind === "grid" ||
+      topKind === "folder-hub" ||
       topKind === "collection";
     if (!allowed) setView("kids");
   }, [kid, player, topKind, setView]);
@@ -1475,6 +1536,7 @@ function Shell({ onReady }: { onReady?: () => void }) {
   const filterTop = topKind === "filter";
   const brandsTop = topKind === "brands";
   const gridTop = topKind === "grid";
+  const folderHubTop = topKind === "folder-hub";
   const awardTop = topKind === "award";
   const animeAwardTop = topKind === "anime-award";
   const curatedListTop = topKind === "curated-list";
@@ -1492,7 +1554,9 @@ function Shell({ onReady }: { onReady?: () => void }) {
   const kidsTop = topKind === "kids";
   const showsTop = topKind === "shows";
   const installFeatures = useInstallFeatures();
-  const musicTop = topKind === "music" && installFeatures.music;
+  const installFeaturesReady = useInstallFeaturesReady();
+  const musicEnabled = installFeaturesReady && installFeatures.music;
+  const musicTop = topKind === "music" && musicEnabled;
   const gamesTop = topKind === "games" && installFeatures.games;
   const [gamesNavigationOpen, setGamesNavigationOpen] = useState(false);
 
@@ -1587,9 +1651,30 @@ function Shell({ onReady }: { onReady?: () => void }) {
   });
 
   useEffect(() => startMediaSessionWindowTracking(), []);
-  useEffect(() => startMusicTaskbarButtons(), []);
-  useEffect(() => syncMusicTaskbarArtwork(), [settings.musicArtworkAppIcon]);
-  useEffect(() => resetMusicForProfile(), [activeProfileForMusic]);
+  useEffect(() => {
+    if (!musicEnabled) return;
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void import("@/lib/music/taskbar-buttons").then(({ startMusicTaskbarButtons }) => {
+      if (!disposed) stop = startMusicTaskbarButtons();
+    });
+    return () => {
+      disposed = true;
+      stop?.();
+    };
+  }, [musicEnabled]);
+  useEffect(() => {
+    if (musicEnabled) {
+      void import("@/lib/music/taskbar-buttons").then(({ syncMusicTaskbarArtwork }) =>
+        syncMusicTaskbarArtwork(),
+      );
+    }
+  }, [musicEnabled, settings.musicArtworkAppIcon]);
+  useEffect(() => {
+    if (musicEnabled) {
+      void import("@/lib/music/player").then(({ resetMusicForProfile }) => resetMusicForProfile());
+    }
+  }, [musicEnabled, activeProfileForMusic]);
 
   const overlayPinned = useOverlayPinned();
   const homeAlive = useIdleEvict(homeTop);
@@ -1608,7 +1693,9 @@ function Shell({ onReady }: { onReady?: () => void }) {
   const wrappedAlive = useIdleEvict(wrappedTop);
   const queueAlive = useKeepAlive(queueTop, queueVisited, true);
   const serviceAlive = useKeepAlive(serviceTop, serviceTop && !!service);
-  const detailAlive = useKeepAlive(detailTop, !!meta);
+  // Keep a detail page mounted while Settings is open. Otherwise the keep-alive timer
+  // drops it after 1.5s, and returning refetches the whole title from its addons.
+  const detailAlive = useKeepAlive(detailTop, !!meta, topKind === "settings");
   const personAlive = useKeepAlive(personTop, personId !== null);
   const profileAlive = useKeepAlive(profileTop, profileHandle !== null);
   const feedAlive = useKeepAlive(feedTop, feedOpen, stackKinds.includes("feed"));
@@ -1635,6 +1722,7 @@ function Shell({ onReady }: { onReady?: () => void }) {
   const awardAlive = useKeepAlive(awardTop, retainedAwardType !== null, true);
   const animeAwardAlive = useKeepAlive(animeAwardTop, retainedAnimeAwardSource !== null, true);
   const curatedListAlive = useKeepAlive(curatedListTop, retainedCuratedListId !== null, true);
+  const folderHubAlive = useKeepAlive(folderHubTop, !!folderHub, stackKinds.includes("folder-hub"));
   const pickerAlive = useKeepAlive(pickerTop, !!picker);
   const moviesAlive = useIdleEvict(moviesTop);
   const kidsAlive = useIdleEvict(kidsTop);
@@ -1709,6 +1797,19 @@ function Shell({ onReady }: { onReady?: () => void }) {
             !standaloneLive &&
             !pickerTop &&
             layout === "stremio" && <StremioRail />}
+          {!settingsTop && !playerActive && !pickerTop && layout === "midnight" && !immersive && (
+            <ThemeErrorBoundary
+              key={settings.theme.preset}
+              fallback={<TopDock />}
+              onError={() => {
+                MidnightShellLazy = lazy(importMidnightShell);
+              }}
+            >
+              <Suspense fallback={null}>
+                <MidnightShellLazy />
+              </Suspense>
+            </ThemeErrorBoundary>
+          )}
           {!settingsTop && !playerActive && !pickerTop && layout === "topdock" && !immersive && (
             <TopDock />
           )}
@@ -1722,11 +1823,14 @@ function Shell({ onReady }: { onReady?: () => void }) {
             <SideRail />
           )}
           {!playerActive && !pickerTop && layout === "minui" && !immersive && <MinUIDock />}
-          {!playerActive && !pickerTop && layout === "topdock" && !immersive && (
-            <div className={gamesTop ? "games-library-back" : "contents"}>
-              <FloatingBack offsetTop={92} />
-            </div>
-          )}
+          {!playerActive &&
+            !pickerTop &&
+            (layout === "topdock" || layout === "midnight") &&
+            !immersive && (
+              <div className={gamesTop ? "games-library-back" : "contents"}>
+                <FloatingBack offsetTop={92} />
+              </div>
+            )}
           {!playerActive && !pickerTop && layout === "cinematic" && !immersive && (
             <div className={gamesTop ? "games-library-back" : "contents"}>
               <FloatingBack offsetTop={92} />
@@ -1752,9 +1856,15 @@ function Shell({ onReady }: { onReady?: () => void }) {
               <WindowControls />
             </div>
           )}
-          {installFeatures.music && <MusicDock />}
-          <MusicSurprisePrompt />
+          {musicEnabled && (
+            <Suspense fallback={null}>
+              <MusicDock />
+              <MusicVideoMini />
+              <MusicSurprisePrompt />
+            </Suspense>
+          )}
           {!playerActive && <WindowResizeEdges />}
+          {!playerActive && !pickerTop && !immersive && !chromeHidden && <QueueBasket />}
           <HybridTitleBar suppressed={playerActive || immersive || chromeHidden} />
           <div
             className={`relative flex min-h-0 min-w-0 flex-1 flex-col ${playerActive ? "invisible" : ""}`}
@@ -1888,9 +1998,15 @@ function Shell({ onReady }: { onReady?: () => void }) {
                       !chromeHidden &&
                       !immersive &&
                       (themeHasTopbar ||
-                        ["minui", "topdock", "cinematic", "royal", "rail", "custom"].includes(
-                          layout,
-                        ))
+                        [
+                          "minui",
+                          "topdock",
+                          "midnight",
+                          "cinematic",
+                          "royal",
+                          "rail",
+                          "custom",
+                        ].includes(layout))
                     }
                     cloudKeys={{
                       rd: settings.rdKey,
@@ -2038,7 +2154,7 @@ function Shell({ onReady }: { onReady?: () => void }) {
               <div {...layerProps(profileTop)}>
                 <Suspense fallback={null}>
                   <ProfileView
-                    key={`profile-${profileHandle}`}
+                    key={`profile-${settings.accountProvider}-${profileHandle}`}
                     handle={profileHandle}
                     onOpenProfile={requestOpenProfile}
                     onOpenMeta={(id, kind, hint) => {
@@ -2199,6 +2315,18 @@ function Shell({ onReady }: { onReady?: () => void }) {
                 </Suspense>
               </div>
             )}
+            {folderHubAlive && folderHub && (
+              <div {...layerProps(folderHubTop)}>
+                <Suspense fallback={null}>
+                  <FolderHubView
+                    key={`folder-hub-${folderHub.sourceId}-${folderHub.folder.id}`}
+                    folder={folderHub.folder}
+                    sourceId={folderHub.sourceId}
+                    active={folderHubTop}
+                  />
+                </Suspense>
+              </div>
+            )}
             {collectionsIndexAlive && (
               <div {...layerProps(collectionsIndexTop)}>
                 <Suspense fallback={null}>
@@ -2239,8 +2367,9 @@ function Shell({ onReady }: { onReady?: () => void }) {
               <div {...layerProps(pickerTop)}>
                 <Suspense fallback={null}>
                   <PlayPicker
-                    key={`picker-${picker.meta.id}-${picker.episode?.season ?? ""}-${picker.episode?.episode ?? ""}-${picker.attempt ?? 0}-${picker.intent ?? "play"}-${picker.seasonEpisodes?.length ?? 0}-${picker.contextRequestId ?? ""}-${picker.continuation?.id ?? ""}`}
+                    key={`picker-${picker.pickerRevision ?? 0}-${picker.meta.id}-${picker.episode?.season ?? ""}-${picker.episode?.episode ?? ""}-${picker.attempt ?? 0}-${picker.intent ?? "play"}-${picker.seasonEpisodes?.length ?? 0}-${picker.contextRequestId ?? ""}-${picker.continuation?.id ?? ""}-${picker.queueItemId ?? ""}`}
                     meta={picker.meta}
+                    queueItemId={picker.queueItemId}
                     episode={picker.episode}
                     autoPlay={picker.intent === "download" ? false : picker.autoPlay}
                     attempt={picker.attempt}
@@ -2315,3 +2444,8 @@ function Shell({ onReady }: { onReady?: () => void }) {
 }
 
 export type { Frame };
+
+function NuvioMutationRetryRunner() {
+  useEffect(() => startNuvioMutationRetry(), []);
+  return null;
+}

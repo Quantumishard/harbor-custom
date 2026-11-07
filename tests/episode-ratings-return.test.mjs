@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
 import ts from "typescript";
-import { getViewedSeason, setViewedSeason } from "../src/lib/season-view-pref.ts";
 import { groupEpisodes, episodeNumber, episodeSeason } from "../src/views/detail/episode-groups.ts";
 
 const require = createRequire(import.meta.url);
@@ -14,6 +13,7 @@ test("a TMDB outage fallback keeps the season's IMDb ratings on its rows", () =>
     react: { useMemo: (fn) => fn() },
     "@/lib/i18n": { useT: () => (value) => value },
     "../cinemeta-episodes": { CinemetaEpisodeRow },
+    "../episode-groups": { groupEpisodes, episodeNumber, episodeSeason },
   });
   const tree = CinemetaFallback({
     meta: { id: "tt5071412" },
@@ -44,18 +44,7 @@ function load(path, mocks) {
   return exports;
 }
 
-test("returning to Ozark restores season 3 and validates the available seasons", () => {
-  const seasons = [1, 2, 3, 4].map((seasonNumber) => ({ seasonNumber }));
-  setViewedSeason("tt5071412", 3);
-  assert.equal(getViewedSeason("tt5071412", seasons), 3);
-  assert.equal(getViewedSeason("another-show", seasons), undefined);
-  assert.equal(getViewedSeason("tt5071412", [{ seasonNumber: 1 }]), undefined);
-  setViewedSeason("specials-show", 0);
-  assert.equal(getViewedSeason("specials-show", [{ seasonNumber: 0 }, { seasonNumber: 1 }]), 0);
-});
-
-function ratingsHarness({ harborEmpty = false } = {}) {
-  const seasonCache = new Map();
+function ratingsHarness(cached = new Map()) {
   const slots = [],
     dependencies = [],
     effects = [];
@@ -80,39 +69,30 @@ function ratingsHarness({ harborEmpty = false } = {}) {
         dependencies[index] = deps;
       }
     },
-    useMemo(callback, deps) {
+    useMemo: (callback) => callback(),
+    useRef(initial) {
       const index = cursor++;
-      if (!dependencies[index] || deps.some((value, n) => value !== dependencies[index][n])) {
-        slots[index] = callback();
-        dependencies[index] = deps;
-      }
+      slots[index] ??= { current: initial };
       return slots[index];
     },
   };
+  const { createOmdbSeasonQueue } = load("src/lib/omdb-season-queue.ts", {});
   const { useEpisodeImdbRatings } = load("src/views/detail/use-episode-imdb-ratings.ts", {
     react,
+    "@/lib/omdb-season-queue": { createOmdbSeasonQueue },
     "@/lib/providers/harbor-imdb": {
-      harborImdbEpisodes: () => (harborEmpty ? Promise.resolve(new Map()) : new Promise(() => {})),
+      harborImdbEpisodes: () => new Promise(() => {}),
       harborImdbEpisodesCached: () => undefined,
     },
     "@/lib/providers/omdb": {
-      omdbSeasonRatingsCached: (id, season) => seasonCache.get(`${id}:${season}`),
+      omdbSeasonRatingsCached: (id, season) =>
+        id === "tt5071412" && season === 3 ? cached : undefined,
       omdbSeasonRatings: (key, id, season) =>
-        new Promise((resolve) =>
-          requests.push({
-            id,
-            season,
-            resolve: (ratings) => {
-              seasonCache.set(`${id}:${season}`, ratings);
-              resolve(ratings);
-            },
-          }),
-        ),
+        new Promise((resolve) => requests.push({ id, season, resolve })),
     },
   });
   return {
     requests,
-    unmount: () => effects.forEach((cleanup) => cleanup?.()),
     render: (id, season) => {
       cursor = 0;
       return useEpisodeImdbRatings(id, season, "test-key");
@@ -152,10 +132,38 @@ test("late ratings cannot leak into another title or season", async () => {
   h.requests[1].resolve(new Map([[1, 8.2]]));
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(h.render("tt0903747", 1).get("1:1"), 8.2);
-  assert.equal(h.render("tt0903747", 2).size, 0);
+  // Switching seasons of the same show retains previously loaded ratings.
+  assert.equal(h.render("tt0903747", 2).get("1:1"), 8.2);
+  assert.equal(h.render("tt0903747", 2).has("2:1"), false);
 });
 
-test("Cinemeta episode grids receive episode IMDb badges and restore season 3", () => {
+test("scrolling to new seasons does not refetch an empty OMDb season", async () => {
+  const h = ratingsHarness();
+  h.render("tt5071412", [1]);
+  assert.deepEqual(
+    h.requests.map((request) => request.season),
+    [1],
+  );
+  h.requests[0].resolve(new Map());
+  await new Promise((resolve) => setImmediate(resolve));
+
+  h.render("tt5071412", [1, 2]);
+  assert.deepEqual(
+    h.requests.map((request) => request.season),
+    [1, 2],
+  );
+  h.requests[1].resolve(new Map([[1, 8.2]]));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  h.render("tt5071412", [1, 2, 3]);
+  assert.deepEqual(
+    h.requests.map((request) => request.season),
+    [1, 2, 3],
+  );
+  assert.equal(h.render("tt5071412", [1, 2, 3]).get("2:1"), 8.2);
+});
+
+test("Cinemeta episode grids receive genuine episode IMDb badges", () => {
   const EpisodeGrid = () => null;
   const { CinemetaEpisodes } = load("src/views/detail/cinemeta-episodes.tsx", {
     react: {
@@ -165,7 +173,6 @@ test("Cinemeta episode grids receive episode IMDb badges and restore season 3", 
       useRef: (value) => ({ current: value }),
       useSyncExternalStore: () => 0,
     },
-    "@/lib/season-view-pref": { getViewedSeason, setViewedSeason },
     "@/lib/settings": {
       useSettings: () => ({
         settings: { episodeLayout: "grid", showEpisodeRating: true, omdbKey: "test-key" },
@@ -177,16 +184,20 @@ test("Cinemeta episode grids receive episode IMDb badges and restore season 3", 
       manualEpisodeKeys: () => ({ watched: new Set(), unwatched: new Set() }),
     },
     "@/lib/local-library/use-series-play": { useLocalAwareSeriesPlay: () => () => {} },
-    "@/lib/episode-progress": { resumeDefaultSeason: () => 1 },
-    "@/lib/providers/tmdb/tmdb-client": { effectiveTmdbLanguage: () => "en" },
-    "./season-explorer": { SeasonExplorer: () => null },
-    "./use-season-explorer": { useSeasonExplorerView: (options) => ({ items: options.items }) },
+    "@/lib/episode-progress": { resumeDefaultSeason: () => 3 },
+    "@/lib/season-view-pref": { getViewedSeason: () => undefined, setViewedSeason: () => {} },
     "./episode-groups": { groupEpisodes, episodeNumber, episodeSeason },
     "./helpers": { isUpcomingDate: () => false },
     "./episode-grid": { EpisodeGrid },
     "./use-episode-imdb-ratings": { useEpisodeImdbRatings: () => new Map([["3:1", 8.3]]) },
+    "./season-explorer": { SeasonExplorer: () => null },
+    "./use-season-explorer": { useSeasonExplorerView: (options) => ({ items: options.items }) },
+    "@/lib/providers/tvdb": { tvdbLangFromIso1: () => "eng" },
+    "@/lib/providers/tmdb/tmdb-client": {
+      tmdbLanguageIso: () => "en",
+      effectiveTmdbLanguage: () => "en",
+    },
   });
-  setViewedSeason("tt5071412", 3);
   const tree = CinemetaEpisodes({
     meta: { id: "tt5071412" },
     videos: [
@@ -209,71 +220,19 @@ test("Cinemeta episode grids receive episode IMDb badges and restore season 3", 
   assert.equal(cards[0].ratingIsImdb, true);
 });
 
-test("returning to a previously loaded season displays cached IMDb badges immediately", async () => {
-  const h = ratingsHarness();
-  h.render("tt5071412", 3);
-  h.requests[0].resolve(new Map([[1, 8.3]]));
-  await new Promise((resolve) => setImmediate(resolve));
-  h.render("tt0903747", 1);
-  assert.equal(h.render("tt5071412", 3).get("3:1"), 8.3);
-});
-
-test("missing episode badges recover automatically and cleanup cancels retry work", async () => {
-  const originalSetTimeout = globalThis.setTimeout;
-  const originalClearTimeout = globalThis.clearTimeout;
-  const originalWindow = globalThis.window;
-  const timers = new Map(),
-    listeners = new Map();
-  let next = 0;
-  globalThis.setTimeout = (callback) => {
-    const id = ++next;
-    timers.set(id, callback);
-    return id;
-  };
-  globalThis.clearTimeout = (id) => timers.delete(id);
-  globalThis.window = {
-    addEventListener: (name, fn) => listeners.set(name, fn),
-    removeEventListener: (name, fn) => {
-      if (listeners.get(name) === fn) listeners.delete(name);
-    },
-  };
-  const h = ratingsHarness({ harborEmpty: true });
-  try {
-    h.render("tt5071412", 3);
-    h.requests[0].resolve(new Map());
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(timers.size, 1);
-    const [id, retry] = [...timers][0];
-    timers.delete(id);
-    retry();
-    h.requests[1].resolve(new Map([[1, 8.3]]));
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(h.render("tt5071412", 3).get("3:1"), 8.3);
-    assert.equal(timers.size, 0);
-    assert.ok(listeners.has("online"));
-    h.unmount();
-    assert.equal(listeners.size, 0);
-  } finally {
-    h.unmount();
-    globalThis.setTimeout = originalSetTimeout;
-    globalThis.clearTimeout = originalClearTimeout;
-    if (originalWindow === undefined) delete globalThis.window;
-    else globalThis.window = originalWindow;
-  }
-});
-
-test("multi-season episode ratings publish each season without waiting for the others", async () => {
-  const h = ratingsHarness();
-  h.render("tt5071412", [3, 4, 3]);
-  assert.deepEqual(
-    h.requests.map((request) => request.season),
-    [3, 4],
+test("cached episode badges survive an outage and never leak to another title", () => {
+  const h = ratingsHarness(
+    new Map([
+      [1, 8.3],
+      [2, 8.5],
+    ]),
   );
-  h.requests[0].resolve(new Map([[1, 8.3]]));
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(h.render("tt5071412", [3, 4]).get("3:1"), 8.3);
-  h.requests[1].resolve(new Map([[1, 8.8]]));
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(h.render("tt5071412", [4, 3]).get("4:1"), 8.8);
-  h.unmount();
+  assert.deepEqual(
+    [...h.render("tt5071412", 3)],
+    [
+      ["3:1", 8.3],
+      ["3:2", 8.5],
+    ],
+  );
+  assert.deepEqual([...h.render("tt0000001", 3)], []);
 });

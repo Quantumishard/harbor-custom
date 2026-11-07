@@ -1,3 +1,4 @@
+import { addonOnlyMetadata } from "@/lib/metadata-policy";
 import { lruSet } from "@/lib/cache";
 import { meta as fetchCinemeta, narrowMediaType, type Meta } from "@/lib/cinemeta";
 import { ensureCuratedLogos, peekCuratedLogo } from "@/lib/curated-logos";
@@ -5,7 +6,7 @@ import { registerEvictable } from "@/lib/maintenance";
 import { registerCache } from "@/lib/memory-profiler";
 import { animeKitsuMeta } from "@/lib/providers/anime-kitsu-addon";
 import { isDerivedAnimeFormat } from "@/lib/providers/anime-format";
-import { externalToKitsu } from "@/lib/providers/anime-mapping";
+import { resolveExternalKitsuId } from "@/lib/providers/anime-entry";
 import { parseKitsuId } from "@/lib/providers/kitsu";
 import { fetchTvdbArtwork } from "@/lib/providers/tvdb-proxy";
 import { tmdbAnimeLogo, tmdbIdFromImdb, tmdbImdbId, tmdbLogo } from "@/lib/providers/tmdb";
@@ -35,6 +36,7 @@ export async function resolveLogo(
   meta: Meta,
   opts?: { preferOwn?: boolean },
 ): Promise<string | undefined> {
+  if (addonOnlyMetadata() && !tmdbKey) return meta.logo;
   const pinned = getTitleLogo(meta.id);
   if (pinned) return pinned;
   await ensureCuratedLogos();
@@ -62,6 +64,7 @@ export function peekCachedLogo(
   meta: Meta,
   opts?: { preferOwn?: boolean },
 ): string | undefined {
+  if (addonOnlyMetadata() && !tmdbKey) return meta.logo;
   const pinned = getTitleLogo(meta.id);
   if (pinned) return pinned;
   const curated = peekCuratedLogo(meta.id);
@@ -111,11 +114,7 @@ async function doResolve(tmdbKey: string, m: Meta): Promise<string | undefined> 
     let kitsuId = parseKitsuId(m.id);
     if (kitsuId == null) {
       const ext = m.id.match(/^(mal|anilist|anidb):(\d+)/);
-      if (ext) {
-        const src = ext[1] === "mal" ? "myanimelist" : ext[1];
-        const idNum = Number(ext[2]);
-        if (Number.isFinite(idNum)) kitsuId = await externalToKitsu(src, idNum).catch(() => null);
-      }
+      if (ext) kitsuId = await resolveExternalKitsuId(m.id).catch(() => null);
     }
     const canonicalId = kitsuId != null ? `kitsu:${kitsuId}` : m.id;
     const akm = await animeKitsuMeta(canonicalId).catch(() => null);

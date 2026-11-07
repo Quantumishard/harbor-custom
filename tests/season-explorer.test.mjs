@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
+import { memoryMediaCache } from "./helpers/media-cache.mjs";
 import * as episodeTextLanguage from "../src/lib/episode-text-language.ts";
 import * as tmdbTitleFallback from "../src/lib/providers/tmdb/tmdb-title-fallback.ts";
 import * as React from "react";
@@ -47,6 +48,8 @@ function load(file, dependencies, globals = {}) {
     },
     ...globals,
     require: (name) => {
+      if (name === "@/lib/metadata-policy" || name === "./metadata-policy")
+        return { addonOnlyMetadata: () => false };
       assert.ok(name in dependencies, "unmocked dependency " + name);
       return dependencies[name];
     },
@@ -62,10 +65,13 @@ function providerFixture({
   proxyOverview,
   proxyLanguages = ["eng"],
   englishOverview = "English season synopsis",
+  seriesArtwork = [],
+  catalogImage,
 } = {}) {
   const calls = [];
   const requests = [];
   const tvdb = load("src/lib/providers/tvdb.ts", {
+    "@/lib/media-cache": memoryMediaCache(),
     "@/lib/episode-text-language": episodeTextLanguage,
     "@/lib/cache": { lruSet: (map, key, value) => map.set(key, value) },
     "@/lib/memory-profiler": { registerCache: () => {} },
@@ -84,9 +90,11 @@ function providerFixture({
             status: 200,
             json: async () => ({
               data: {
+                artworks: seriesArtwork,
                 seasons: [
                   {
                     ...season,
+                    image: catalogImage ?? season.image,
                     name: "Saga française",
                     type: { type: "official" },
                     overview:
@@ -243,6 +251,91 @@ test("a season poster outranks a higher-scored series poster", () => {
     pickSeasonPoster({ artwork: [artwork[0]], lang: "eng" }),
     "https://artworks.thetvdb.com/series.jpg",
   );
+});
+
+test("proxy artwork prefers a real poster for the exact season over the catalog background", async () => {
+  const f = providerFixture({
+    seriesArtwork: [
+      { type: 7, seasonId: 2002723, language: "eng", score: 99, image: "/wrong-season.jpg" },
+      { type: 2, language: "eng", score: 999, image: "/series.jpg" },
+      { type: 7, seasonId: 2002722, language: "jpn", score: 100, image: "/japanese.jpg" },
+      {
+        type: 7,
+        seasonId: 2002722,
+        language: "eng",
+        image: "/season-3.jpg",
+        width: 680,
+        height: 1000,
+      },
+      { type: 7, seasonId: 646689, language: "eng", image: "/specials.jpg" },
+    ],
+  });
+  const info = {
+    ...season,
+    id: 2002722,
+    number: 3,
+    seriesId: 303867,
+    image: "https://artworks.thetvdb.com/banners/v4/season/2002722/backgrounds/promo.jpg",
+  };
+  const [regular, specials] = await Promise.all([
+    f.fetchTvdbSeasonArtwork("", info, "tur"),
+    f.fetchTvdbSeasonArtwork("", { ...info, id: 646689, number: 0 }, "eng"),
+  ]);
+  assert.equal(regular.poster, "https://artworks.thetvdb.com/season-3.jpg");
+  assert.equal(specials.poster, "https://artworks.thetvdb.com/specials.jpg");
+  assert.equal(f.requests.length, 1, "visible seasons share the cached series artwork request");
+  assert.ok(f.requests[0].url.endsWith("/series/303867/extended"));
+  assert.ok(!f.requests[0].options.headers.authorization);
+});
+
+test("landscape images never stand in for posters in the catalog or artwork fallback", async () => {
+  const background = "https://artworks.thetvdb.com/banners/v4/season/2002722/backgrounds/promo.jpg";
+  const f = providerFixture({ catalogImage: background });
+  const catalog = await f.tvdbSeasons("", 303867, "official", "eng");
+  assert.equal(catalog.get(1).image, undefined);
+  assert.equal(f.pickSeasonPoster({ extendedImage: background, baseImage: background }), undefined);
+  assert.equal(
+    f.pickSeasonPoster({ artwork: [{ type: 7, image: "/wide.jpg", width: 1920, height: 1080 }] }),
+    undefined,
+  );
+  let fallbackCalls = 0;
+  const updates = [];
+  const loader = f.createSeasonArtworkLoader(
+    "",
+    "eng",
+    (number, art) => updates.push({ number, art }),
+    {
+      titlePoster: "/title.jpg",
+      loadFallback: async () => {
+        fallbackCalls++;
+        return "https://image.tmdb.org/t/p/w500/season-3.jpg";
+      },
+    },
+  );
+  loader.request([{ ...season, id: 2002722, seriesId: 303867, number: 3, image: background }], 3);
+  await flush();
+  assert.equal(updates.at(-1).art.poster, "https://image.tmdb.org/t/p/w500/season-3.jpg");
+  assert.equal(fallbackCalls, 1);
+  loader.dispose();
+});
+
+test("an available proxy TVDB season poster prevents the TMDB fallback", async () => {
+  const f = providerFixture({
+    seriesArtwork: [{ type: 7, seasonId: 2002722, language: "eng", image: "/season-3.jpg" }],
+  });
+  let fallbackCalls = 0;
+  const updates = [];
+  const loader = f.createSeasonArtworkLoader("", "eng", (_number, art) => updates.push(art), {
+    loadFallback: async () => {
+      fallbackCalls++;
+      return "/tmdb.jpg";
+    },
+  });
+  loader.request([{ ...season, id: 2002722, seriesId: 303867, number: 3 }], 3);
+  await flush();
+  assert.equal(updates.at(-1).poster, "https://artworks.thetvdb.com/season-3.jpg");
+  assert.equal(fallbackCalls, 0);
+  loader.dispose();
 });
 
 function deferred() {
@@ -585,6 +678,48 @@ test("preferred TVDB synopsis wins without requesting TMDB season text", async (
   assert.equal(data.details.get(1).overview, "TVDB Türkçe özet");
   assert.equal(data.details.get(1).name, "English Saga");
   assert.equal(f.synopsisCalls.length, 0);
+  f.unmount();
+});
+
+test("an addon-provided season synopsis wins before any provider fallback request", async () => {
+  const f = hookFixture({
+    synopsisGet: async () => {
+      throw new Error("TMDB synopsis must not be requested");
+    },
+  });
+  const data = await settleExplorer(f, {
+    ...props,
+    tvdbKey: "",
+    tmdbKey: "key",
+    tmdbTvId: 42,
+    preferFallbackSynopsis: true,
+    fallbackSynopsis: { overview: "Addon season synopsis" },
+  });
+  assert.equal(data.details.get(1).overview, "Addon season synopsis");
+  assert.equal(f.synopsisCalls.length, 0);
+  f.unmount();
+});
+
+test("explicit synopsis order beats a lower source with a preferred language", async () => {
+  const f = hookFixture({
+    synopsisGet: async () => seasonTranslations(["tr", "TMDB Turkish"]),
+  });
+  const data = await settleExplorer(f, {
+    ...props,
+    tvdbKey: "",
+    lang: "tr-TR",
+    tmdbKey: "key",
+    tmdbTvId: 42,
+    preferFallbackSynopsis: true,
+    synopsisOrder: ["addon:a", "addon:b", "tmdb"],
+    addonSeasonOverviews: {
+      "addon:a": { overviews: {} },
+      "addon:b": { sourceName: "Addon B", overviews: { 1: "Addon B text" } },
+    },
+    fallbackSynopsis: { overview: "Fallback text" },
+  });
+  assert.equal(data.details.get(1).overview, "Addon B text");
+  assert.equal(data.details.get(1).source, "Addon B");
   f.unmount();
 });
 
@@ -993,6 +1128,7 @@ function seasonExplorerComponent({
     "src/views/detail/season-explorer.tsx",
     {
       react: { memo: React.memo, ...react },
+      "@/lib/remote-image-proxy": { useProxiedImageSrc: (url) => url },
       "./use-season-explorer": {
         useSeasonExplorerArtwork:
           artworkHook ??
@@ -1506,6 +1642,7 @@ test("TMDB English season names survive both default and TVDB-fallback picker pa
   async function metadata(name, lang) {
     const requests = [];
     const { tmdbDetails } = load("src/lib/providers/tmdb/tmdb-details.ts", {
+      "./movie-release-dates": load("src/lib/providers/tmdb/movie-release-dates.ts", {}),
       "./tmdb-client": {
         IMG: "https://image.invalid",
         effectiveTmdbLanguage: () => lang,

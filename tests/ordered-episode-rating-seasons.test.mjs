@@ -6,7 +6,12 @@ import ts from "typescript";
 function render(episodes, layout = "grid", ratings = new Map([["3:1", 8.3]])) {
   const requests = [];
   const mocks = {
-    react: { useMemo: (fn) => fn(), useSyncExternalStore: () => 0 },
+    react: {
+      useMemo: (fn) => fn(),
+      useSyncExternalStore: () => 0,
+      useRef: () => ({ current: null }),
+      useEffect() {},
+    },
     "react/jsx-runtime": {
       jsx: (type, props) => ({ type, props }),
       jsxs: (type, props) => ({ type, props }),
@@ -57,7 +62,14 @@ function render(episodes, layout = "grid", ratings = new Map([["3:1", 8.3]])) {
     seriesImdbId: "tt5071412",
     onContextMenu() {},
   });
-  return { tree, requests };
+  if (layout === "list")
+    tree.props.children = tree.props.children.map((row) =>
+      row.props.ep ? row : row.props.children,
+    );
+  return {
+    tree: tree.props.episodes ? tree : layout === "list" ? tree : tree.props.children,
+    requests,
+  };
 }
 
 test("ordered season 3 cards request season 3 ratings instead of the hidden main season", () => {

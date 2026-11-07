@@ -48,19 +48,6 @@ const normTitle = (s: string) =>
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, "");
 
-const matchTitle = (a?: string | null, b?: string | null) => {
-  if (!a || !b) return false;
-  const n1 = normTitle(a);
-  const n2 = normTitle(b);
-  return n1.length > 0 && n1 === n2;
-};
-const isCloseDate = (d1: string, d2: string) => {
-  const t1 = new Date(d1).getTime();
-  const t2 = new Date(d2).getTime();
-  if (isNaN(t1) || isNaN(t2)) return false;
-  return Math.abs(t1 - t2) <= 86400000;
-};
-
 // A TVDB season binds to the franchise entry whose start date falls nearest to
 // the season's first aired episode; distant starts are no match at all.
 function entryStartingNear(franchise: FranchiseEntry[], from: string): FranchiseEntry | null {
@@ -145,6 +132,7 @@ export function useAnimeTvdbPanel(
     let cancelled = false;
     const lang = tvdbLangFromIso1(tmdbLanguageIso());
     const norm = (seasonType === "official" ? "aired" : seasonType) as TvdbOrderType;
+    const started = typeof performance !== "undefined" ? performance.now() : 0;
     const requested = fetchTvdbOrderBySeriesId(tvdbKey, seriesId, norm, lang, true);
     // Discover the other order tabs concurrently; the selected order can render
     // while those optional availability checks are still in flight.
@@ -160,6 +148,12 @@ export function useAnimeTvdbPanel(
     })().catch(() => []);
     const publish = (type: TvdbOrderType, order: TvdbOrder) => {
       if (cancelled) return;
+      if (typeof window !== "undefined")
+        window.__harborProfiler?.mark("season-selector:metadata-ready", {
+          elapsedMs: Math.round(performance.now() - started),
+          seasons: order.seasons.length,
+          order: type,
+        });
       setActiveType(type);
       setOrdering(order);
       void waitForTvdbSeasonNames(order).then((named) => {
@@ -255,6 +249,27 @@ export function useAnimeTvdbPanel(
         if (!byPair.has(k)) byPair.set(k, ep);
       }
     }
+    const poolByEntryId = new Map<string, Map<number, KitsuEpisode>>();
+    for (const p of pool) {
+      if (p.number == null) continue;
+      const entryId = p.sourceMetaId ?? metaId;
+      if (!entryId) continue;
+      let map = poolByEntryId.get(entryId);
+      if (!map) {
+        map = new Map();
+        poolByEntryId.set(entryId, map);
+      }
+      if (!map.has(p.number)) map.set(p.number, p);
+    }
+
+    const extraEntries = franchise
+      ? franchise.filter(isFranchiseExtra).map((f) => ({
+          entry: f,
+          norm: f.meta.name ? normTitle(f.meta.name) : "",
+          time: f.startDate ? new Date(f.startDate).getTime() : NaN,
+        }))
+      : [];
+
     const items: PickerItem[] = [];
     const subset = new Map<string, KitsuEpisode[]>();
     const claimed = new Set<number>();
@@ -276,15 +291,9 @@ export function useAnimeTvdbPanel(
         franchise && bucket.length > 0
           ? entryStartingNear(franchise, seasonDateRange(bucket).from ?? "")
           : null;
-      const entryRowsByNumber = new Map<number, KitsuEpisode>();
-      if (seasonEntry) {
-        for (const p of pool) {
-          // Anchor rows of the entry itself carry no sourceMetaId; they belong
-          // to the current meta and must still match their own season entry.
-          if ((p.sourceMetaId ?? metaId) !== seasonEntry.meta.id || p.number == null) continue;
-          if (!entryRowsByNumber.has(p.number)) entryRowsByNumber.set(p.number, p);
-        }
-      }
+      const entryRowsByNumber = seasonEntry
+        ? (poolByEntryId.get(seasonEntry.meta.id) ?? new Map())
+        : new Map();
       const now = Date.now();
       const rowAir = bucket.map((e) => {
         const poolDate = entryRowsByNumber.get(e.episodeNumber)?.airdate ?? null;
@@ -360,25 +369,27 @@ export function useAnimeTvdbPanel(
         );
 
         let streamId: string | undefined;
-        if (!match && franchise) {
-          let extra = franchise.find(
-            (f) =>
-              isFranchiseExtra(f) &&
-              !claimedExtras.has(f.meta.id) &&
-              matchTitle(f.meta.name, e.name),
-          );
-
-          if (!extra) {
-            extra = franchise.find(
-              (f) =>
-                isFranchiseExtra(f) &&
-                !claimedExtras.has(f.meta.id) &&
-                f.startDate &&
-                e.airDate &&
-                isCloseDate(f.startDate, e.airDate),
+        if (!match && extraEntries.length > 0) {
+          const epNorm = e.name ? normTitle(e.name) : "";
+          let extra: FranchiseEntry | undefined;
+          if (epNorm.length > 0) {
+            const found = extraEntries.find(
+              (x) => !claimedExtras.has(x.entry.meta.id) && x.norm === epNorm,
             );
+            if (found) extra = found.entry;
           }
-
+          if (!extra && e.airDate) {
+            const epTime = new Date(e.airDate).getTime();
+            if (!isNaN(epTime)) {
+              const found = extraEntries.find(
+                (x) =>
+                  !claimedExtras.has(x.entry.meta.id) &&
+                  !isNaN(x.time) &&
+                  Math.abs(x.time - epTime) <= 86400000,
+              );
+              if (found) extra = found.entry;
+            }
+          }
           if (extra) {
             streamId = `${extra.meta.id}:1`;
             claimedExtras.add(extra.meta.id);
@@ -393,7 +404,10 @@ export function useAnimeTvdbPanel(
         const ep: KitsuEpisode = match
           ? {
               ...match,
-              thumbnail: !match.thumbnail && img ? img : match.thumbnail,
+              thumbnail: !rowUnaired(bi) && img ? img : match.thumbnail,
+              ...(!rowUnaired(bi) && img && img !== match.thumbnail && match.thumbnail
+                ? { thumbnailFallback: match.thumbnail }
+                : {}),
               ...(title != null ? { title } : {}),
               ...(synopsis != null ? { synopsis } : {}),
               titleLanguage:

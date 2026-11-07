@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { CalendarDays, ChevronLeft, ChevronRight, Film } from "lucide-react";
 import { useT } from "@/lib/i18n";
+import { useProxiedImageSrc } from "@/lib/remote-image-proxy";
 import { isGenericSeasonName } from "@/lib/season-name";
 import type { PickerItem } from "./series-episodes/season-arc-picker";
 import { useSeasonExplorerArtwork, type useSeasonExplorerView } from "./use-season-explorer";
@@ -38,12 +39,11 @@ const SeasonCardTitle = memo(function SeasonCardTitle({
     if (!enabled || !viewport || !line) return;
     let cancelMeasure: (() => void) | undefined;
     const schedule = () => {
-      cancelMeasure?.();
       cancelMeasure = measureTitle(viewport, () => {
-        const overflow = Math.max(0, line.scrollWidth - viewport.clientWidth);
+        const overflow = Math.round(Math.max(0, line.scrollWidth - viewport.clientWidth));
         const rtl = getComputedStyle(line).direction === "rtl";
         const next = overflow > 1 ? (rtl ? overflow : -overflow) : 0;
-        return () => setDistance(next);
+        return () => setDistance((prev) => (prev === next ? prev : next));
       });
     };
     schedule();
@@ -90,9 +90,10 @@ function SeasonPoster({
   const [failed, setFailed] = useState<string | null>(null);
   useEffect(() => setFailed(null), [src]);
   const usable = src && src !== failed ? src : undefined;
+  const cachedSrc = useProxiedImageSrc(usable, { forceProxy: true, persistent: true });
   return usable ? (
     <img
-      src={usable}
+      src={cachedSrc}
       alt=""
       loading="lazy"
       decoding="async"

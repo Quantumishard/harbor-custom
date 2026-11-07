@@ -1,9 +1,14 @@
-import { isNuvioProviderActive, getNuvioActiveSlot } from "./active-profile-id";
+import {
+  isNuvioProviderActive,
+  getNuvioActiveSlot,
+  nuvioWatchedScope,
+  canPersistWatched,
+  stremioProfileId as activeProfileId,
+  primaryProfileId,
+} from "./active-profile-id";
 import type { LibraryItem } from "@/lib/stremio";
 import { noteNotify } from "@/lib/render-cause";
 import { persistCritical } from "@/lib/storage-recovery";
-
-const PROFILES_KEY = "harbor.profiles.v1";
 
 const PREFIXES = {
   watched: "harbor.manualwatched.v1.",
@@ -11,6 +16,7 @@ const PREFIXES = {
   meta: "harbor.manualwatched.meta.v1.",
   dismissed: "harbor.manualwatched.dismissed.v1.",
   unwatchedAt: "harbor.manualunwatched.at.v1.",
+  watchedAt: "harbor.manualwatched.at.v1.",
   remote: "harbor.manualwatched.fromremote.v1.",
 } as const;
 
@@ -20,6 +26,7 @@ const LEGACY_KEYS: Record<keyof typeof PREFIXES, string> = {
   meta: "harbor.manualwatched.meta.v1",
   dismissed: "harbor.manualwatched.dismissed.v1",
   unwatchedAt: "harbor.manualunwatched.at.v1",
+  watchedAt: "harbor.manualwatched.at.v1",
   remote: "harbor.manualwatched.fromremote.v1",
 };
 
@@ -38,47 +45,18 @@ let unwatchedCache: Set<string> | null = null;
 let metaCache: Record<string, ManualWatchedMeta> | null = null;
 let dismissedCache: Set<string> | null = null;
 let unwatchedAtCache: Record<string, number> | null = null;
+let watchedAtCache: Record<string, number> | null = null;
 let remoteCache: Set<string> | null = null;
-
-function activeProfileId(): string {
-  try {
-    const raw = localStorage.getItem(PROFILES_KEY);
-    if (!raw) return "";
-    const s = JSON.parse(raw) as {
-      activeId?: string;
-      profiles?: Array<{ id?: string; isPrimary?: boolean; shareStremioWith?: string | null }>;
-    };
-    const profiles = Array.isArray(s.profiles) ? s.profiles : [];
-    const active = profiles.find((p) => p.id === s.activeId) ?? null;
-    const own = active?.id ?? profiles.find((p) => p?.isPrimary)?.id ?? "";
-    if (!own) return "";
-    if (active && typeof active.shareStremioWith === "string" && active.shareStremioWith) {
-      const shared = profiles.find((p) => p.id === active.shareStremioWith);
-      if (shared?.id) return shared.id;
-    }
-    return own;
-  } catch {
-    return "";
-  }
-}
-
-function primaryProfileId(): string {
-  try {
-    const raw = localStorage.getItem(PROFILES_KEY);
-    const s = raw
-      ? (JSON.parse(raw) as { profiles?: Array<{ id?: string; isPrimary?: boolean }> })
-      : null;
-    const primary = s?.profiles?.find((p) => p?.isPrimary);
-    return (primary && typeof primary.id === "string" && primary.id) || activeProfileId();
-  } catch {
-    return activeProfileId();
-  }
-}
 
 function storeKey(kind: keyof typeof PREFIXES): string {
   if (isNuvioProviderActive()) {
-    const slot = getNuvioActiveSlot();
-    return `${PREFIXES[kind]}nuvio.${slot}`;
+    const scope = nuvioWatchedScope();
+    const scopedKey = `${PREFIXES[kind]}${scope}`;
+    if (!localStorage.getItem(scopedKey)) {
+      const legacyKey = `${PREFIXES[kind]}nuvio.${getNuvioActiveSlot()}`;
+      if (localStorage.getItem(legacyKey)) return legacyKey;
+    }
+    return scopedKey;
   }
   const id = activeProfileId();
   return id ? PREFIXES[kind] + id : LEGACY_KEYS[kind];
@@ -112,6 +90,7 @@ function ensureScope(): void {
   metaCache = null;
   dismissedCache = null;
   unwatchedAtCache = null;
+  watchedAtCache = null;
   remoteCache = null;
 }
 
@@ -129,6 +108,20 @@ function unwatchedAtMap(): Record<string, number> {
   return unwatchedAtCache;
 }
 
+function watchedAtMap(): Record<string, number> {
+  ensureScope();
+  if (!watchedAtCache) {
+    migrateLegacy();
+    try {
+      const raw = JSON.parse(localStorage.getItem(storeKey("watchedAt")) ?? "{}");
+      watchedAtCache = raw && typeof raw === "object" ? (raw as Record<string, number>) : {};
+    } catch {
+      watchedAtCache = {};
+    }
+  }
+  return watchedAtCache;
+}
+
 function remoteSet(): Set<string> {
   ensureScope();
   if (!remoteCache) {
@@ -141,6 +134,11 @@ function remoteSet(): Set<string> {
 function persistUnwatchedAt(): void {
   ensureScope();
   persistCritical(storeKey("unwatchedAt"), JSON.stringify(unwatchedAtCache ?? {}));
+}
+
+function persistWatchedAt(): void {
+  ensureScope();
+  persistCritical(storeKey("watchedAt"), JSON.stringify(watchedAtCache ?? {}));
 }
 
 function persistRemote(): void {
@@ -192,7 +190,11 @@ export function isManualWatchedDismissed(metaId: string): boolean {
   return dismissedSet().has(metaId);
 }
 
-export function dismissManualWatched(metaId: string, options: { acknowledged?: boolean } = {}): void {
+export function dismissManualWatched(
+  metaId: string,
+  options: { acknowledged?: boolean } = {},
+): void {
+  if (!canPersistWatched()) return;
   ensureScope();
   const set = dismissedSet();
   if (set.has(metaId)) return;
@@ -254,7 +256,7 @@ function key(metaId: string, season: number, episode: number): string {
 }
 
 export function isManuallyWatched(metaId: string, season: number, episode: number): boolean {
-  return watchedSet().has(key(metaId, season, episode));
+  return stateInSets(watchedSet(), unwatchedSet(), metaId, season, episode) === true;
 }
 
 export function manualWatchedState(
@@ -263,29 +265,75 @@ export function manualWatchedState(
   episode: number,
   altIds?: Array<string | null | undefined>,
 ): boolean | undefined {
-  const k = key(metaId, season, episode);
-  if (watchedSet().has(k)) return true;
-  if (unwatchedSet().has(k)) return false;
+  return stateInSets(watchedSet(), unwatchedSet(), metaId, season, episode, altIds);
+}
+
+/** Capture only for a synchronous scan; create a new reader after state changes. */
+export function createManualWatchedReader(): typeof manualWatchedState {
+  const watched = new Set(watchedSet());
+  const unwatched = new Set(unwatchedSet());
+  return (metaId, season, episode, altIds) =>
+    stateInSets(watched, unwatched, metaId, season, episode, altIds);
+}
+
+// Writes keep one exact key per recorded id. Variant matching happens here and
+// in manualEpisodeKeys so a single title cannot become several CW cards.
+function stateInSets(
+  watched: Set<string>,
+  unwatched: Set<string>,
+  metaId: string,
+  season: number,
+  episode: number,
+  altIds?: Array<string | null | undefined>,
+): boolean | undefined {
+  const cleanId = metaId.replace(/^(series|movie|tmdb):/, "");
+  const allCandidateIds = new Set<string>([
+    metaId,
+    cleanId,
+    `tmdb:${cleanId}`,
+    `series:${cleanId}`,
+  ]);
   if (altIds && altIds.length > 0) {
     for (const alt of altIds) {
-      if (!alt || alt === metaId) continue;
-      const altK = key(alt, season, episode);
-      if (watchedSet().has(altK)) return true;
-      if (unwatchedSet().has(altK)) return false;
+      if (!alt) continue;
+      const cleanAlt = alt.replace(/^(series|movie|tmdb):/, "");
+      allCandidateIds.add(alt);
+      allCandidateIds.add(cleanAlt);
+      allCandidateIds.add(`tmdb:${cleanAlt}`);
+      allCandidateIds.add(`series:${cleanAlt}`);
     }
+  }
+
+  for (const id of allCandidateIds) {
+    const k = key(id, season, episode);
+    if (watched.has(k)) return true;
+    if (unwatched.has(k)) return false;
   }
   return undefined;
 }
 
-export function manualEpisodeKeys(metaId: string): {
+export function manualEpisodeKeys(
+  metaId: string,
+  altIds?: Array<string | null | undefined>,
+): {
   watched: Set<string>;
   unwatched: Set<string>;
 } {
-  const prefix = `${metaId}|`;
+  const ids = [metaId, ...(altIds ?? [])].filter(
+    (id): id is string => typeof id === "string" && id.trim().length > 0,
+  );
+  const allIds = new Set<string>(ids);
+  for (const id of ids) {
+    const clean = id.replace(/^(series|movie|tmdb):/, "");
+    allIds.add(clean);
+    allIds.add(`tmdb:${clean}`);
+    allIds.add(`series:${clean}`);
+  }
+  const prefixes = Array.from(allIds).map((id) => `${id}|`);
   const collect = (src: Set<string>): Set<string> => {
     const out = new Set<string>();
     for (const k of src) {
-      if (!k.startsWith(prefix)) continue;
+      if (!prefixes.some((p) => k.startsWith(p))) continue;
       const parts = k.split("|");
       if (parts.length === 3) out.add(`${parts[1]}:${parts[2]}`);
     }
@@ -294,31 +342,120 @@ export function manualEpisodeKeys(metaId: string): {
   return { watched: collect(watchedSet()), unwatched: collect(unwatchedSet()) };
 }
 
-
 export function reconcileNuvioWatchedEpisodes(
   slot: number,
   serverEpisodeKeys: Set<string>,
-): void {
-  const sk = `${PREFIXES.watched}nuvio.${slot}`;
-  const unsk = `${PREFIXES.unwatched}nuvio.${slot}`;
+  targetSeriesIdsOrAccountId?: Set<string> | string,
+  maybeAccountId?: string,
+): { changed: boolean; newlyWatchedShows: Set<string> } {
+  const targetSeriesIds =
+    targetSeriesIdsOrAccountId instanceof Set ? targetSeriesIdsOrAccountId : undefined;
+  const accountId =
+    typeof targetSeriesIdsOrAccountId === "string" ? targetSeriesIdsOrAccountId : maybeAccountId;
+
+  let scope = nuvioWatchedScope(slot, accountId);
+  let sk = `${PREFIXES.watched}${scope}`;
+  let unsk = `${PREFIXES.unwatched}${scope}`;
+  if (!localStorage.getItem(sk) && localStorage.getItem(`${PREFIXES.watched}nuvio.${slot}`)) {
+    sk = `${PREFIXES.watched}nuvio.${slot}`;
+    unsk = `${PREFIXES.unwatched}nuvio.${slot}`;
+  }
 
   const currentLocalWatched = loadSet(sk);
   const currentLocalUnwatched = loadSet(unsk);
 
   let changed = false;
+  const newlyWatchedShows = new Set<string>();
+
+  for (const sKey of Array.from(serverEpisodeKeys)) {
+    const parts = sKey.split("|");
+    if (parts.length === 3) {
+      const showId = parts[0];
+      const s = parts[1];
+      const e = parts[2];
+      const clean = showId.replace(/^(series|movie|tmdb):/, "");
+      serverEpisodeKeys.add(`${clean}|${s}|${e}`);
+      serverEpisodeKeys.add(`tmdb:${clean}|${s}|${e}`);
+      serverEpisodeKeys.add(`series:${clean}|${s}|${e}`);
+    }
+  }
 
   for (const sKey of serverEpisodeKeys) {
     if (!currentLocalWatched.has(sKey)) {
       currentLocalWatched.add(sKey);
       currentLocalUnwatched.delete(sKey);
       changed = true;
+      const sid = sKey.split("|")[0];
+      if (sid) {
+        newlyWatchedShows.add(sid);
+        const clean = sid.replace(/^(series|movie|tmdb):/, "");
+        newlyWatchedShows.add(clean);
+        newlyWatchedShows.add(`tmdb:${clean}`);
+        newlyWatchedShows.add(`series:${clean}`);
+      }
     }
   }
 
-  for (const lKey of currentLocalWatched) {
-    if (!serverEpisodeKeys.has(lKey)) {
-      currentLocalWatched.delete(lKey);
-      changed = true;
+  // Prune local episodes:
+  // Case A: Targeted reconciliation (e.g. from detail.tsx for a specific series like Tulsa King)
+  if (targetSeriesIds && targetSeriesIds.size > 0) {
+    const serverSeasonEpisodes = new Set<string>();
+    for (const sKey of serverEpisodeKeys) {
+      const parts = sKey.split("|");
+      if (parts.length === 3) {
+        const clean = parts[0]?.replace(/^(series|movie|tmdb):/, "");
+        serverSeasonEpisodes.add(`${clean}|${parts[1]}|${parts[2]}`);
+      }
+    }
+    const watchedTimes = watchedAtMap();
+    const now = Date.now();
+    for (const lKey of Array.from(currentLocalWatched)) {
+      const parts = lKey.split("|");
+      const showId = parts[0];
+      const cleanShowId = showId?.replace(/^(series|movie|tmdb):/, "");
+      const isTargetShow =
+        showId &&
+        (targetSeriesIds.has(showId) || (cleanShowId && targetSeriesIds.has(cleanShowId)));
+      const hasOnServer =
+        serverEpisodeKeys.has(lKey) ||
+        (cleanShowId &&
+          parts.length === 3 &&
+          serverSeasonEpisodes.has(`${cleanShowId}|${parts[1]}|${parts[2]}`));
+      const locallyMarkedRecent = now - (watchedTimes[lKey] || 0) < 60_000;
+      if (isTargetShow && !hasOnServer && !locallyMarkedRecent) {
+        currentLocalWatched.delete(lKey);
+        currentLocalUnwatched.add(lKey);
+        changed = true;
+      }
+    }
+  } else if (serverEpisodeKeys.size > 0) {
+    // Case B: General sync - only prune for shows the server returned records for
+    const serverShowsWithEpisodes = new Set<string>();
+    for (const sKey of serverEpisodeKeys) {
+      const parts = sKey.split("|");
+      if (parts[0]) {
+        const sid = parts[0];
+        const clean = sid.replace(/^(series|movie|tmdb):/, "");
+        serverShowsWithEpisodes.add(sid);
+        serverShowsWithEpisodes.add(clean);
+        serverShowsWithEpisodes.add(`tmdb:${clean}`);
+        serverShowsWithEpisodes.add(`series:${clean}`);
+      }
+    }
+
+    for (const lKey of Array.from(currentLocalWatched)) {
+      const parts = lKey.split("|");
+      const showId = parts[0];
+      const cleanShowId = showId?.replace(/^(series|movie|tmdb):/, "");
+      if (
+        (serverShowsWithEpisodes.has(showId) ||
+          (cleanShowId && serverShowsWithEpisodes.has(cleanShowId))) &&
+        !serverEpisodeKeys.has(lKey)
+      ) {
+        currentLocalWatched.delete(lKey);
+        currentLocalUnwatched.add(lKey);
+        changed = true;
+      }
     }
   }
 
@@ -328,10 +465,15 @@ export function reconcileNuvioWatchedEpisodes(
     if (currentScope === sk) {
       watchedCache = currentLocalWatched;
       unwatchedCache = currentLocalUnwatched;
+    } else {
+      watchedCache = null;
+      unwatchedCache = null;
+      currentScope = "";
     }
     version += 1;
     notifySubs();
   }
+  return { changed, newlyWatchedShows };
 }
 
 export function manualWatchedRawKeys(): string[] {
@@ -344,11 +486,12 @@ export function setManualWatched(
   episode: number,
   watched: boolean,
 ): void {
+  if (!canPersistWatched()) return;
   const on = new Set(watchedSet());
   const off = new Set(unwatchedSet());
-  const k = key(metaId, season, episode);
   const at = unwatchedAtMap();
   const rem = remoteSet();
+  const k = key(metaId, season, episode);
   if (watched) {
     on.add(k);
     off.delete(k);
@@ -369,6 +512,7 @@ export function setManualWatchedUpTo(
   episode: number,
   watched: boolean,
 ): void {
+  if (!canPersistWatched()) return;
   const on = new Set(watchedSet());
   const off = new Set(unwatchedSet());
   const at = unwatchedAtMap();
@@ -398,9 +542,11 @@ export function setManualWatchedMany(
   episodes: Array<{ season: number; episode: number }>,
   watched: boolean,
 ): void {
+  if (!canPersistWatched()) return;
   const on = new Set(watchedSet());
   const off = new Set(unwatchedSet());
   const at = unwatchedAtMap();
+  const wat = watchedAtMap();
   const rem = remoteSet();
   const now = Date.now();
   let remChanged = false;
@@ -410,15 +556,18 @@ export function setManualWatchedMany(
       on.add(k);
       off.delete(k);
       delete at[k];
+      wat[k] = now;
     } else {
       on.delete(k);
       off.add(k);
       at[k] = now;
+      delete wat[k];
     }
     if (rem.delete(k)) remChanged = true;
   }
   if (remChanged) persistRemote();
   persistUnwatchedAt();
+  persistWatchedAt();
   persist(on, off);
 }
 
@@ -432,24 +581,31 @@ export function setManualWatchedManyAcknowledged(
   episodes: Array<{ season: number; episode: number }>,
   watched: boolean,
 ): void {
+  if (!canPersistWatched()) return;
   const on = new Set(watchedSet());
   const off = new Set(unwatchedSet());
   const at = { ...unwatchedAtMap() };
+  const wat = { ...watchedAtMap() };
   const remote = new Set(remoteSet());
+  const now = Date.now();
   for (const { season, episode } of episodes) {
     const k = key(metaId, season, episode);
     if (watched) {
       on.add(k);
       off.delete(k);
       delete at[k];
+      wat[k] = now;
     } else {
       on.delete(k);
       off.add(k);
-      at[k] = Date.now();
+      at[k] = now;
+      delete wat[k];
     }
     remote.delete(k);
   }
   try {
+    ensureScope();
+    persistCritical(storeKey("watchedAt"), JSON.stringify(wat));
     localStorage.setItem(storeKey("unwatchedAt"), JSON.stringify(at));
     localStorage.setItem(storeKey("remote"), JSON.stringify([...remote]));
     // Clear the opposing override before setting the requested state.
@@ -468,6 +624,7 @@ export function setManualWatchedManyAcknowledged(
     watchedCache = null;
     unwatchedCache = null;
     unwatchedAtCache = null;
+    watchedAtCache = null;
     remoteCache = null;
     version += 1;
     notifySubs();
@@ -490,6 +647,7 @@ export function applyRemoteWatched(
   add: Array<{ season: number; episode: number }>,
   unset: Array<{ season: number; episode: number }>,
 ): void {
+  if (!canPersistWatched()) return;
   if (add.length === 0 && unset.length === 0) return;
   const on = new Set(watchedSet());
   const off = new Set(unwatchedSet());
@@ -515,6 +673,7 @@ export function applyRemoteWatched(
 }
 
 export function recordManualWatchedMeta(metaId: string, meta: ManualWatchedMeta): void {
+  if (!canPersistWatched()) return;
   const all = loadMeta();
   const prev = all[metaId];
   undismiss(metaId);
@@ -538,8 +697,36 @@ export function recordManualWatchedMeta(metaId: string, meta: ManualWatchedMeta)
   notifySubs();
 }
 
+function metaBaseId(metaId: string): string {
+  return metaId.replace(/^(series|movie|tmdb):/, "").trim();
+}
+
+function metaTitleKey(meta: ManualWatchedMeta): string | null {
+  const name = (meta.name ?? "")
+    .toLowerCase()
+    .replace(/\(\d{4}\)/g, "")
+    .replace(/[^a-z0-9]+/g, "")
+    .trim();
+  const poster = (meta.poster ?? "").trim();
+  return name && poster ? `${name}|${poster}` : null;
+}
+
+function bestWatchedFor(
+  metaId: string,
+  best: Map<string, { season: number; episode: number }>,
+): { season: number; episode: number } | null {
+  const base = metaBaseId(metaId);
+  for (const id of new Set([metaId, base, `tmdb:${base}`, `series:${base}`])) {
+    const hit = best.get(id);
+    if (hit) return hit;
+  }
+  return null;
+}
+
 export function manualWatchedLibraryItems(): LibraryItem[] {
   const meta = loadMeta();
+  const entries = Object.entries(meta);
+  if (entries.length === 0) return [];
   const best = new Map<string, { season: number; episode: number }>();
   for (const k of watchedSet()) {
     const parts = k.split("|");
@@ -553,15 +740,91 @@ export function manualWatchedLibraryItems(): LibraryItem[] {
       best.set(metaId, { season, episode });
     }
   }
+
+  // A single title can be recorded under several ids: the playback id
+  // (`tmdb:tv:...`), the library/IMDb id (`tt...`), and the derived
+  // clean/tmdb/series variants. Emit one card per title, not one per id.
+  const parent = new Map<string, string>();
+  const find = (id: string): string => {
+    if (!parent.has(id)) parent.set(id, id);
+    let current = id;
+    while (parent.get(current) !== current) current = parent.get(current)!;
+    while (parent.get(id) !== id) {
+      const next = parent.get(id)!;
+      parent.set(id, current);
+      id = next;
+    }
+    return current;
+  };
+  const union = (a: string, b: string) => {
+    const rootA = find(a);
+    const rootB = find(b);
+    if (rootA !== rootB) parent.set(rootA, rootB);
+  };
+  const byBase = new Map<string, string>();
+  const byTitle = new Map<string, string>();
+  for (const [metaId, m] of entries) {
+    if (!metaId) continue;
+    find(metaId);
+    const base = metaBaseId(metaId);
+    const basePrev = byBase.get(base);
+    if (basePrev) union(basePrev, metaId);
+    else byBase.set(base, metaId);
+    const title = metaTitleKey(m);
+    if (!title) continue;
+    const titlePrev = byTitle.get(title);
+    if (titlePrev) union(titlePrev, metaId);
+    else byTitle.set(title, metaId);
+  }
+
+  const groups = new Map<
+    string,
+    {
+      ids: string[];
+      meta: ManualWatchedMeta;
+      canonicalId: string;
+      stamp: number;
+      best: { season: number; episode: number } | null;
+    }
+  >();
+  for (const [metaId, m] of entries) {
+    if (!metaId) continue;
+    const root = find(metaId);
+    let group = groups.get(root);
+    if (!group) {
+      group = { ids: [], meta: m, canonicalId: metaId, stamp: -Infinity, best: null };
+      groups.set(root, group);
+    }
+    group.ids.push(metaId);
+    const ep = bestWatchedFor(metaId, best);
+    if (
+      ep &&
+      (!group.best ||
+        ep.season > group.best.season ||
+        (ep.season === group.best.season && ep.episode > group.best.episode))
+    ) {
+      group.best = ep;
+    }
+    const stamp = Date.parse(m.markedAt ?? "") || 0;
+    if (stamp >= group.stamp) {
+      group.stamp = stamp;
+      group.meta = m;
+      group.canonicalId = metaId;
+    }
+  }
+
   const out: LibraryItem[] = [];
   const dismissed = dismissedSet();
   const now = new Date().toISOString();
-  for (const [metaId, ep] of best) {
-    const m = meta[metaId];
-    if (!m || dismissed.has(metaId)) continue;
+  for (const group of groups.values()) {
+    const ep = group.best;
+    if (!ep || dismissed.has(group.canonicalId)) continue;
+    const m = group.meta;
     const stamp = m.markedAt ?? now;
+    const altIds = group.ids.filter((id) => id !== group.canonicalId);
     out.push({
-      _id: metaId,
+      _id: group.canonicalId,
+      altIds: altIds.length > 0 ? altIds : undefined,
       type: "series",
       name: m.name,
       poster: m.poster,
@@ -571,7 +834,7 @@ export function manualWatchedLibraryItems(): LibraryItem[] {
         duration: 0,
         season: ep.season,
         episode: ep.episode,
-        video_id: `${metaId}:${ep.season}:${ep.episode}`,
+        video_id: `${group.canonicalId}:${ep.season}:${ep.episode}`,
         flaggedWatched: 1,
         lastWatched: stamp,
       },
@@ -601,12 +864,62 @@ export function manualWatchedVersion(): number {
   return version;
 }
 
+export function resetManualWatchedCache(): void {
+  currentScope = "";
+  watchedCache = null;
+  unwatchedCache = null;
+  metaCache = null;
+  dismissedCache = null;
+  unwatchedAtCache = null;
+  remoteCache = null;
+  version += 1;
+  notifySubs();
+}
+
+export function clearManualWatched(profileOrSlot?: string | number): void {
+  try {
+    for (const kind of Object.keys(PREFIXES) as Array<keyof typeof PREFIXES>) {
+      if (profileOrSlot != null) {
+        const slotKey =
+          typeof profileOrSlot === "number" || /^\d+$/.test(String(profileOrSlot))
+            ? `nuvio.${profileOrSlot}`
+            : String(profileOrSlot);
+        localStorage.removeItem(`${PREFIXES[kind]}${slotKey}`);
+      } else {
+        localStorage.removeItem(LEGACY_KEYS[kind]);
+        const id = activeProfileId();
+        if (id) localStorage.removeItem(`${PREFIXES[kind]}${id}`);
+      }
+    }
+  } catch {}
+  resetManualWatchedCache();
+}
+
+export function clearAllNuvioManualWatched(): void {
+  try {
+    const toRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (
+        k &&
+        (k.startsWith("harbor.manualwatched.v1.nuvio.") ||
+          k.startsWith("harbor.manualunwatched.v1.nuvio.") ||
+          k.startsWith("harbor.manualwatched.meta.v1.nuvio.") ||
+          k.startsWith("harbor.manualwatched.dismissed.v1.nuvio.") ||
+          k.startsWith("harbor.manualunwatched.at.v1.nuvio.") ||
+          k.startsWith("harbor.manualwatched.fromremote.v1.nuvio.") ||
+          k.includes(".nuvio."))
+      ) {
+        toRemove.push(k);
+      }
+    }
+    for (const k of toRemove) localStorage.removeItem(k);
+  } catch {}
+  resetManualWatchedCache();
+}
+
 if (typeof window !== "undefined") {
-  let lastScope = isNuvioProviderActive() ? `nuvio.${getNuvioActiveSlot()}` : activeProfileId();
-  const onScopeChange = () => {
-    const nextScope = isNuvioProviderActive() ? `nuvio.${getNuvioActiveSlot()}` : activeProfileId();
-    if (nextScope === lastScope) return;
-    lastScope = nextScope;
+  const onReset = () => {
     currentScope = "";
     watchedCache = null;
     unwatchedCache = null;
@@ -617,9 +930,10 @@ if (typeof window !== "undefined") {
     version += 1;
     notifySubs();
   };
-  window.addEventListener("harbor:active-profile-changed", onScopeChange);
-  window.addEventListener("harbor:profiles-updated", onScopeChange);
-  window.addEventListener("harbor:account-provider-changed", onScopeChange);
-  window.addEventListener("harbor:nuvio-profile-changed", onScopeChange);
-  window.addEventListener("harbor:nuvio-state-changed", onScopeChange);
+  window.addEventListener("harbor:active-profile-changed", onReset);
+  window.addEventListener("harbor:profiles-updated", onReset);
+  window.addEventListener("harbor:account-provider-changed", onReset);
+  window.addEventListener("harbor:nuvio-profile-changed", onReset);
+  window.addEventListener("harbor:nuvio-state-changed", onReset);
+  window.addEventListener("harbor:watched-changed", onReset);
 }

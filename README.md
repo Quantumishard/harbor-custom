@@ -1,26 +1,18 @@
 # Harbor Custom
 
-An unofficial personal fork synchronized with Harbor v1.0.1-beta on October 21, 2026, retaining custom playback, subtitle, watchlist, dismissal, HDR, responsiveness, and AIOMetadata search changes. This is not an official Harbor release and carries no promise of continued upstream support.
+An unofficial personal fork synchronized with Harbor v1.0.2-beta on November 6, 2026, retaining custom playback, subtitle, watchlist, dismissal, HDR, responsiveness, and AIOMetadata search changes. This is not an official Harbor release and carries no promise of continued upstream support.
 
-## Source synchronized with v1.0.1-beta (2026-10-21)
+## Source synchronized with v1.0.2-beta (2026-11-06)
 
-The source includes the exact [upstream v1.0.1-beta release](https://github.com/Harborofficial/Harbor/releases/tag/v1.0.1-beta), commit `d862943d`, together with the current personal customizations. See [merge and verification notes](docs/release-notes/upstream-v1.0.1-beta-20261021.md). The Windows x64 portable build includes the October 22 Continue Watching thumbnail and TorBox date-order fixes. Earlier releases remain available as fallbacks.
+The source includes the exact [upstream v1.0.2-beta release](https://github.com/Harborofficial/Harbor/releases/tag/v1.0.2-beta), commit `359dc317`, together with the personal customizations. Trakt-first recommendations, HDR Toys handling, AIOStreams and Easynews integration, episode-rating recovery, local catalog selection, persistent thumbnails, and catalog title search are retained. See [merge and verification notes](docs/release-notes/custom-1.0.2-beta-20261106.md).
 
 ## Windows download
 
-The Easynews NZB update adds a separate **NZB via AIOStreams** choice using Harbor's
-existing authenticated AIOStreams library connection, including ElfHosted browser
-sign-in. HTTP playback and the earlier custom features remain available. See
-[setup and behavior](docs/custom-easynews-nzb.md).
+Download the complete Windows x64 portable ZIP and `SHA256SUMS.txt` from [the 1.0.2 beta custom release](https://github.com/Quantumishard/harbor-custom/releases/tag/custom-1.0.2-beta-20261106). Fully quit Harbor, extract the **entire ZIP into a new folder**, and run `harbor.exe`. Keep the accompanying runtime files together. Windows WebView2 is required; existing Harbor settings and HDR Toys configuration remain in AppData.
 
-The [Easynews NZB release](https://github.com/Quantumishard/harbor-custom/releases/tag/custom-easynews-nzb-20261024)
-provides a complete Windows x64 portable ZIP. Fully quit Harbor, extract the whole
-archive into a new folder, and run `harbor.exe`, keeping all runtime files together.
-An executable-only update is also available. No hosted-instance changes are required.
+This update reuses verified runtime components from the official release and the existing compiler cache. The changed app core and interface are compiled for 1.0.2; incompatible old executables are not relabeled as the new release. Earlier custom releases remain available as fallbacks.
 
-Download the Windows x64 ZIP and `SHA256SUMS.txt` from [Releases](https://github.com/Quantumishard/harbor-custom/releases). Fully quit Harbor, extract the complete ZIP into a new folder, and run `harbor.exe`. Keep all accompanying runtime files together. Windows WebView2 is required. Back up existing Harbor data before using any build.
-
-Latest packaged build: [`custom-cw-torbox-20261022`](https://github.com/Quantumishard/harbor-custom/releases/tag/custom-cw-torbox-20261022).
+Easynews NZB playback continues to use the existing authenticated AIOStreams library connection, including ElfHosted browser sign-in. See [setup and behavior](docs/custom-easynews-nzb.md).
 
 AIOMetadata catalogs with manifest IDs `aio-metadata` or `com.aio.metadata` can supply up to 100 results per catalog to main search. Movie and series rows containing those results retain up to 100 items through both merge passes. The addon must supply those results; this does not add pagination. Other addon limits remain as before.
 
@@ -76,7 +68,7 @@ The title detail IMDb badge now recognizes Cinemeta ratings as IMDb, uses matchi
 
 ## Source and build information
 
-This repository began as a fresh snapshot of the customized working tree, including its source changes and local source tests. The October 21 update merges the upstream v1.0.1-beta history, so future upstream comparisons have a shared release ancestor. It is based on local commit `45f30a4e016ba0f161b1c45aa40107cf64a5d7fb` from October 7, 2026. Historical Git metadata, private app data, login sessions, provider keys, dependency caches, and build outputs are not part of this repository.
+This repository began as a fresh snapshot of the customized working tree, including its source changes and local source tests. The October 21 and November 6 updates merge the upstream v1.0.1-beta and v1.0.2-beta histories, keeping a shared release ancestor for future updates. It is based on local commit `45f30a4e016ba0f161b1c45aa40107cf64a5d7fb` from October 7, 2026. Historical Git metadata, private app data, login sessions, provider keys, dependency caches, and build outputs are not part of this repository.
 
 See [the preserved upstream README](README-UPSTREAM.md) for architecture and setup details, and [AGENTS.md](AGENTS.md) for contributor instructions. The upstream instructions may refer to services or downloads that are no longer available. The custom Windows builds are rebuilt and packaged with the preserved runtime files. An entirely offline rebuild is not yet verified.
 

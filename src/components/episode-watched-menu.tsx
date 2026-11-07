@@ -1,4 +1,4 @@
-import { Ban, Check, Eye, EyeOff } from "lucide-react";
+import { Ban, Check, Eye, EyeOff, ListPlus } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 import { useT } from "@/lib/i18n";
 import {
@@ -20,6 +20,10 @@ import type { ContextAction } from "@/lib/context-actions";
 import { MenuSurface } from "./context-menu/menu-surface";
 import { ActionItems } from "./context-menu/action-items";
 import { useLocalMenuPresence } from "./context-menu/use-local-menu-presence";
+import type { Meta } from "@/lib/cinemeta";
+import type { PlayEpisode } from "@/lib/view";
+import { queueAdd, queueIndexOf, useQueue } from "@/lib/queue";
+import { useQueueSurface } from "@/hooks/use-queue-surface";
 
 export type WatchedMenuTarget = {
   x: number;
@@ -30,6 +34,10 @@ export type WatchedMenuTarget = {
   metaId?: string;
   absoluteNumber?: number;
   origin?: HTMLElement | null;
+  queueTarget?: {
+    meta: Meta;
+    episode: PlayEpisode;
+  };
 };
 
 /** Caller-supplied scope for lists whose numbering repeats, such as anime cours. */
@@ -47,6 +55,7 @@ function airedByNow(released?: string | null): boolean {
 export function EpisodeWatchedMenu({
   metaId,
   syncMetaId,
+  imdbId: propImdbId,
   meta,
   target,
   allEpisodes,
@@ -55,6 +64,7 @@ export function EpisodeWatchedMenu({
 }: {
   metaId: string;
   syncMetaId?: string;
+  imdbId?: string | null;
   meta: ManualWatchedMeta;
   target: WatchedMenuTarget;
   allEpisodes?: Array<WatchedEpisode & { released?: string | null }>;
@@ -62,6 +72,8 @@ export function EpisodeWatchedMenu({
   onClose: () => void;
 }) {
   const t = useT();
+  const queueSurface = useQueueSurface();
+  useQueue();
   const { settings } = useSettings();
   const { activeId } = useProfiles();
   const identity = useMemo(() => ({ metaId, target }), [metaId, target]);
@@ -71,7 +83,8 @@ export function EpisodeWatchedMenu({
     target.origin ??
       (document.activeElement instanceof HTMLElement ? document.activeElement : null),
   );
-  const imdbId = useTmdbImdbId(metaId);
+  const resolvedImdb = useTmdbImdbId(metaId);
+  const imdbId = propImdbId ?? resolvedImdb;
   const originSession = useRef(presence.session);
   if (presence.enabled && originSession.current !== presence.session) {
     originSession.current = presence.session;
@@ -90,19 +103,33 @@ export function EpisodeWatchedMenu({
     }
   }, [activeId, onClose]);
   const runWatched = async (watched: boolean, episodes?: WatchedEpisode[]) => {
-    const result = await setContextWatched({ id: metaId, ...meta, type: "series" }, watched, {
-      imdbId,
-      syncMetaId,
-      ...(episodes
-        ? { episodes }
-        : {
-            episode: {
-              season: target.season,
-              episode: target.episode,
-              absoluteNumber: target.absoluteNumber,
-            },
-          }),
-    });
+    const result = await setContextWatched(
+      {
+        id: metaId,
+        ...meta,
+        type: "series",
+        videos: allEpisodes?.map((e) => ({
+          season: e.season,
+          episode: e.episode,
+          number: e.episode,
+          released: e.released ?? undefined,
+        })),
+      },
+      watched,
+      {
+        imdbId,
+        syncMetaId,
+        ...(episodes
+          ? { episodes }
+          : {
+              episode: {
+                season: target.season,
+                episode: target.episode,
+                absoluteNumber: target.absoluteNumber,
+              },
+            }),
+      },
+    );
     if (
       !watched &&
       result.outcomes.some(
@@ -113,19 +140,27 @@ export function EpisodeWatchedMenu({
     requireMediaActionSuccess(result);
   };
   const actions = (): ContextAction[] => {
-    const watched = manualWatchedState(metaId, target.season, target.episode) ?? target.watched;
+    const watched =
+      manualWatchedState(metaId, target.season, target.episode, [imdbId, syncMetaId]) ??
+      target.watched;
     const started = !watched && readResumeEntry(metaId, target.season, target.episode) != null;
+    const targetSeason = target.season;
+    const targetEpisode = target.episode;
     const upTo = upToScope
       ? []
       : [
           ...new Map(
             (allEpisodes ?? [])
-              .filter(
-                (episode) =>
-                  airedByNow(episode.released) &&
-                  (episode.season < target.season ||
-                    (episode.season === target.season && episode.episode <= target.episode)),
-              )
+              .filter((episode) => {
+                if (!airedByNow(episode.released)) return false;
+                if (targetSeason > 0 && episode.season <= 0) return false;
+                if (targetSeason === 0 && episode.season !== 0) return false;
+                return (
+                  episode.season < targetSeason ||
+                  (episode.season === targetSeason && episode.episode <= targetEpisode)
+                );
+              })
+              .sort((a, b) => a.season - b.season || a.episode - b.episode)
               .map((episode) => [
                 episode.season + ":" + episode.episode,
                 {
@@ -138,6 +173,20 @@ export function EpisodeWatchedMenu({
         ];
     const upToCount = upToScope?.count ?? upTo.length;
     const result: ContextAction[] = [];
+    const selected = target.queueTarget;
+    if (queueSurface && selected) {
+      const queued = queueIndexOf(selected.meta, selected.episode) >= 0;
+      result.push({
+        id: "episode:add-to-queue",
+        icon: queued ? <Check size={14} /> : <ListPlus size={14} />,
+        label: queued ? t("In your queue") : t("Add to queue"),
+        disabled: queued,
+        group: "queue",
+        run: () => {
+          queueAdd(selected.meta, selected.episode);
+        },
+      });
+    }
     if (!watched) {
       result.push({
         id: "episode:watched",

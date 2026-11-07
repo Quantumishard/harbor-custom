@@ -19,6 +19,8 @@ import { isLinuxDesktop, isMacDesktop, isWindowsDesktop } from "@/lib/platform";
 import type { MonitorInfo } from "@/lib/monitors";
 import { makeSafeTauriUnlisten } from "@/lib/tauri-unlisten";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { autoBufferProfile, formatMpvBytes, isBlockedDiskCacheOptionLine } from "./buffer-profile";
+import { getTotalPhysBytes } from "@/lib/native-memory";
 import type { SubtitleLoadMetadata } from "@/lib/subtitles/types";
 import type { SubCue } from "@/lib/subtitles/parser";
 import {
@@ -31,6 +33,7 @@ import { finishPlaybackTrace, markPlaybackTrace } from "@/lib/perf/playback-trac
 import { PreparedSubtitleCleanupRegistry } from "./prepared-subtitle-cleanups";
 import { SubtitleSelectionCoordinator, type SubtitleSelectionOrigin } from "./subtitle-selection";
 import { PreparedSubtitleSeedBatch } from "@/lib/subtitles/seed-batch";
+import { automaticSubtitleGate } from "@/lib/subtitles/autoload";
 import { isSafeProviderSubtitleUrl } from "@/lib/subtitles/provider-url";
 import { traceFrameDrops, tracePlayback } from "./pause-trace";
 import {
@@ -152,7 +155,6 @@ export type MpvOptions = {
   renderer?: "gpu-next" | "gpu";
   forceYuv420p?: boolean;
   extraOptions?: string;
-  fullDownload?: boolean;
   separateDisplay?: MonitorInfo | null;
   separateCoverTaskbar?: boolean;
   getEmbedRect?: () => Promise<MpvRect | null> | MpvRect | null;
@@ -171,7 +173,6 @@ function mpvReuseConfigKey(options: MpvOptions | undefined, hdrToSdr: boolean): 
     renderer: options?.renderer ?? "gpu-next",
     forceYuv420p: options?.forceYuv420p === true,
     extraOptions: options?.extraOptions ?? "",
-    fullDownload: options?.fullDownload === true,
   });
 }
 
@@ -187,8 +188,14 @@ const DEFAULT_UA = "VLC/3.0.20 LibVLC/3.0.20";
 type BufferPhase = "startup" | "steady";
 
 function hasCustomBufferPolicy(extraOptions: string | undefined): boolean {
+  // The native player rejects disk-cache options, so they must not suppress the
+  // automatic RAM buffer transition merely by appearing in the advanced options.
+  const filtered = (extraOptions ?? "")
+    .split("\n")
+    .filter((line) => !isBlockedDiskCacheOptionLine(line))
+    .join("\n");
   return /(?:^|\n)\s*(?:cache(?:-[\w-]+)?|demuxer-(?:max|readahead)[\w-]*|stream-buffer-size)\s*=/im.test(
-    extraOptions ?? "",
+    filtered,
   );
 }
 
@@ -197,12 +204,19 @@ function defaultVodBufferProperties(
   phase: BufferPhase,
 ): Array<[string, string]> {
   const highBitrate = profile === "high-bitrate";
+  // Automatic sizing: 1/16 of physical RAM, 256 MiB..1 GiB, 75/25 split.
+  const auto = autoBufferProfile(getTotalPhysBytes());
+  const steadyForward = auto.maxBytes;
+  const steadyBack = auto.maxBackBytes;
+  const mib = 1024 * 1024;
   if (phase === "startup") {
+    const forward = Math.min(highBitrate ? 256 * mib : 128 * mib, steadyForward);
+    const back = Math.min(highBitrate ? 64 * mib : 32 * mib, steadyBack);
     return [
       ["cache-secs", highBitrate ? "45" : "30"],
       ["cache-pause-wait", highBitrate ? "2" : "1"],
-      ["demuxer-max-bytes", highBitrate ? "256MiB" : "128MiB"],
-      ["demuxer-max-back-bytes", highBitrate ? "64MiB" : "32MiB"],
+      ["demuxer-max-bytes", formatMpvBytes(forward)],
+      ["demuxer-max-back-bytes", formatMpvBytes(back)],
       ["demuxer-readahead-secs", highBitrate ? "45" : "30"],
       ["stream-buffer-size", highBitrate ? "32MiB" : "16MiB"],
     ];
@@ -210,8 +224,8 @@ function defaultVodBufferProperties(
   return [
     ["cache-secs", "300"],
     ["cache-pause-wait", highBitrate ? "2" : "1"],
-    ["demuxer-max-bytes", highBitrate ? "768MiB" : "512MiB"],
-    ["demuxer-max-back-bytes", "64MiB"],
+    ["demuxer-max-bytes", formatMpvBytes(steadyForward)],
+    ["demuxer-max-back-bytes", formatMpvBytes(steadyBack)],
     ["demuxer-readahead-secs", "300"],
     ["stream-buffer-size", highBitrate ? "64MiB" : "32MiB"],
   ];
@@ -302,10 +316,16 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
   let currentStartupProfile: "standard" | "high-bitrate" | null = null;
   let mediaLoadId = 0;
   let steadyBufferLoadId = 0;
+  let pendingSeedSubtitles: {
+    subtitles: PlayerSource["subtitles"];
+    loadId: number;
+  } | null = null;
   let activeTraceId: string | null = null;
   let expectedMediaPath: string | null = null;
+  let loadedMediaHeaders: PlayerSource["headers"];
   let observedMediaPath: string | null = null;
   let mediaRevision = 0;
+  let selectInitialTracks: PlayerSource["selectInitialTracks"];
   // A session adopted across player teardown never replays its initial audio
   // device enumeration, so its first list event is a change, not a baseline.
   let adoptedRetainedSession = false;
@@ -347,7 +367,7 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
     profile: "standard" | "high-bitrate",
     phase: BufferPhase,
   ) => {
-    if (mpvOptions?.fullDownload || hasCustomBufferPolicy(mpvOptions?.extraOptions)) return;
+    if (hasCustomBufferPolicy(mpvOptions?.extraOptions)) return;
     await Promise.all(
       defaultVodBufferProperties(profile, phase).map(async ([name, value]) => {
         try {
@@ -464,6 +484,47 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
         emit();
       },
     );
+  };
+
+  let seedTimer: number | null = null;
+  let seedFirstFrameAt: number | null = null;
+  const clearSeedTimer = () => {
+    if (seedTimer != null) window.clearTimeout(seedTimer);
+    seedTimer = null;
+  };
+  const cancelSeedSubtitles = () => {
+    clearSeedTimer();
+    pendingSeedSubtitles = null;
+    seedFirstFrameAt = null;
+  };
+  const flushPendingSeedSubtitles = () => {
+    clearSeedTimer();
+    const pending = pendingSeedSubtitles;
+    if (!pending || pending.loadId !== mediaLoadId) return;
+    if (snap.status === "ended" || snap.status === "error") {
+      pendingSeedSubtitles = null;
+      return;
+    }
+    const gate = automaticSubtitleGate({
+      engine: "mpv",
+      firstFrameReady: snap.firstFrameReady,
+      buffering: snap.buffering,
+      bufferedSec: snap.bufferedSec,
+      firstFrameAt: seedFirstFrameAt,
+      now: Date.now(),
+    });
+    if (!gate.ready) {
+      if (gate.waitMs != null)
+        seedTimer = window.setTimeout(flushPendingSeedSubtitles, gate.waitMs);
+      return;
+    }
+    pendingSeedSubtitles = null;
+    void addSeedSubtitles(pending.subtitles, pending.loadId);
+  };
+  const queueSeedSubtitles = (subtitles: PlayerSource["subtitles"], expectedLoadId: number) => {
+    if (!subtitles?.length || expectedLoadId !== mediaLoadId) return;
+    pendingSeedSubtitles = { subtitles, loadId: expectedLoadId };
+    flushPendingSeedSubtitles();
   };
 
   const ensureGeometryTracking = async (opts: MpvOptions) => {
@@ -797,7 +858,119 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
     window.addEventListener("focus", onWindowFocusRestore);
   }
 
+  const parseTracks = (list: Array<Record<string, unknown>>) => {
+    const audio: TrackInfo[] = [];
+    const subs: TrackInfo[] = [];
+    for (const t of list) {
+      const type = String(t.type ?? "");
+      const id = String(t.id ?? "");
+      const lang = (t.lang ?? t.language) as string | undefined;
+      const title = t.title as string | undefined;
+      const codecDesc = (t["codec-desc"] as string | undefined) || (t.codec as string | undefined);
+      const channels = t["demux-channels"] as string | undefined;
+      const channelCount =
+        typeof t["demux-channel-count"] === "number"
+          ? (t["demux-channel-count"] as number)
+          : undefined;
+      const external = t.external === true;
+      const externalFilename = t["external-filename"] as string | undefined;
+      const forced = t.forced === true;
+      const isDefault = t.default === true;
+      const hearingImpaired = t["hearing-impaired"] === true;
+      const mainSelection =
+        typeof t["main-selection"] === "number" ? (t["main-selection"] as number) : null;
+      const isSecondary =
+        type === "sub" &&
+        t.selected === true &&
+        (mainSelection === 1 || (mainSelection == null && id === secondarySid));
+      const selected = t.selected === true && !isSecondary;
+      const codec = codecDesc ? codecDesc.toUpperCase() : undefined;
+      const baseLabel = title || lang || `${type} ${id}`;
+      const tags: string[] = [];
+      if (codec) tags.push(codec);
+      if (type === "audio" && channels) tags.push(channels);
+      if (forced) tags.push("Forced");
+      if (hearingImpaired) tags.push("SDH");
+      if (external) tags.push("External");
+      const label = tags.length > 0 ? `${baseLabel} · ${tags.join(" · ")}` : baseLabel;
+      const extMeta =
+        external && externalFilename
+          ? urlByExternalFilename.get(externalFilename.replace(/\\/g, "/"))
+          : undefined;
+      const info: TrackInfo = {
+        id,
+        label,
+        // A prepared file can lose (or mis-detect) the provider's language.
+        lang: extMeta?.lang || lang,
+        kind: type === "audio" ? "audio" : "subtitle",
+        selected,
+        codec,
+        channels,
+        channelCount,
+        title: extMeta?.title || title,
+        external,
+        prepared: extMeta?.prepared,
+        autoSelectionEligible: extMeta?.autoSelectionEligible,
+        externalFilename,
+        forced: forced || extMeta?.forced === true,
+        default: isDefault,
+        hearingImpaired: hearingImpaired || extMeta?.hearingImpaired === true,
+        secondary: isSecondary,
+        url: external && externalFilename ? extMeta?.url : undefined,
+        originalUrl: extMeta?.originalUrl,
+        downloadAuth: extMeta?.downloadAuth,
+        format: extMeta?.format,
+        release: extMeta?.release,
+        provider: extMeta?.provider,
+        providerDerived: extMeta?.providerDerived,
+        localTrusted: extMeta?.localTrusted,
+        fps: extMeta?.fps,
+        downloads: extMeta?.downloads,
+        author: extMeta?.author,
+        uploadedAt: extMeta?.uploadedAt,
+        rating: extMeta?.rating,
+        productionType: extMeta?.productionType,
+        releaseType: extMeta?.releaseType,
+        foreignOnly: extMeta?.foreignOnly,
+        machineTranslated: extMeta?.machineTranslated,
+        fromTrusted: extMeta?.fromTrusted,
+        providerMatch: extMeta?.providerMatch,
+        timingStatus: extMeta?.timingStatus,
+        timingMeasurementStatus: extMeta?.timingMeasurementStatus,
+        matchExplanation: extMeta?.matchExplanation,
+        matchScore: extMeta?.matchScore,
+        matchConfidence: extMeta?.matchConfidence,
+        matchReasons: extMeta?.matchReasons,
+        subId: extMeta?.subId,
+      };
+      if (type === "audio") audio.push(info);
+      else if (type === "sub") subs.push(info);
+    }
+    return { audio, subs };
+  };
+
   const handleEvent = (raw: MpvEvent) => {
+    if (raw.event === "preloaded" && typeof raw.token === "string") {
+      const revision = mediaRevision;
+      let choice: ReturnType<NonNullable<PlayerSource["selectInitialTracks"]>> = {};
+      try {
+        const { audio, subs } = parseTracks(Array.isArray(raw.tracks) ? raw.tracks : []);
+        const currentSource =
+          typeof raw.path === "string" &&
+          expectedMediaPath != null &&
+          normalizeMediaPath(raw.path) === normalizeMediaPath(expectedMediaPath);
+        choice = currentSource ? (selectInitialTracks?.(audio, subs) ?? {}) : {};
+        if (!mainSubtitleSelection.canAutoSelect(revision)) choice.subtitleId = undefined;
+      } catch {
+        // Release the preload hook even if preference selection fails.
+      }
+      void invoke<boolean>("mpv_select_preloaded_tracks", {
+        token: raw.token,
+        audioId: choice.audioId ?? null,
+        subtitleId: choice.subtitleId === null ? "no" : (choice.subtitleId ?? null),
+      }).catch(() => {});
+      return;
+    }
     if (raw.event === "log") {
       const prefix = String((raw as { prefix?: unknown }).prefix ?? "");
       const level = String((raw as { level?: unknown }).level ?? "");
@@ -877,100 +1050,15 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
       if (name === "track-list" && Array.isArray(data)) {
         const list = data as Array<Record<string, unknown>>;
         pendingTracks["track-list"] = list;
-        const audio: TrackInfo[] = [];
-        const subs: TrackInfo[] = [];
-        for (const t of list) {
-          const type = String(t.type ?? "");
-          const id = String(t.id ?? "");
-          const lang = (t.lang ?? t.language) as string | undefined;
-          const title = t.title as string | undefined;
-          const codecDesc =
-            (t["codec-desc"] as string | undefined) || (t.codec as string | undefined);
-          const channels = t["demux-channels"] as string | undefined;
-          const channelCount =
-            typeof t["demux-channel-count"] === "number"
-              ? (t["demux-channel-count"] as number)
-              : undefined;
-          const external = t.external === true;
-          const externalFilename = t["external-filename"] as string | undefined;
-          const forced = t.forced === true;
-          const isDefault = t.default === true;
-          const hearingImpaired = t["hearing-impaired"] === true;
-          const mainSelection =
-            typeof t["main-selection"] === "number" ? (t["main-selection"] as number) : null;
-          const isSecondary =
-            type === "sub" &&
-            t.selected === true &&
-            (mainSelection === 1 || (mainSelection == null && id === secondarySid));
-          const selected = t.selected === true && !isSecondary;
-          const codec = codecDesc ? codecDesc.toUpperCase() : undefined;
-          const baseLabel = title || lang || `${type} ${id}`;
-          const tags: string[] = [];
-          if (codec) tags.push(codec);
-          if (type === "audio" && channels) tags.push(channels);
-          if (forced) tags.push("Forced");
-          if (hearingImpaired) tags.push("SDH");
-          if (external) tags.push("External");
-          const label = tags.length > 0 ? `${baseLabel} · ${tags.join(" · ")}` : baseLabel;
-          const extMeta =
-            external && externalFilename
-              ? urlByExternalFilename.get(externalFilename.replace(/\\/g, "/"))
-              : undefined;
-          const info: TrackInfo = {
-            id,
-            label,
-            // A prepared file can lose (or mis-detect) the provider's language.
-            lang: extMeta?.lang || lang,
-            kind: type === "audio" ? "audio" : "subtitle",
-            selected,
-            codec,
-            channels,
-            channelCount,
-            title: extMeta?.title || title,
-            external,
-            prepared: extMeta?.prepared,
-            autoSelectionEligible: extMeta?.autoSelectionEligible,
-            externalFilename,
-            forced: forced || extMeta?.forced === true,
-            default: isDefault,
-            hearingImpaired: hearingImpaired || extMeta?.hearingImpaired === true,
-            secondary: isSecondary,
-            url: external && externalFilename ? extMeta?.url : undefined,
-            originalUrl: extMeta?.originalUrl,
-            downloadAuth: extMeta?.downloadAuth,
-            format: extMeta?.format,
-            release: extMeta?.release,
-            provider: extMeta?.provider,
-            providerDerived: extMeta?.providerDerived,
-            localTrusted: extMeta?.localTrusted,
-            fps: extMeta?.fps,
-            downloads: extMeta?.downloads,
-            author: extMeta?.author,
-            uploadedAt: extMeta?.uploadedAt,
-            rating: extMeta?.rating,
-            productionType: extMeta?.productionType,
-            releaseType: extMeta?.releaseType,
-            foreignOnly: extMeta?.foreignOnly,
-            machineTranslated: extMeta?.machineTranslated,
-            fromTrusted: extMeta?.fromTrusted,
-            providerMatch: extMeta?.providerMatch,
-            timingStatus: extMeta?.timingStatus,
-            timingMeasurementStatus: extMeta?.timingMeasurementStatus,
-            matchExplanation: extMeta?.matchExplanation,
-            matchScore: extMeta?.matchScore,
-            matchConfidence: extMeta?.matchConfidence,
-            matchReasons: extMeta?.matchReasons,
-            subId: extMeta?.subId,
-          };
-          if (type === "audio") audio.push(info);
-          else if (type === "sub") subs.push(info);
-        }
+        const { audio, subs } = parseTracks(list);
         snap.audioTracks = audio;
         snap.subtitleTracks = subs;
         confirmPrimarySubtitleVisibility(!subs.some((track) => track.selected));
       }
       if (name === "sub-delay" && typeof data === "number") snap.subDelaySec = data;
       if (name === "audio-delay" && typeof data === "number") snap.audioDelaySec = data;
+      if (name === "sub-fps" && typeof data === "number" && Number.isFinite(data))
+        snap.subtitleFps = data;
       if (name === "sub-text") {
         snap.subText = !primarySubtitleOff && typeof data === "string" ? data : "";
       }
@@ -989,6 +1077,8 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
       if (name === "video-params/gamma" && typeof data === "string" && data) snap.hdrGamma = data;
       if (name === "demuxer-cache-duration" && typeof data === "number") snap.bufferedSec = data;
       if (name === "paused-for-cache" && typeof data === "boolean") snap.buffering = data;
+      if (name === "demuxer-cache-duration" || name === "paused-for-cache")
+        flushPendingSeedSubtitles();
       if (name === "af") {
         const repr = typeof data === "string" ? data : JSON.stringify(data ?? "");
         snap.audioNormalize = repr.includes("dynaudnorm");
@@ -1034,6 +1124,7 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
       snap.status = observedPaused === true ? "paused" : "playing";
       snap.buffering = false; // Playback recovered, including when the user remains paused.
       if (snap.status === "playing" && pendingAudioDeviceReload) scheduleAudioDeviceReload();
+      if (!snap.firstFrameReady) seedFirstFrameAt = Date.now();
       snap.firstFrameReady = true;
       if (currentIsLive === false && currentStartupProfile && steadyBufferLoadId !== mediaLoadId) {
         steadyBufferLoadId = mediaLoadId;
@@ -1046,6 +1137,7 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
       snap.errorCode = null;
       snap.errorMessage = null;
       emit();
+      flushPendingSeedSubtitles();
     }
   };
 
@@ -1143,6 +1235,7 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
     },
     async load(src: PlayerSource) {
       clearAudioDeviceReload();
+      cancelSeedSubtitles();
       const activeLoadId = ++mediaLoadId;
       if (activeTraceId && activeTraceId !== src.traceId) {
         finishPlaybackTrace(activeTraceId, "replaced");
@@ -1170,6 +1263,8 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
         mpvStarted = false;
       }
       expectedMediaPath = src.url;
+      loadedMediaHeaders = src.headers;
+      selectInitialTracks = src.selectInitialTracks;
       mediaRevision += 1;
       invalidateSubtitleSelections();
       cancelPendingTranslations();
@@ -1179,6 +1274,9 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
       snap.errorMessage = null;
       snap.audioTracks = [];
       snap.subtitleTracks = [];
+      snap.subtitleFps = undefined;
+      // mpv sub-delay is global; it must not bleed into another title or subtitle.
+      snap.subDelaySec = 0;
       primarySubtitleOff = false;
       snap.subText = "";
       snap.subStartSec = 0;
@@ -1191,6 +1289,7 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
       snap.firstFrameReady = false;
       snap.hdrGamma = "";
       pendingTracks = {};
+      pendingSeedSubtitles = null;
       urlByExternalFilename.clear();
       emit();
       try {
@@ -1221,6 +1320,7 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
             await Promise.all([
               invoke("mpv_set_property", { name: "sid", value: "no" }),
               invoke("mpv_set_property", { name: "secondary-sid", value: "no" }),
+              invoke("mpv_set_property", { name: "sub-delay", value: 0 }),
             ]);
             if (!nextIsLive) {
               await applyDefaultVodBufferPhase(nextStartupProfile, "startup");
@@ -1242,7 +1342,7 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
             markPlaybackTrace(activeTraceId, "loadfile-accepted");
             await invoke("mpv_restore_media_surface");
             await ensureGeometryTracking(opts);
-            void addSeedSubtitles(src.subtitles, activeLoadId);
+            queueSeedSubtitles(src.subtitles, activeLoadId);
             window.dispatchEvent(new Event("harbor:mpv-refresh-geom"));
             return;
           } catch (err) {
@@ -1265,7 +1365,6 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
             d3d11Flip: opts.d3d11Flip === true,
             macEdr: opts.macEdr === true,
             isLive: src.isLive === true,
-            fullDownload: opts.fullDownload === true,
             startupProfile: nextStartupProfile,
             headers: src.headers ?? null,
             renderer: opts.renderer ?? "gpu-next",
@@ -1281,7 +1380,7 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
         adoptedRetainedSession = false;
         currentIsLive = nextIsLive;
         currentStartupProfile = nextStartupProfile;
-        void addSeedSubtitles(src.subtitles, activeLoadId);
+        queueSeedSubtitles(src.subtitles, activeLoadId);
         if (opts.embed) {
           await invoke("mpv_set_property", { name: "sub-visibility", value: false }).catch(
             () => {},
@@ -1498,6 +1597,9 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
       if (!selected?.externalFilename) return null;
       return urlByExternalFilename.get(selected.externalFilename.replace(/\\/g, "/"))?.cues ?? null;
     },
+    getLoadedMediaSource() {
+      return expectedMediaPath ? { url: expectedMediaPath, headers: loadedMediaHeaders } : null;
+    },
     getSelectedTrackUrl() {
       const sel = snap.subtitleTracks.find((t) => t.selected);
       if (!sel || !sel.external) return null;
@@ -1603,6 +1705,8 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
     },
     destroy() {
       shaderProperties.cancel();
+      cancelSeedSubtitles();
+      mediaLoadId += 1;
       clearAudioDeviceReload();
       stopGeometryTracking?.();
       stopGeometryTracking = null;

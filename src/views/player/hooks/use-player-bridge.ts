@@ -1,3 +1,4 @@
+import { AUTOMATIC_SUBTITLE_BUFFER_SEC } from "@/lib/subtitles/autoload";
 import { useEffect, useRef, useState, type RefObject } from "react";
 import {
   emptySnapshot,
@@ -6,6 +7,7 @@ import {
   type PlayerSnapshot,
 } from "@/lib/player/bridge";
 import { probeMpv } from "@/lib/player/mpv";
+import { externalMpvEnabled } from "@/lib/player/external-mpv";
 import { mergeMpvOptions } from "@/lib/player/mpv-tuning";
 import { anime4kPackComplete, repairAnime4kPack } from "@/lib/anime4k";
 import { metaIsAnime } from "@/lib/player/anime-src";
@@ -19,6 +21,7 @@ import { isLivePlaybackSrc } from "@/lib/player/live-src";
 import { readEmbedRect } from "@/lib/player/embed-rect";
 import { svpEnsureRunning, svpStatus } from "@/lib/svp";
 import { isSvpActiveForMedia } from "@/lib/player/svp-policy";
+import { ensureNativeMemory } from "@/lib/native-memory";
 import { pickBridge } from "../player-utils";
 
 function snapChangedIgnoringClock(a: PlayerSnapshot, b: PlayerSnapshot): boolean {
@@ -26,6 +29,9 @@ function snapChangedIgnoringClock(a: PlayerSnapshot, b: PlayerSnapshot): boolean
     a.status !== b.status ||
     a.buffering !== b.buffering ||
     a.firstFrameReady !== b.firstFrameReady ||
+    (b.firstFrameReady &&
+      a.bufferedSec >= AUTOMATIC_SUBTITLE_BUFFER_SEC !==
+        b.bufferedSec >= AUTOMATIC_SUBTITLE_BUFFER_SEC) ||
     a.durationSec !== b.durationSec ||
     a.volume !== b.volume ||
     a.muted !== b.muted ||
@@ -35,6 +41,7 @@ function snapChangedIgnoringClock(a: PlayerSnapshot, b: PlayerSnapshot): boolean
     a.chapters !== b.chapters ||
     a.subDelaySec !== b.subDelaySec ||
     a.audioDelaySec !== b.audioDelaySec ||
+    a.subtitleFps !== b.subtitleFps ||
     a.subText !== b.subText ||
     a.subStartSec !== b.subStartSec ||
     a.secondarySubText !== b.secondarySubText ||
@@ -137,8 +144,7 @@ export function usePlayerBridge(params: {
     if (svpOn) void svpEnsureRunning().catch(() => {});
   }, [svpOn]);
   const isLiveLike = isLivePlaybackSrc(src);
-  const externalMpv =
-    settings.playerExternalMpv && (isWindowsDesktop() || isMacDesktop() || isLinuxDesktop());
+  const externalMpv = externalMpvEnabled(settings);
   const chosenEngine =
     isLiveLike && !src.notWebReady ? "html5" : autoFallbackTried ? "mpv" : settings.playerEngine;
   const bridgeKey = `${chosenEngine}|${anime4kOn}|${embedActive}|${anime4kOn ? settings.playerAnime4kShaders.join(",") : ""}|${generalShaderKey(settings)}|${svpOn}|${svpOn ? settings.svpVpyPath : ""}|${externalMpv ? `ext:${settings.playerExternalMpvPath}:${settings.playerExternalMpvArgs}` : ""}`;
@@ -154,6 +160,8 @@ export function usePlayerBridge(params: {
     (async () => {
       const want = chosenEngine;
       const getEmbedRect = () => readEmbedRect(videoMountRef.current);
+      // Size manual buffer modes from the real machine, not the fallback.
+      await ensureNativeMemory();
       const { bridge: choose, engine: chosen } = await pickBridge(want, src.notWebReady === true, {
         anime4k: anime4kOn,
         hdrToSdr: settings.playerHdrToSdr,
@@ -168,16 +176,16 @@ export function usePlayerBridge(params: {
           src,
           (settings.playerAnime4kOverride as Anime4kChoice) || "auto",
         ),
-        macEdr:
-          isMacDesktop() && embedActive && settings.playerMacEdr && !settings.playerHdrToSdr,
-        fullDownload: settings.torrentFullDownload,
+        macEdr: isMacDesktop() && embedActive && settings.playerMacEdr && !settings.playerHdrToSdr,
         separateDisplay:
           settings.playerSeparateDisplay.mode === "explicit"
             ? settings.playerSeparateDisplay.monitor
             : null,
         separateCoverTaskbar: settings.playerSeparateCoverTaskbar,
-        cacheDir: settings.playbackCacheDir,
-        extraOptions: [mergeMpvOptions(settings, svpOn, { anime4k: anime4kOn }), shaderCompanionOptions(settings)]
+        extraOptions: [
+          mergeMpvOptions(settings, svpOn, { anime4k: anime4kOn }),
+          shaderCompanionOptions(settings),
+        ]
           .filter(Boolean)
           .join("\n"),
         getEmbedRect,

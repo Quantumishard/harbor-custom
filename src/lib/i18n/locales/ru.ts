@@ -1,3 +1,4 @@
+import reviews from "./ru/reviews";
 import playOrders from "./ru/play-orders";
 import gameRomLibrary from "./ru/game-rom-library";
 import gameNotes from "./ru/game-notes";
@@ -82,6 +83,7 @@ import settingsRefinements from "./ru/settings-refinements";
 import gap from "./ru/gap";
 import experimentalUpdates from "./ru/experimental-updates";
 import coverage from "./ru/coverage";
+import subtitles from "./ru/subtitles";
 import uiFallback from "./ui-fallback";
 import chrome from "./ru/chrome";
 import common from "./ru/common";
@@ -124,6 +126,8 @@ import surfaces5 from "./ru/surfaces5";
 import plugins from "./ru/plugins";
 import brands from "./ru/brands";
 import bpSports from "./ru/bp-sports";
+import queueBasket from "./ru/queue-basket";
+import liveWeb from "./ru/live-web";
 
 import nytTv from "./ru/nyt-tv";
 
@@ -303,6 +307,7 @@ const ru: Record<string, string> = {
 
   ...ebookSources,
   ...coverage,
+  ...subtitles,
   ...uiFallback,
   ...gap,
   ...chrome,
@@ -422,6 +427,9 @@ const ru: Record<string, string> = {
   ...gameRomLibrary,
   ...gameNotes,
   ...playOrders,
+  ...reviews,
+  ...queueBasket,
+  ...liveWeb,
 };
 
 export default ru;

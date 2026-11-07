@@ -20,6 +20,8 @@ import {
 } from "react";
 import { registerProfileDestination, subscribeOpenProfile } from "@/lib/social/open-profile";
 import { subscribeOpenGroup } from "@/lib/social/open-group";
+import { currentAuthor } from "@/lib/theme-auth";
+import { isNuvioProviderActive, loadNuvioState } from "@/lib/nuvio/nuvio-client";
 import { useBigPicture } from "@/lib/big-picture";
 import type { Meta } from "./cinemeta";
 import type { PeopleDept, RankSource } from "./harbor-rank";
@@ -32,6 +34,7 @@ import { beginMarathonAdvance } from "./fullscreen-state";
 import { consumeBack } from "./back-intercept";
 import { useSectionBackActive } from "./section-back";
 import type { SubtitleLoadMetadata } from "./subtitles/types";
+import type { SourceFolder } from "./custom-sources";
 import { pickerExitStack, samePickerRequest } from "./picker-return";
 
 export type View =
@@ -90,6 +93,8 @@ export type PlayerSrc = {
   officialBroadcast?: import("./sports/esports-streams").EsportsStream;
   continuation?: import("./playback-history").PlaybackContinuation;
   meta: Meta;
+  /** Queue entry that explicitly initiated this playback. */
+  queueItemId?: string;
   playbackTraceId?: string;
   proxySessionId?: string;
   historyUrl?: string;
@@ -170,6 +175,7 @@ export type PickerOptions = {
   returnTo?: "previous";
   contextRequestId?: string;
   continuation?: import("./playback-history").PlaybackContinuation;
+  queueItemId?: string;
 };
 
 export type GridSpec = {
@@ -245,7 +251,7 @@ export type Frame =
       playback?: EpisodeDetailPlayback;
     }
   | { kind: "person"; id: number }
-  | { kind: "profile"; handle: string }
+  | { kind: "profile"; handle: string; isMyProfile?: boolean }
   | { kind: "feed" }
   | { kind: "groups" }
   | { kind: "group"; id: string }
@@ -256,12 +262,16 @@ export type Frame =
   | { kind: "filter"; filter: MetaFilter }
   | { kind: "brands"; brand: "studio" | "network" }
   | { kind: "grid"; grid: GridSpec }
+  | { kind: "folder-hub"; folder: SourceFolder; sourceId: string }
   | { kind: "award"; awardType: import("./providers/wikidata").AwardType }
   | { kind: "anime-award"; sourceId: import("./anime-awards").AwardSourceId }
   | { kind: "curated-list"; listId: string }
   | {
       kind: "picker";
+      /** Fresh navigation must not reuse the previous picker's async selection state. */
+      pickerRevision?: number;
       meta: Meta;
+      queueItemId?: string;
       episode?: PlayEpisode;
       autoPlay?: boolean;
       attempt?: number;
@@ -368,6 +378,8 @@ type ViewValue = {
   openBrands: (brand: "studio" | "network") => void;
   grid: GridSpec | null;
   openGrid: (g: GridSpec) => void;
+  folderHub: { folder: SourceFolder; sourceId: string } | null;
+  openFolderHub: (folder: SourceFolder, sourceId: string) => void;
   openCollections: () => void;
   stackKinds: Frame["kind"][];
   awardType: import("./providers/wikidata").AwardType | null;
@@ -377,7 +389,9 @@ type ViewValue = {
   curatedListId: string | null;
   openCuratedList: (id: string) => void;
   picker: {
+    pickerRevision?: number;
     meta: Meta;
+    queueItemId?: string;
     episode?: PlayEpisode;
     autoPlay?: boolean;
     attempt?: number;
@@ -534,6 +548,8 @@ function frameKey(f: Frame): string {
       return `brands:${f.brand}`;
     case "grid":
       return `grid:${f.grid.title}`;
+    case "folder-hub":
+      return `folder-hub:${f.sourceId}:${f.folder.id}`;
     case "award":
       return `award:${f.awardType}`;
     case "anime-award":
@@ -732,11 +748,17 @@ export function ViewProvider({ children }: { children: ReactNode }) {
   const brands = brandsFrame ? brandsFrame.brand : null;
   const gridFrame = lastOfKind(stack, "grid");
   const grid = gridFrame ? gridFrame.grid : null;
+  const folderHubFrame = lastOfKind(stack, "folder-hub");
+  const folderHub = folderHubFrame
+    ? { folder: folderHubFrame.folder, sourceId: folderHubFrame.sourceId }
+    : null;
   const awardType = top.kind === "award" ? top.awardType : null;
   const picker =
     top.kind === "picker"
       ? {
+          pickerRevision: top.pickerRevision,
           meta: top.meta,
+          queueItemId: top.queueItemId,
           episode: top.episode,
           autoPlay: top.autoPlay,
           attempt: top.attempt,
@@ -996,18 +1018,75 @@ export function ViewProvider({ children }: { children: ReactNode }) {
   );
 
   const openProfile = useCallback(
-    (handle: string) => {
+    (handle: string, options?: { isMyProfile?: boolean }) => {
       const h = handle.trim().toLowerCase();
       if (!h) return;
+      const authorH = currentAuthor()?.handle?.trim().toLowerCase();
+      const isMyProfile = options?.isMyProfile === true || (!!authorH && authorH === h);
       setNavStack((cur) => {
         const t = cur[cur.length - 1];
-        if (t.kind === "profile" && t.handle === h) return cur;
-        return pushFrame(cur, { kind: "profile", handle: h });
+        if (t.kind === "profile" && t.handle === h) {
+          if (isMyProfile && !t.isMyProfile) {
+            return [...cur.slice(0, -1), { ...t, isMyProfile: true }];
+          }
+          return cur;
+        }
+        return pushFrame(cur, { kind: "profile", handle: h, isMyProfile });
       });
     },
     [setNavStack],
   );
   useEffect(() => subscribeOpenProfile(openProfile), [openProfile]);
+
+  useEffect(() => {
+    const onProviderChange = (e: Event) => {
+      const detail = (e as CustomEvent<{ provider?: string }>).detail;
+      const nextProvider = detail?.provider || (isNuvioProviderActive() ? "nuvio" : "stremio");
+
+      let nextHandle = "";
+      if (nextProvider === "nuvio") {
+        const author = currentAuthor();
+        const ns = loadNuvioState();
+        const primary = ns.profiles.find((p) => p.profile_index === 1) || ns.profiles[0];
+        nextHandle = (
+          author?.handle ||
+          primary?.name?.toLowerCase().replace(/\s+/g, "") ||
+          ns.session?.user?.email?.split("@")[0] ||
+          "nuvio"
+        )
+          .trim()
+          .toLowerCase();
+      } else {
+        nextHandle = (currentAuthor()?.handle || "").trim().toLowerCase();
+      }
+
+      setNavStack((cur) => {
+        let changed = false;
+        const next: Frame[] = [];
+        for (const frame of cur) {
+          if (frame.kind === "profile" && frame.isMyProfile) {
+            if (nextHandle) {
+              if (frame.handle !== nextHandle) {
+                next.push({ ...frame, handle: nextHandle });
+                changed = true;
+              } else {
+                next.push(frame);
+              }
+            } else {
+              changed = true;
+            }
+          } else {
+            next.push(frame);
+          }
+        }
+        if (!changed) return cur;
+        return next.length > 0 ? next : [{ kind: "home" }];
+      });
+    };
+
+    window.addEventListener("harbor:account-provider-changed", onProviderChange);
+    return () => window.removeEventListener("harbor:account-provider-changed", onProviderChange);
+  }, [setNavStack]);
   useLayoutEffect(
     () => registerProfileDestination(() => (top.kind === "profile" ? top.handle : null)),
     [top],
@@ -1259,6 +1338,19 @@ export function ViewProvider({ children }: { children: ReactNode }) {
     [setNavStack],
   );
 
+  const openFolderHub = useCallback(
+    (folder: SourceFolder, sourceId: string) => {
+      setNavStack((cur) => {
+        const t = cur[cur.length - 1];
+        if (t.kind === "folder-hub" && t.folder.id === folder.id && t.sourceId === sourceId) {
+          return cur;
+        }
+        return pushFrame(cur, { kind: "folder-hub", folder, sourceId });
+      });
+    },
+    [setNavStack],
+  );
+
   const openCollections = useCallback(() => {
     setNavStack((cur) => {
       const t = cur[cur.length - 1];
@@ -1267,6 +1359,7 @@ export function ViewProvider({ children }: { children: ReactNode }) {
     });
   }, [setNavStack]);
 
+  const pickerRevisionRef = useRef(0);
   const openPicker = useCallback(
     (m: Meta, ep?: PlayEpisode, opts?: PickerOptions) => {
       if (m.id?.startsWith("magnet:")) {
@@ -1278,6 +1371,7 @@ export function ViewProvider({ children }: { children: ReactNode }) {
         return;
       }
       if (opts?.autoPlay) beginMarathonAdvance();
+      const pickerRevision = ++pickerRevisionRef.current;
       setNavStack((cur) => {
         const t = cur[cur.length - 1];
         if (samePickerRequest(t, m, ep, opts)) {
@@ -1285,7 +1379,9 @@ export function ViewProvider({ children }: { children: ReactNode }) {
         }
         return pushFrame(cur, {
           kind: "picker",
+          pickerRevision,
           meta: m,
+          queueItemId: opts?.queueItemId,
           episode: ep,
           autoPlay: opts?.autoPlay,
           attempt: opts?.attempt,
@@ -1421,6 +1517,8 @@ export function ViewProvider({ children }: { children: ReactNode }) {
       openBrands,
       grid,
       openGrid,
+      folderHub,
+      openFolderHub,
       openCollections,
       stackKinds,
       awardType,
@@ -1517,6 +1615,8 @@ export function ViewProvider({ children }: { children: ReactNode }) {
       openBrands,
       grid,
       openGrid,
+      folderHub,
+      openFolderHub,
       openCollections,
       openAward,
       openAnimeAward,

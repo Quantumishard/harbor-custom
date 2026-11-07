@@ -8,15 +8,21 @@ import { EpisodePager } from "./episode-pager";
 
 const PAGE_SIZE = 50;
 
-export function EpisodeGrid({
+export function EpisodeGrid<T extends { number: number } = GridEpisode>({
   meta,
   episodes,
   progressFor,
   spoilerFor,
   onContextMenu,
+  present,
+  itemKey,
+  markRatingSeasons = false,
 }: {
   meta: Meta;
-  episodes: GridEpisode[];
+  episodes: T[];
+  present?: (item: T) => GridEpisode;
+  itemKey?: (item: T) => string;
+  markRatingSeasons?: boolean;
   progressFor: (g: GridEpisode) => Progress;
   spoilerFor?: (g: GridEpisode) => SpoilerMask;
   onContextMenu?: (
@@ -36,7 +42,9 @@ export function EpisodeGrid({
     [episodes, sort],
   );
   const [page, setPage] = useState(0);
-  const resetKey = `${sort}:${displayed.length}:${displayed[0]?.key ?? ""}:${displayed[displayed.length - 1]?.key ?? ""}`;
+  const keyFor = (item: T | undefined) =>
+    item ? (itemKey?.(item) ?? (item as unknown as GridEpisode).key) : "";
+  const resetKey = `${sort}:${displayed.length}:${keyFor(displayed[0])}:${keyFor(displayed[displayed.length - 1])}`;
   useEffect(() => setPage(0), [resetKey]);
 
   const pageCount = Math.max(1, Math.ceil(displayed.length / PAGE_SIZE));
@@ -49,7 +57,9 @@ export function EpisodeGrid({
 
   const change = (p: number) => {
     setPage(p);
-    requestAnimationFrame(() => wrapRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+    requestAnimationFrame(() =>
+      wrapRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    );
   };
   const goToEpisode = (n: number) => {
     const idx = displayed.findIndex((e) => e.number === n);
@@ -64,16 +74,26 @@ export function EpisodeGrid({
           gridTemplateColumns: `repeat(auto-fill,minmax(${Math.round(232 * (settings.episodeCardScale || 1))}px,1fr))`,
         }}
       >
-        {pageItems.map((g) => (
-          <EpisodeGridCard
-            key={g.key}
-            meta={meta}
-            g={g}
-            progress={progressFor(g)}
-            spoiler={spoilerFor?.(g)}
-            onContextMenu={onContextMenu}
-          />
-        ))}
+        {pageItems.map((item) => {
+          const g = present ? present(item) : (item as unknown as GridEpisode);
+          const card = (
+            <EpisodeGridCard
+              key={g.key}
+              meta={meta}
+              g={g}
+              progress={progressFor(g)}
+              spoiler={spoilerFor?.(g)}
+              onContextMenu={onContextMenu}
+            />
+          );
+          return markRatingSeasons ? (
+            <div key={g.key} data-omdb-season={g.season}>
+              {card}
+            </div>
+          ) : (
+            card
+          );
+        })}
       </div>
       <EpisodePager
         page={safePage}

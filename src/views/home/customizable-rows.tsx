@@ -168,7 +168,13 @@ type CustomizableRowsProps = {
   onToggleHero?: (key: string) => void;
   onLoadMore: (key: string) => void;
   onDeleteCustomSource?: (key: string) => void;
-  onEditFolderImages?: (sourceId: string, folderId: string, cover: string, gif: string) => void;
+  onEditFolderImages?: (
+    sourceId: string,
+    folderId: string,
+    cover: string,
+    gif: string,
+    layout?: "CLASSIC" | "GRID",
+  ) => void;
   hideWatched?: boolean;
   watchedSet?: Set<string>;
   localWatched?: WatchedSet;
@@ -246,7 +252,7 @@ const CustomizableRow = memo(function CustomizableRow({
   const renderRow = () => {
     let rowEl;
     if (row.libraryGroups) {
-      rowEl = <HomeGroups title={title} />;
+      rowEl = <HomeGroups title={title} groups={row.libraryGroups} />;
     } else if (row.sourceRow) {
       rowEl = (
         <CustomSourcesRow

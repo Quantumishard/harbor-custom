@@ -1,3 +1,4 @@
+import * as preferences from "../src/lib/player/track-preferences.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
@@ -7,21 +8,29 @@ import * as selection from "../src/lib/subtitles/track-selection.ts";
 import * as language from "../src/lib/subtitles/language.ts";
 
 function runTrackEffect({ original, tracks, manual = false, remembered = false }) {
-  const meta = { id: "tt1", type: "movie", name: "Fixture", genres: [] };
+  const meta = {
+    id: "tt1",
+    type: "movie",
+    name: "Fixture",
+    genres: [],
+    originalLanguage: original,
+  };
   const effects = [];
   const writes = [];
-  let stateSlot = 0;
   const mocks = {
     react: {
       useMemo: (fn) => fn(),
       useRef: (current) => ({ current }),
-      useState: (initial) => [stateSlot++ === 3 ? { meta, language: original } : initial, () => {}],
+      useState: (initial) => [typeof initial === "function" ? initial() : initial, () => {}],
       useEffect: (fn) => effects.push(fn),
     },
+    "@/lib/player/track-preferences": preferences,
     "@/lib/player/original-language-subtitles": { originalLanguageSubtitlePolicy },
     "@/lib/subtitles/track-selection": selection,
     "@/lib/subtitles/language": language,
     "@/lib/playback-history": {
+      capturePlaybackActor: () => ({ account: "fixture", profile: "fixture" }),
+      isPlaybackActorCurrent: () => true,
       playbackSourceKey: () => "fixture",
       readActualPlaybackFor: () => null,
     },
@@ -59,7 +68,7 @@ function runTrackEffect({ original, tracks, manual = false, remembered = false }
       subtitlesOffByDefault: true,
       forcedSubsWhenNativeAudio: true,
     },
-    snap: { subtitleTracks: tracks, audioTracks: [], rate: 1 },
+    snap: { subtitleTracks: tracks, audioTracks: [], rate: 1, firstFrameReady: true },
     bridgeRef: {
       current: {
         canAutoSelectSubtitle: () => !manual,

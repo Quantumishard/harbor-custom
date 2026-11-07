@@ -13,6 +13,9 @@ function load(path: string, mocks: Record<string, unknown>): any {
   }).outputText;
   const exports: Record<string, any> = {};
   new Function("require", "exports", compiled)((id: string) => {
+    if (id === "@/lib/metadata-policy" || id === "./metadata-policy")
+      return { addonOnlyMetadata: () => false };
+    if (id === "./metadata-addons") return { readMetadataAddonOrder: () => [] };
     assert.ok(id in mocks, `Unexpected dependency: ${id}`);
     return mocks[id];
   }, exports);
@@ -42,6 +45,7 @@ function seriesModule(overrides: Record<string, unknown> = {}) {
     animeKitsuMeta: async (id: string) => (id === "mal:63181" ? directMeta : null),
   };
   const mapping = {
+    animeMappingByKitsu: async () => null,
     externalToKitsu: async () => {
       externalCalls += 1;
       return null;
@@ -64,6 +68,16 @@ function seriesModule(overrides: Record<string, unknown> = {}) {
       lruSet: (map: Map<unknown, unknown>, key: unknown, value: unknown) => map.set(key, value),
     },
     "@/lib/memory-profiler": { registerCache() {} },
+    "@/lib/media-cache": {
+      onMediaCacheClear() {},
+      mediaCacheGeneration: () => 0,
+      MEDIA_TTL: {
+        recent: 60 * 60_000,
+        episodes: 12 * 60 * 60_000,
+        settled: 7 * 24 * 60 * 60_000,
+        stale: 30 * 24 * 60 * 60_000,
+      },
+    },
     "@/lib/safe-fetch": {
       safeFetch: async () => {
         throw new Error("unexpected live request");
@@ -85,7 +99,10 @@ function seriesModule(overrides: Record<string, unknown> = {}) {
       tmdbEpisodeNames: async () => null,
       tmdbSeasonEpisodes: async () => [],
     },
-    "./providers/tmdb/tmdb-client": { tmdbLanguageIso: () => "en" },
+    "./providers/tmdb/tmdb-client": {
+      effectiveTmdbLanguage: () => "en",
+      tmdbLanguageIso: () => "en",
+    },
     "./providers/tmdb/tmdb-image-rungs": { tmdbStillUrl: () => undefined },
     "./localized-text": { pickLocalizedText: () => undefined },
     "./providers/anime-kitsu-addon": addon,
@@ -140,7 +157,7 @@ test("the anime overview resolves the addon entry before the external graph", ()
     new URL("../src/lib/providers/anime-detail.ts", import.meta.url),
     "utf8",
   );
-  assert.match(src, /const entry = await resolveAnimeEntry\(meta\.id\)/);
+  assert.match(src, /const entry = await resolveAnimeEntry\(meta\.id, maxAge\)/);
   assert.doesNotMatch(src, /kitsuId = await externalToKitsu\(source, n\)/);
   assert.match(src, /directMeta &&[\s\S]*?parseKitsuId\(directMeta\.id\) === kitsuId/);
 });
@@ -158,6 +175,7 @@ test("a cached miss is retried after the short negative TTL", async () => {
   }) as typeof fetch;
   try {
     const module = load("src/lib/providers/anime-mapping.ts", {
+      "./kitsu-mapping": { kitsuExternalIds: async () => null },
       "@/lib/providers/anizip": {
         aniZipByAnidb: async () => null,
         aniZipByAnilist: async () => null,
@@ -175,11 +193,16 @@ test("a cached miss is retried after the short negative TTL", async () => {
       "@/lib/streams/anime-identity-core": { selectSiblingWindows: () => [] },
       "./mapping-store": {
         mappingStore: (key: string) => ({
+          ready: Promise.resolve(),
           get: () => (key === "harbor.extkitsucache.v2" ? stored : undefined),
           set: (_key: string, value: { kitsu: number | null; t: number }) => {
             stored = value;
           },
         }),
+      },
+      "@/lib/anime-identity-db": {
+        animeDbReadProvider: async () => null,
+        animeDbWriteProvider: async () => true,
       },
     });
     assert.equal(await module.externalToKitsu("myanimelist", 63181), 51018);

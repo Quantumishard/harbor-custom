@@ -121,7 +121,9 @@ export type TmdbDetail = {
   collection?: { id: number; name: string } | null;
   seasons: Season[];
   tmdbTvId?: number;
+  tvdbTvId?: number;
   seasonPosters?: Record<number, string>;
+  seasonBackdrops?: Record<number, string>;
   numberOfSeasons: number;
   numberOfEpisodes: number;
   keywords: number[];
@@ -229,6 +231,9 @@ export async function tmdbDetails(
     // Addons can supply a bare TMDB ID with its media type in a separate field.
     kind = meta.type === "movie" ? "movie" : "tv";
     id = meta.id.slice("tmdb:".length);
+  } else if (/^\d+$/.test(meta.id) && (meta.type === "movie" || meta.type === "series")) {
+    kind = meta.type === "movie" ? "movie" : "tv";
+    id = meta.id;
   } else if (meta.id.startsWith("tt")) {
     const findKey = `${meta.id}:${meta.type}`;
     const cached = findCache()[findKey];

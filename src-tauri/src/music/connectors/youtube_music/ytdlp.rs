@@ -18,7 +18,10 @@ const SEPARATOR: &str = "|||";
 
 pub async fn stream(app: &tauri::AppHandle, video_id: &str) -> Result<MusicStream, String> {
     let args = vec![
-        "--no-warnings".to_string(),
+        "--js-runtimes".to_string(),
+        "node".to_string(),
+        "--extractor-args".to_string(),
+        "youtube:player_client=tv_embedded".to_string(),
         "--no-playlist".to_string(),
         "-f".to_string(),
         FORMAT.to_string(),
@@ -26,7 +29,7 @@ pub async fn stream(app: &tauri::AppHandle, video_id: &str) -> Result<MusicStrea
         format!("%(url)s{SEPARATOR}%(ext)s{SEPARATOR}%(abr)s{SEPARATOR}%(http_headers)j"),
         format!("https://www.youtube.com/watch?v={video_id}"),
     ];
-    let output = super::ytdlp_update::run(app, args, TIMEOUT, "music stream").await?;
+    let output = crate::ytdlp_update::run(app, args, TIMEOUT, "music stream").await?;
     parse(&String::from_utf8_lossy(&output.stdout))
 }
 
@@ -36,14 +39,17 @@ pub async fn video_stream(
     video_id: &str,
 ) -> Result<MusicVideoStream, String> {
     let args = vec![
-        "--no-warnings".to_string(),
+        "--js-runtimes".to_string(),
+        "node".to_string(),
+        "--extractor-args".to_string(),
+        "youtube:player_client=tv_embedded".to_string(),
         "--no-playlist".to_string(),
         "-f".to_string(),
         VIDEO_FORMAT.to_string(),
         "--dump-single-json".to_string(),
         format!("https://www.youtube.com/watch?v={video_id}"),
     ];
-    let output = super::ytdlp_update::run(app, args, TIMEOUT, "music video").await?;
+    let output = crate::ytdlp_update::run(app, args, TIMEOUT, "music video").await?;
     parse_video(&String::from_utf8_lossy(&output.stdout))
 }
 
@@ -245,7 +251,7 @@ mod tests {
 /// Regular YouTube search, not the restricted YouTube Music catalogue.
 pub async fn search_interviews(app: &tauri::AppHandle, query: &str, limit: usize) -> Result<Vec<super::super::super::MusicTrack>, String> {
     let args = vec!["--no-warnings".into(), "--flat-playlist".into(), "--dump-single-json".into(), "--skip-download".into(), "--".into(), format!("ytsearch{}:{}", limit.clamp(1, 24), query)];
-    let output = super::ytdlp_update::run(app, args, Duration::from_secs(25), "YouTube interviews").await?;
+    let output = crate::ytdlp_update::run(app, args, Duration::from_secs(25), "YouTube interviews").await?;
     interview_results(&String::from_utf8_lossy(&output.stdout), limit)
 }
 
@@ -275,7 +281,7 @@ pub async fn search_video_page(app: &tauri::AppHandle, query: &str, offset: usiz
     let args = vec!["--no-warnings".into(), "--flat-playlist".into(), "--dump-single-json".into(), "--skip-download".into(),
         "--playlist-start".into(), (offset + 1).to_string(), "--playlist-end".into(), end.to_string(),
         "--".into(), format!("ytsearch{end}:{query}")];
-    let output = super::ytdlp_update::run(app, args, Duration::from_secs(32), "YouTube video search").await?;
+    let output = crate::ytdlp_update::run(app, args, Duration::from_secs(32), "YouTube video search").await?;
     let raw = String::from_utf8_lossy(&output.stdout);
     let value: serde_json::Value = serde_json::from_str(&raw).map_err(|_| "YouTube search returned invalid metadata")?;
     let entries = value.get("entries").and_then(serde_json::Value::as_array).ok_or("YouTube search returned no entries")?;

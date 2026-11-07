@@ -1,53 +1,47 @@
 import type { ExternalCwSource } from "@/lib/stremio";
 import { privateCwProfileId } from "./cw-profile";
+import { isNuvioProviderActive as isNuvioMode, getNuvioActiveSlot } from "./active-profile-id";
 
 const KEY = "harbor.resume";
 const PRIVATE_PREFIX = "harbor.resume.private.v1.";
 
+let cachedNuvioAccountRaw: string | null = null;
+let cachedNuvioAccountId = "anon";
+
 function nuvioAccountId(): string {
   try {
-    const raw = localStorage.getItem("harbor.nuvio.state.v1") ?? localStorage.getItem("harbor.nuvio.state");
+    const raw =
+      localStorage.getItem("harbor.nuvio.state.v1") ?? localStorage.getItem("harbor.nuvio.state");
+    if (raw === cachedNuvioAccountRaw) return cachedNuvioAccountId;
+    cachedNuvioAccountRaw = raw;
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed?.session?.user?.id) return String(parsed.session.user.id);
-    }
-  } catch {}
-  return "anon";
-}
-
-function isNuvioMode(): boolean {
-  try {
-    const explicit = localStorage.getItem("harbor.account-provider");
-    if (explicit === "nuvio") return true;
-    if (explicit === "stremio") return false;
-    for (const key of ["harbor.settings.shared", "harbor.settings", "harbor.settings.v1"]) {
-      const raw = localStorage.getItem(key);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed.accountProvider === "nuvio") return true;
+      if (parsed?.session?.user?.id) {
+        cachedNuvioAccountId = String(parsed.session.user.id);
+        return cachedNuvioAccountId;
       }
     }
   } catch {}
-  return false;
-}
-
-function nuvioActiveSlot(): number {
-  try {
-    const raw = localStorage.getItem("harbor.nuvio.state.v1") || localStorage.getItem("harbor.nuvio.state");
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      return typeof parsed.activeProfileIndex === "number" ? parsed.activeProfileIndex : 1;
-    }
-  } catch {}
-  return 1;
+  cachedNuvioAccountId = "anon";
+  return "anon";
 }
 
 function effectiveOwner(ownerId?: string): string | undefined {
   if (ownerId && ownerId.startsWith("nuvio-")) return ownerId;
   if (isNuvioMode()) {
-    return `nuvio-${nuvioActiveSlot()}`;
+    return `nuvio-${getNuvioActiveSlot()}`;
   }
   return ownerId;
+}
+
+function resumeTargetKeys(rawOwner?: string): string[] {
+  const eff = effectiveOwner(rawOwner);
+  if (eff && eff.startsWith("nuvio-")) {
+    const acc = nuvioAccountId();
+    return [`${PRIVATE_PREFIX}${acc}.${eff}`];
+  }
+  if (eff) return [KEY, PRIVATE_PREFIX + eff];
+  return [readKey()];
 }
 
 function readKey(ownerId?: string): string {
@@ -109,6 +103,7 @@ export function saveResumeMs(
   pct?: number,
   source?: ExternalCwSource,
   ownerId?: string,
+  atTimestamp?: number,
 ): void {
   if (!Number.isFinite(ms) || ms < 0) return;
   if (typeof season === "number" && typeof episode === "number") {
@@ -118,7 +113,7 @@ export function saveResumeMs(
   const p = pct !== undefined && Number.isFinite(pct) && pct >= 0 && pct <= 1 ? pct : undefined;
   const entry: Entry = {
     ms,
-    t: Date.now(),
+    t: atTimestamp && atTimestamp > 0 ? atTimestamp : Date.now(),
     ...(s !== undefined ? { s } : {}),
     ...(p !== undefined ? { pct: p } : {}),
     ...(source !== undefined ? { source } : {}),
@@ -155,10 +150,7 @@ export function saveResumeBatch(
 ): void {
   if (entries.length === 0) return;
   const eff = effectiveOwner(ownerId);
-  const key =
-    eff && eff.startsWith("nuvio-")
-      ? `${PRIVATE_PREFIX}${nuvioAccountId()}.${eff}`
-      : KEY;
+  const key = eff && eff.startsWith("nuvio-") ? `${PRIVATE_PREFIX}${nuvioAccountId()}.${eff}` : KEY;
   const all = readAll(key);
   const now = Date.now();
   for (const e of entries) {
@@ -178,7 +170,12 @@ export function saveResumeBatch(
   writeAll(all, key);
 }
 
-export function readResumeMs(id: string, season?: number, episode?: number, ownerId?: string): number {
+export function readResumeMs(
+  id: string,
+  season?: number,
+  episode?: number,
+  ownerId?: string,
+): number {
   const all = readAll(readKey(ownerId));
   return all[entryKey(id, season, episode)]?.ms ?? 0;
 }
@@ -202,6 +199,15 @@ export function readResumeEntry(
     : null;
 }
 
+/** One synchronous episode scan reads its profile and storage snapshot once. */
+export function createResumeReader(ownerId?: string) {
+  const entries = { ...readAll(readKey(ownerId)) };
+  return (id: string, season?: number, episode?: number): ReturnType<typeof readResumeEntry> => {
+    const entry = entries[entryKey(id, season, episode)];
+    return entry ? { ...entry } : null;
+  };
+}
+
 export function readResumeSource(
   id: string,
   season?: number,
@@ -216,11 +222,7 @@ export function clearAllNuvioResume(): void {
     const toRemove: string[] = [];
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
-      if (
-        key &&
-        (key.startsWith("harbor.resume.private.v1.nuvio-") ||
-          key.includes(".nuvio-"))
-      ) {
+      if (key && (key.startsWith("harbor.resume.private.v1.nuvio-") || key.includes(".nuvio-"))) {
         toRemove.push(key);
       }
     }
@@ -228,6 +230,18 @@ export function clearAllNuvioResume(): void {
       localStorage.removeItem(k);
       parsedResume.delete(k);
     }
+  } catch {}
+}
+
+export function clearAllResumeForProfile(profileId?: string): void {
+  try {
+    if (profileId) {
+      const k = `${PRIVATE_PREFIX}${profileId}`;
+      localStorage.removeItem(k);
+      parsedResume.delete(k);
+    }
+    localStorage.removeItem(KEY);
+    parsedResume.delete(KEY);
   } catch {}
 }
 
@@ -239,17 +253,7 @@ export function clearResume(
 ): void {
   const rawOwner = typeof ownerOrOptions === "string" ? ownerOrOptions : ownerOrOptions?.ownerId;
   const acknowledged = typeof ownerOrOptions === "object" && ownerOrOptions?.acknowledged === true;
-  const eff = effectiveOwner(rawOwner);
-  const targetKeys: string[] = [];
-  if (eff && eff.startsWith("nuvio-")) {
-    const acc = nuvioAccountId();
-    targetKeys.push(`${PRIVATE_PREFIX}${acc}.${eff}`);
-  } else if (eff) {
-    targetKeys.push(KEY, PRIVATE_PREFIX + eff);
-  } else {
-    targetKeys.push(readKey());
-  }
-  for (const key of targetKeys) {
+  for (const key of resumeTargetKeys(rawOwner)) {
     const all = readAll(key);
     if (typeof season === "number" && typeof episode === "number") {
       delete all[entryKey(id, season, episode)];
@@ -261,6 +265,39 @@ export function clearResume(
       }
     }
     writeAll(all, key, acknowledged);
+  }
+}
+
+/** Clear many cloud-resume rows with one write per storage key. */
+export function clearResumeBatch(
+  entries: Array<{ id: string; season?: number | null; episode?: number | null }>,
+  ownerId?: string,
+): void {
+  if (entries.length === 0) return;
+  for (const key of resumeTargetKeys(ownerId)) {
+    const all = readAll(key);
+    let touched = false;
+    for (const { id, season, episode } of entries) {
+      if (!id) continue;
+      if (typeof season === "number" && typeof episode === "number") {
+        const coordinate = entryKey(id, season, episode);
+        if (!(coordinate in all)) continue;
+        delete all[coordinate];
+        touched = true;
+        continue;
+      }
+      if (id in all) {
+        delete all[id];
+        touched = true;
+      }
+      const prefix = `${id}|`;
+      for (const k of Object.keys(all)) {
+        if (!k.startsWith(prefix)) continue;
+        delete all[k];
+        touched = true;
+      }
+    }
+    if (touched) writeAll(all, key);
   }
 }
 

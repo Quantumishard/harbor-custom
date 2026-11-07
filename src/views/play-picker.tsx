@@ -10,6 +10,7 @@ import {
   X,
 } from "lucide-react";
 import { useT } from "@/lib/i18n";
+import { shouldIgnoreSourceDrawerKey } from "@/views/play-picker/keyboard";
 import { resolveAddonLogo } from "@/components/addon-logo";
 import { torrentEngineStatus } from "@/lib/torrent/local-engine";
 import { directTorrentEnabled, torrentsDisabled } from "@/lib/torrent/stremio-stream";
@@ -80,6 +81,7 @@ import { SourceDrawer } from "./play-picker/source-drawer";
 import { TierStrip } from "./play-picker/tier-strip";
 import { usePickHandler, type ResolvingSelection } from "./play-picker/use-pick-handler";
 import { useActiveKid } from "@/lib/profiles";
+import { expandOriginalAudioLang } from "@/lib/player/audio-language";
 import { useAutoCandidates } from "./play-picker/use-auto-candidates";
 import { useAutoFire } from "./play-picker/use-auto-fire";
 import { useRoomInvite } from "./play-picker/use-room-invite";
@@ -104,6 +106,16 @@ const TIER_ORDER: Tier[] = ["4K_DV", "4K_HDR", "4K", "1080p_HDR", "1080p", "720p
 
 const RESOLVE_TIMEOUT_MS = 150_000;
 
+const TORRENTS_BANNER_DISMISS_KEY = "harbor.stream-picker.torrents-disabled.dismissed.v1";
+
+function torrentsBannerDismissed(): boolean {
+  try {
+    return localStorage.getItem(TORRENTS_BANNER_DISMISS_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 type PerEpisodeStatus =
   | { code: "checking"; total: number }
   | { code: "checked"; done: number; total: number }
@@ -114,6 +126,7 @@ type PerEpisodeStatus =
 
 export function PlayPicker({
   meta,
+  queueItemId,
   episode,
   autoPlay,
   attempt,
@@ -124,6 +137,7 @@ export function PlayPicker({
   playerActive,
 }: {
   meta: Meta;
+  queueItemId?: string;
   episode?: PlayEpisode;
   autoPlay?: boolean;
   attempt?: number;
@@ -253,8 +267,15 @@ export function PlayPicker({
   const [failedStreams, setFailedStreams] = useState<Set<ScoredStream>>(new Set());
   const [selectedTier, setSelectedTier] = useState<Tier | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const drawerOpenRef = useRef(drawerOpen);
+  drawerOpenRef.current = drawerOpen;
+  const mainRef = useRef<HTMLElement>(null);
+  const drawerRef = useRef<HTMLDivElement>(null);
+  const openDrawerWithScrollRef = useRef<(() => void) | null>(null);
+  const closeDrawerWithScrollRef = useRef<(() => void) | null>(null);
   const [strictMode, setStrictMode] = useState(settings.streamFilterLevel === "strict");
   const [forceShowAll, setForceShowAll] = useState(false);
+  const [hideTorrentsBanner, setHideTorrentsBanner] = useState(torrentsBannerDismissed);
   const filterDisabled = settings.streamFilterLevel === "off" || forceShowAll || isDownload;
   const animeTitles = useAnimeAltTitles(meta, episode?.sourceMetaId);
   const {
@@ -301,8 +322,8 @@ export function PlayPicker({
       seen.add(code);
       out.push(lang);
     }
-    return out;
-  }, [baseLangs, settings.preferredAudioLangs, isAnimeRequest]);
+    return expandOriginalAudioLang(out, meta.originalLanguage, isAnimeRequest);
+  }, [baseLangs, settings.preferredAudioLangs, isAnimeRequest, meta.originalLanguage]);
   const [langFilter, setLangFilter] = useState(
     settings.requirePreferredLanguage === true && baseLangs.length > 0,
   );
@@ -510,7 +531,6 @@ export function PlayPicker({
   });
 
   const autoFiredRef = useRef(false);
-  const mainRef = useRef<HTMLElement>(null);
   const [autoAttemptIdx, setAutoAttemptIdx] = useState(0);
   const [autoExhausted, setAutoExhausted] = useState(false);
   const [autoCancelled, setAutoCancelled] = useState(false);
@@ -527,6 +547,95 @@ export function PlayPicker({
     const t = window.setTimeout(() => setAutoCancelled(true), 45_000);
     return () => window.clearTimeout(t);
   }, [autoActive, lastSeriesSource, pipelineDone, addonQuorum]);
+
+  const setMainRef = useCallback(
+    (node: HTMLElement | null) => {
+      mainRef.current = node;
+
+      if (settings.pickerLayout !== "condensed" || !node) return;
+
+      let scrollFrame = 0;
+      let measureFrame = 0;
+      let scrollPending = false;
+      const scrollToSourceDrawer = (gap = 20) => {
+        if (drawerOpenRef.current || scrollPending) return;
+        scrollPending = true;
+        setDrawerOpen(true);
+        scrollFrame = requestAnimationFrame(() => {
+          scrollFrame = 0;
+          measureFrame = requestAnimationFrame(() => {
+            measureFrame = 0;
+            scrollPending = false;
+            if (!node.isConnected || !drawerOpenRef.current) return;
+            const drawerEl = drawerRef.current;
+            if (!drawerEl) return;
+            const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
+            const drawerTop = drawerEl.offsetTop;
+            const targetScroll = Math.max(0, Math.min(drawerTop - gap, maxScroll));
+            const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches
+              ? "auto"
+              : "smooth";
+            node.scrollTo({ top: targetScroll, behavior });
+          });
+        });
+      };
+      const scrollToTop = () => {
+        if (scrollFrame) cancelAnimationFrame(scrollFrame);
+        if (measureFrame) cancelAnimationFrame(measureFrame);
+        scrollFrame = 0;
+        measureFrame = 0;
+        scrollPending = false;
+        const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches
+          ? "auto"
+          : "smooth";
+        node.scrollTo({ top: 0, behavior });
+      };
+      openDrawerWithScrollRef.current = scrollToSourceDrawer;
+      closeDrawerWithScrollRef.current = scrollToTop;
+
+      const onWheel = (e: WheelEvent) => {
+        if (e.deltaY <= 0) return;
+        const atBottom = node.scrollHeight - node.scrollTop - node.clientHeight <= 20;
+        if (atBottom) scrollToSourceDrawer();
+      };
+
+      const onKeyDown = (e: KeyboardEvent) => {
+        if (shouldIgnoreSourceDrawerKey(e.target, node)) return;
+
+        if (e.key === " " && drawerOpenRef.current) {
+          e.preventDefault();
+          setDrawerOpen(false);
+          scrollToTop();
+          return;
+        }
+
+        if (drawerOpenRef.current) return;
+
+        if (["ArrowDown", "PageDown", " ", "Down"].includes(e.key)) {
+          e.preventDefault();
+          scrollToSourceDrawer();
+        }
+      };
+
+      node.addEventListener("wheel", onWheel, { passive: true });
+      window.addEventListener("keydown", onKeyDown);
+
+      return () => {
+        if (scrollFrame) cancelAnimationFrame(scrollFrame);
+        if (measureFrame) cancelAnimationFrame(measureFrame);
+        scrollPending = false;
+        if (openDrawerWithScrollRef.current === scrollToSourceDrawer) {
+          openDrawerWithScrollRef.current = null;
+        }
+        if (closeDrawerWithScrollRef.current === scrollToTop) {
+          closeDrawerWithScrollRef.current = null;
+        }
+        node.removeEventListener("wheel", onWheel);
+        window.removeEventListener("keydown", onKeyDown);
+      };
+    },
+    [settings.pickerLayout],
+  );
 
   const previousMatch: ScoredStream | null = useMemo(() => {
     if (!filteredPicker || !previousPlayback) return null;
@@ -570,6 +679,9 @@ export function PlayPicker({
   const [pendingPreselect, setPendingPreselect] = useState<PlayerSrc | null>(null);
   const openPlayerGated = useCallback(
     (s: PlayerSrc) => {
+      const source = queueItemId
+        ? { ...s, meta: metaForDisplay, episode, queueItemId }
+        : { ...s, queueItemId: undefined };
       const applicable =
         settings.subtitlePreselect &&
         !isDownload &&
@@ -579,13 +691,21 @@ export function PlayPicker({
         !s.meta.id?.startsWith("iptv:") &&
         (s.meta.type === "movie" || s.meta.type === "series" || s.meta.type === "anime");
       if (!applicable) {
-        openPlayer(s);
+        openPlayer(source);
         return;
       }
       setResolving(null);
-      setPendingPreselect(s);
+      setPendingPreselect(source);
     },
-    [settings.subtitlePreselect, isDownload, inSession, openPlayer],
+    [
+      settings.subtitlePreselect,
+      isDownload,
+      inSession,
+      openPlayer,
+      queueItemId,
+      metaForDisplay,
+      episode,
+    ],
   );
 
   const {
@@ -601,6 +721,7 @@ export function PlayPicker({
     cancelP2p,
   } = usePickHandler({
     meta: metaForDisplay,
+    queueItemId,
     imdbId,
     imdbIdVerified: resolvedImdb.verified,
     episode,
@@ -655,6 +776,7 @@ export function PlayPicker({
     !!previousMatch && (isCached(previousMatch) || !!previousMatch.url || p2pAutoConsent);
   const rememberedFiredRef = useRef(false);
   const rememberedHandledFirst =
+    !autoCancelled &&
     !!previousMatch &&
     (settings.rememberLastStream || !!continuation) &&
     !!resume &&
@@ -721,7 +843,13 @@ export function PlayPicker({
     expectHostSource,
     hostSource: hostSourceForMedia,
     preferredSourceEntry: lastSeriesSource,
-    preferredSourceMatched: sameSourceMatch != null || previousMatch != null,
+    preferredSourceMatched:
+      !!lastSeriesSource &&
+      !!autoCandidates[0] &&
+      (lastSeriesSourceIsLineage ? streamMatchesPreferredSource : streamMatchesSource)(
+        autoCandidates[0],
+        lastSeriesSource,
+      ),
     season: !isAnimeMetaId ? (episode?.season ?? null) : null,
     episode: !isAnimeMetaId ? (episode?.episode ?? null) : null,
     addonQuorum,
@@ -864,11 +992,11 @@ export function PlayPicker({
     };
   }, [engineWarming, setResolveError]);
 
-  const showAutoTransition =
-    !pickerErrorText &&
-    !isDownload &&
-    ((autoActive && (streamIds === null || loading || autoCandidates.length > 0)) ||
-      resolving != null);
+  // Keep the initial automatic/resume transition mounted while waiting for
+  // the preferred addon's first candidate. The old condition briefly became
+  // false between stream IDs resolving and the first source arriving, exposing
+  // the picker for a frame before switching back to the loading screen.
+  const showAutoTransition = !pickerErrorText && !isDownload && (autoActive || resolving != null);
   void terminalEmpty;
 
   const pickerScrollKey = useMemo(() => {
@@ -958,7 +1086,7 @@ export function PlayPicker({
   }
 
   return (
-    <main ref={mainRef} className="absolute inset-0 z-50 overflow-y-auto bg-canvas">
+    <main ref={setMainRef} className="absolute inset-0 z-60 overflow-y-auto bg-canvas">
       <BackdropLayer src={backdropSrc} />
 
       <div
@@ -967,8 +1095,19 @@ export function PlayPicker({
         className="absolute start-0 end-6 top-0 z-10 h-20"
       />
 
-      <div className="relative mx-auto flex min-h-full w-full max-w-5xl flex-col gap-12 px-12 pb-32 pt-32">
+      <div className="relative z-20 mx-auto flex min-h-full w-full max-w-5xl flex-col gap-5 px-12 pb-32 pt-6">
         <PickerNav onBack={backToDetail} onRefresh={refresh} refreshing={loading} />
+        {pickerErrorText && engineWarming && (
+          <div className="flex items-center gap-3 rounded-2xl border border-edge-soft/60 bg-elevated/40 px-5 py-4 text-[13.5px] text-ink-muted">
+            <Loader2 size={16} className="shrink-0 animate-spin text-ink-subtle" />
+            <span>{pickerErrorText}</span>
+          </div>
+        )}
+        {pickerErrorText && !engineWarming && (
+          <div className="rounded-2xl border border-danger/30 bg-danger/15 px-5 py-4 text-[13.5px] text-ink">
+            {pickerErrorText}
+          </div>
+        )}
         <PickerHeader
           meta={metaForDisplay}
           episode={episode}
@@ -1011,19 +1150,36 @@ export function PlayPicker({
           </div>
         )}
 
-        {torrentsDisabled() && (
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-300/30 bg-amber-400/10 px-5 py-3.5 text-[13px] text-amber-100">
-            <span>
+        {torrentsDisabled() && !hideTorrentsBanner && (
+          <div className="flex items-center justify-between gap-3 rounded-2xl border border-amber-300/30 bg-amber-400/10 px-5 py-3.5 text-[13px] text-amber-100">
+            <span className="min-w-0 flex-1">
               Torrents are disabled in settings. Uncached streams will not play unless they come
               from a debrid service or a direct link.
             </span>
-            <button
-              type="button"
-              onClick={() => openSettings("player")}
-              className="rounded-md border border-amber-300/40 px-3 py-1 text-[12px] font-semibold text-amber-100 transition-colors hover:bg-amber-300/10"
-            >
-              Open Settings
-            </button>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={() => openSettings("player")}
+                className="rounded-md border border-amber-300/40 px-3 py-1 text-[12px] font-semibold text-amber-100 transition-colors hover:bg-amber-300/10"
+              >
+                Open Settings
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  try {
+                    localStorage.setItem(TORRENTS_BANNER_DISMISS_KEY, "1");
+                  } catch {
+                    /* noop */
+                  }
+                  setHideTorrentsBanner(true);
+                }}
+                aria-label={t("Dismiss")}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-amber-100/80 transition-colors hover:bg-amber-300/10 hover:text-amber-100"
+              >
+                <X size={14} strokeWidth={2.2} />
+              </button>
+            </div>
           </div>
         )}
 
@@ -1209,22 +1365,33 @@ export function PlayPicker({
             )}
 
             {!loading && allCount > 0 && filteredPicker && (
-              <SourceDrawer
-                open={drawerOpen}
-                onToggle={() => setDrawerOpen((o) => !o)}
-                count={allCount}
-                addonCount={addonCount}
-                usedAddons={usedAddons}
-                streams={displayStreams}
-                debrids={debrids}
-                getAddonLogo={lookupLogo}
-                matchFor={hostMatch ? matchFor : undefined}
-                onPlay={playManually}
-                resolvingId={resolving?.stream.infoHash ?? null}
-                showName={meta.name}
-                episode={episode}
-                absoluteEpisode={animeAbsoluteEpisode}
-              />
+              <div ref={drawerRef}>
+                <SourceDrawer
+                  open={drawerOpen}
+                  onToggle={() => {
+                    if (drawerOpenRef.current) {
+                      setDrawerOpen(false);
+                      closeDrawerWithScrollRef.current?.();
+                    } else if (openDrawerWithScrollRef.current) {
+                      openDrawerWithScrollRef.current();
+                    } else {
+                      setDrawerOpen(true);
+                    }
+                  }}
+                  count={allCount}
+                  addonCount={addonCount}
+                  usedAddons={usedAddons}
+                  streams={displayStreams}
+                  debrids={debrids}
+                  getAddonLogo={lookupLogo}
+                  matchFor={hostMatch ? matchFor : undefined}
+                  onPlay={playManually}
+                  resolvingId={resolving?.stream.infoHash ?? null}
+                  showName={meta.name}
+                  episode={episode}
+                  absoluteEpisode={animeAbsoluteEpisode}
+                />
+              </div>
             )}
           </>
         )}
@@ -1433,7 +1600,7 @@ function PickerScrollTop({
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const onScroll = () => setShow(el.scrollTop > 600);
+    const onScroll = () => setShow(el.scrollTop > 400);
     el.addEventListener("scroll", onScroll, { passive: true });
     onScroll();
     return () => el.removeEventListener("scroll", onScroll);

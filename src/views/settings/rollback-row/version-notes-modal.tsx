@@ -1,4 +1,4 @@
-import { ArrowDownToLine, Check, Info, X } from "../icons";
+import { Check, Info, X } from "../icons";
 import { ModalShell, useModalExit } from "@/components/modal-shell";
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { RichNote } from "@/components/update/rich-notes";
@@ -6,13 +6,13 @@ import { advanceFocus, captureFocusReturn } from "@/lib/keyboard-navigation";
 import { getDirection, isBackKey } from "@/lib/keyboard-navigation/geometry";
 import { useT } from "@/lib/i18n";
 import { hasRichNote, releaseNote, type ReleaseNote } from "@/lib/updater/release-notes";
+import { RELEASES_URL } from "@/lib/updater/release-links";
 import { installerUrl, type VersionEntry } from "@/lib/updater/versions";
 import { openUrl } from "@/lib/window";
+import { VersionDownloadButton } from "./version-download-button";
 import { ROW_DESC } from "../kit";
 import { SButton } from "../ui";
 import { VERSION_BADGE } from "./badge";
-
-const RELEASES_URL = "https://github.com/harborstremio/harbor/releases";
 
 export function VersionNotesModal({
   entry,
@@ -50,7 +50,7 @@ export function VersionNotesModal({
 
   useEffect(() => {
     let ok = true;
-    releaseNote(entry.version).then((n) => ok && setRich(n));
+    releaseNote(entry.version, entry.channel).then((n) => ok && setRich(n));
     return () => {
       ok = false;
     };
@@ -133,14 +133,12 @@ export function VersionNotesModal({
             {t("Current")}
           </span>
         ) : url ? (
-          <SButton
+          <VersionDownloadButton
+            entry={entry}
             variant="primary"
+            label={t("Download this build")}
             title={t("Download this build's installer, then run it over your current copy")}
-            onClick={() => openUrl(url)}
-          >
-            <ArrowDownToLine size={16} strokeWidth={2.4} />
-            {t("Download this build")}
-          </SButton>
+          />
         ) : null}
       </div>
     </ModalShell>

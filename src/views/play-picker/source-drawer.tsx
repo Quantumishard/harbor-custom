@@ -2,6 +2,7 @@ import { ChevronDown, Download, ExternalLink, Loader2, Zap } from "lucide-react"
 import { Play } from "@/components/icons/play-filled";
 import { useEffect, useMemo, useState } from "react";
 import { AddonLogo, AddonLogoStack } from "@/components/addon-logo";
+import { AccountOriginBadge } from "@/components/account-origin-badge";
 import { CopyLinkButton, resolveStreamLink } from "@/components/player/copy-link-button";
 import { FlagStack } from "@/components/flag";
 import { FormatBadge, RuleBadges } from "@/components/format-badge";
@@ -231,6 +232,7 @@ function SourceRow({
                 <span className="text-ink-subtle/60"> · {summary.join(" · ")}</span>
               )}
             </span>
+            <AccountOriginBadge addonUrl={stream.addonUrl || stream.addonId} size="sm" />
           </p>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-2 pt-0.5">
@@ -263,7 +265,7 @@ function SourceRow({
                 <Zap size={11} strokeWidth={2} />
                 {t("Cached")}
               </span>
-            ) : !stream.url && !stream.infoHash && (stream.externalUrl || stream.ytId) ? (
+            ) : !stream.url && !stream.infoHash && stream.externalUrl ? (
               <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold uppercase tracking-[0.14em] text-ink-subtle">
                 <ExternalLink size={11} strokeWidth={2.2} />
                 {t("External")}
@@ -276,7 +278,7 @@ function SourceRow({
             ) : null}
             {resolving ? (
               <Loader2 size={16} className="animate-spin text-ink-muted" />
-            ) : !stream.url && !stream.infoHash && (stream.externalUrl || stream.ytId) ? (
+            ) : !stream.url && !stream.infoHash && stream.externalUrl ? (
               <ExternalLink
                 size={14}
                 strokeWidth={2.2}

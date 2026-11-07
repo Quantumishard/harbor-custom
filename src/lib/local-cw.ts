@@ -1,4 +1,5 @@
 import { cwProfileScope, privateCwProfileId } from "./cw-profile";
+import { isNuvioProviderActive, getNuvioActiveSlot } from "./active-profile-id";
 
 const KEY_PREFIX = "harbor.localcw.v1.";
 const PRIVATE_PREFIX = "harbor.localcw.private.v1.";
@@ -15,13 +16,33 @@ export type LocalCwEntry = {
   background?: string;
   isAnime?: boolean;
   source?: "library" | "local";
+  external?: "nuvio" | "stremio" | string;
   season?: number;
   episode?: number;
   videoId?: string;
   positionMs: number;
   durationMs: number;
   t: number;
+  /** Nuvio content-level watched timestamp this card was advanced for. */
+  serverWatchedAt?: number;
 };
+
+const CLOUD_ID = /^(?:tt\d|kitsu:|mal:|anilist:|anidb:|tmdb:)/;
+
+/**
+ * Entries written before the source field existed are classified the same way
+ * new playback entries are, instead of defaulting every old item to "local".
+ */
+export function localCwSource(entry: Pick<LocalCwEntry, "id" | "source">): "library" | "local" {
+  return entry.source ?? (CLOUD_ID.test(entry.id) ? "library" : "local");
+}
+
+export function localCwSourceEnabled(
+  entry: Pick<LocalCwEntry, "id" | "source">,
+  sources: { library: boolean; local: boolean },
+): boolean {
+  return localCwSource(entry) === "library" ? sources.library : sources.local;
+}
 
 const subs = new Set<() => void>();
 let version = 0;
@@ -29,7 +50,8 @@ const cache = new Map<string, Record<string, LocalCwEntry>>();
 
 function nuvioAccountId(): string {
   try {
-    const raw = localStorage.getItem("harbor.nuvio.state.v1") ?? localStorage.getItem("harbor.nuvio.state");
+    const raw =
+      localStorage.getItem("harbor.nuvio.state.v1") ?? localStorage.getItem("harbor.nuvio.state");
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed?.session?.user?.id) return String(parsed.session.user.id);
@@ -39,20 +61,15 @@ function nuvioAccountId(): string {
 }
 
 function isNuvioMode(): boolean {
-  try {
-    const explicit = localStorage.getItem("harbor.account-provider");
-    if (explicit === "nuvio") return true;
-    if (explicit === "stremio") return false;
-    for (const key of ["harbor.settings.shared", "harbor.settings", "harbor.settings.v1"]) {
-      const raw = localStorage.getItem(key);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed.accountProvider === "nuvio") return true;
-        if (parsed.accountProvider === "stremio") return false;
-      }
-    }
-  } catch {}
-  return false;
+  return isNuvioProviderActive();
+}
+
+function effectiveOwner(ownerId?: string): string | undefined {
+  if (ownerId && ownerId.startsWith("nuvio-")) return ownerId;
+  if (isNuvioProviderActive()) {
+    return `nuvio-${getNuvioActiveSlot()}`;
+  }
+  return ownerId;
 }
 
 function primaryProfileId(): string {
@@ -72,8 +89,14 @@ function primaryProfileId(): string {
 }
 
 function storeKey(privateOnly = false, ownerId?: string): string {
+  const eff = effectiveOwner(ownerId);
+  if (isNuvioProviderActive() || (eff && eff.startsWith("nuvio-"))) {
+    const acc = nuvioAccountId();
+    const pid = eff || `nuvio-${getNuvioActiveSlot()}`;
+    return `${KEY_PREFIX}${acc}.${pid}`;
+  }
   const scope = cwProfileScope(ownerId);
-  if (isNuvioMode() || scope.profileId.startsWith("nuvio-")) {
+  if (scope.profileId.startsWith("nuvio-")) {
     const acc = nuvioAccountId();
     return `${KEY_PREFIX}${acc}.${scope.profileId}`;
   }
@@ -113,15 +136,21 @@ function readAll(key: string): Record<string, LocalCwEntry> {
 }
 
 function writeAll(key: string, all: Record<string, LocalCwEntry>, acknowledged = false): void {
-  cache.set(key, all);
+  const previous = cache.get(key);
   try {
     localStorage.setItem(key, JSON.stringify(all));
   } catch (error) {
-    if (acknowledged)
+    if (acknowledged) {
+      if (previous) cache.set(key, previous);
+      else cache.delete(key);
       throw new Error("Could not save the change. Check available storage and try again.", {
         cause: error,
       });
+    }
+    cache.delete(key);
+    return;
   }
+  cache.set(key, all);
 }
 
 function emit(): void {
@@ -129,20 +158,28 @@ function emit(): void {
   for (const fn of subs) fn();
 }
 
-function saveEntry(key: string, entry: LocalCwEntry): void {
-  const all = { ...readAll(key) };
+function applyEntry(all: Record<string, LocalCwEntry>, entry: LocalCwEntry): boolean {
   const finished = entry.durationMs > 0 && entry.positionMs / entry.durationMs >= FINISHED_RATIO;
   if (finished && entry.type === "movie") {
-    if (!(entry.id in all)) return;
+    if (!(entry.id in all)) return false;
     delete all[entry.id];
-  } else {
-    all[entry.id] = entry;
-    const ids = Object.keys(all);
-    if (ids.length > MAX) {
-      ids.sort((a, b) => all[a].t - all[b].t);
-      for (const id of ids.slice(0, ids.length - MAX)) delete all[id];
-    }
+    return true;
   }
+  all[entry.id] = entry;
+  return true;
+}
+
+function capEntries(all: Record<string, LocalCwEntry>): void {
+  const ids = Object.keys(all);
+  if (ids.length <= MAX) return;
+  ids.sort((a, b) => all[a].t - all[b].t);
+  for (const id of ids.slice(0, ids.length - MAX)) delete all[id];
+}
+
+function saveEntry(key: string, entry: LocalCwEntry): void {
+  const all = { ...readAll(key) };
+  if (!applyEntry(all, entry)) return;
+  capEntries(all);
   writeAll(key, all);
 }
 
@@ -150,21 +187,60 @@ function saveEntry(key: string, entry: LocalCwEntry): void {
 // writing the shared store; its history cannot establish who watched a title.
 export function saveLocalCw(entry: LocalCwEntry, ownerId?: string, shared = true): void {
   if (!entry.id || (entry.type !== "movie" && entry.type !== "series")) return;
-  if (isNuvioMode()) {
-    saveEntry(storeKey(false, ownerId), entry);
+  const isNuvio =
+    isNuvioProviderActive() ||
+    (ownerId != null && ownerId.startsWith("nuvio-")) ||
+    (entry as any).external === "nuvio";
+  if (isNuvio) {
+    const eff = effectiveOwner(ownerId) || `nuvio-${getNuvioActiveSlot()}`;
+    const nuvioEntry = { ...entry, external: "nuvio" as const };
+    saveEntry(storeKey(false, eff), nuvioEntry);
     emit();
     return;
   }
+  // Stremio mode: strictly reject any Nuvio items
+  if ((entry as any).external === "nuvio") return;
   if (ownerId) saveEntry(storeKey(true, ownerId), entry);
   if (shared) saveEntry(storeKey(false, ownerId), entry);
   emit();
 }
 
-export function listLocalCw(privateOnly = !!privateCwProfileId(), ownerId?: string): LocalCwEntry[] {
-  const isNuvio = isNuvioMode();
+/** One storage write and one notification for a cloud commit or progress pull. */
+export function saveLocalCwBatch(entries: LocalCwEntry[], ownerId?: string, shared = true): void {
+  const valid = entries.filter(
+    (entry) => entry.id && (entry.type === "movie" || entry.type === "series"),
+  );
+  if (valid.length === 0) return;
+  const targetKeys: string[] = [];
+  if (isNuvioMode()) {
+    targetKeys.push(storeKey(false, ownerId));
+  } else {
+    if (ownerId) targetKeys.push(storeKey(true, ownerId));
+    if (shared) targetKeys.push(storeKey(false, ownerId));
+  }
+  let changed = false;
+  for (const key of new Set(targetKeys)) {
+    const all = { ...readAll(key) };
+    let touched = false;
+    for (const entry of valid) touched = applyEntry(all, entry) || touched;
+    if (!touched) continue;
+    capEntries(all);
+    writeAll(key, all);
+    changed = true;
+  }
+  if (changed) emit();
+}
+
+export function listLocalCw(
+  privateOnly = !!privateCwProfileId(),
+  ownerId?: string,
+): LocalCwEntry[] {
+  const isNuvio = isNuvioMode() || (ownerId != null && ownerId.startsWith("nuvio-"));
   const entries = Object.values(readAll(storeKey(privateOnly, ownerId)));
   if (!isNuvio) {
-    return entries.filter((e) => !(e.id && (e as any).external === "nuvio")).sort((a, b) => b.t - a.t);
+    return entries
+      .filter((e) => !(e.id && (e as any).external === "nuvio"))
+      .sort((a, b) => b.t - a.t);
   }
   return entries.sort((a, b) => b.t - a.t);
 }
@@ -185,24 +261,117 @@ export function clearLocalCw(
   const ownerId = typeof ownerOrOptions === "string" ? ownerOrOptions : undefined;
   const acknowledged =
     typeof ownerOrOptions === "object" ? ownerOrOptions.acknowledged : options.acknowledged;
+  const isNuvio = isNuvioProviderActive() || (ownerId != null && ownerId.startsWith("nuvio-"));
   const targetKeys = new Set<string>();
-  if (ownerId) {
-    targetKeys.add(storeKey(true, ownerId));
-    targetKeys.add(storeKey(false, ownerId));
+  if (isNuvio) {
+    const eff = effectiveOwner(ownerId) || `nuvio-${getNuvioActiveSlot()}`;
+    targetKeys.add(storeKey(false, eff));
+    targetKeys.add(storeKey(true, eff));
   } else {
-    targetKeys.add(storeKey(!!privateCwProfileId()));
+    if (ownerId) {
+      targetKeys.add(storeKey(true, ownerId));
+      targetKeys.add(storeKey(false, ownerId));
+    } else {
+      targetKeys.add(storeKey(!!privateCwProfileId()));
+    }
+    targetKeys.add(LEGACY_KEY);
   }
-  targetKeys.add(LEGACY_KEY);
+  const cleanId = id.replace(/^(series|movie|tmdb):/, "").trim();
+  const idVariants = new Set([id, cleanId, `tmdb:${cleanId}`, `series:${cleanId}`]);
   let changed = false;
   for (const key of targetKeys) {
     const all = readAll(key);
-    if (!(id in all)) continue;
+    let keyChanged = false;
     const next = { ...all };
-    delete next[id];
-    writeAll(key, next, acknowledged);
+    for (const vid of idVariants) {
+      if (vid in next) {
+        delete next[vid];
+        keyChanged = true;
+      }
+    }
+    if (keyChanged) {
+      writeAll(key, next, acknowledged);
+      changed = true;
+    }
+  }
+  if (changed) emit();
+}
+
+/** Clear many continue-watching rows with one write per store and one notification. */
+export function clearLocalCwBatch(ids: string[], ownerId?: string): void {
+  const isNuvio = isNuvioProviderActive() || (ownerId != null && ownerId.startsWith("nuvio-"));
+  const targetKeys = new Set<string>();
+  if (isNuvio) {
+    const eff = effectiveOwner(ownerId) || `nuvio-${getNuvioActiveSlot()}`;
+    targetKeys.add(storeKey(false, eff));
+    targetKeys.add(storeKey(true, eff));
+  } else {
+    if (ownerId) {
+      targetKeys.add(storeKey(true, ownerId));
+      targetKeys.add(storeKey(false, ownerId));
+    } else {
+      targetKeys.add(storeKey(!!privateCwProfileId()));
+    }
+    targetKeys.add(LEGACY_KEY);
+  }
+
+  const validVariants = new Set<string>();
+  for (const id of ids) {
+    if (!id) continue;
+    validVariants.add(id);
+    const cleanId = id.replace(/^(series|movie|tmdb):/, "").trim();
+    validVariants.add(cleanId);
+    validVariants.add(`tmdb:${cleanId}`);
+    validVariants.add(`series:${cleanId}`);
+  }
+  if (validVariants.size === 0) return;
+
+  let changed = false;
+  for (const key of targetKeys) {
+    const all = readAll(key);
+    const next = { ...all };
+    let touched = false;
+    for (const vid of validVariants) {
+      if (!(vid in next)) continue;
+      delete next[vid];
+      touched = true;
+    }
+    if (!touched) continue;
+    writeAll(key, next);
     changed = true;
   }
   if (changed) emit();
+}
+
+export function sanitizeStremioLocalCw(): void {
+  try {
+    let changed = false;
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (
+        key &&
+        key.startsWith(KEY_PREFIX) &&
+        !key.includes(".nuvio-") &&
+        !key.startsWith("harbor.localcw.v1.nuvio-")
+      ) {
+        const all = readAll(key);
+        let keyChanged = false;
+        const next: Record<string, LocalCwEntry> = {};
+        for (const [id, entry] of Object.entries(all)) {
+          if ((entry as any).external === "nuvio") {
+            keyChanged = true;
+            continue;
+          }
+          next[id] = entry;
+        }
+        if (keyChanged) {
+          writeAll(key, next);
+          changed = true;
+        }
+      }
+    }
+    if (changed) emit();
+  } catch {}
 }
 
 export function clearAllNuvioLocalCw(): void {
@@ -269,5 +438,11 @@ if (typeof window !== "undefined") {
   window.addEventListener("harbor:profiles-updated", onProfileChange);
   window.addEventListener("harbor:nuvio-profile-changed", onProfileChange);
   window.addEventListener("harbor:nuvio-state-changed", onProfileChange);
-  window.addEventListener("harbor:account-provider-changed", onProfileChange);
+  window.addEventListener("harbor:account-provider-changed", () => {
+    onProfileChange();
+    if (!isNuvioProviderActive()) sanitizeStremioLocalCw();
+  });
+  if (!isNuvioProviderActive()) {
+    sanitizeStremioLocalCw();
+  }
 }

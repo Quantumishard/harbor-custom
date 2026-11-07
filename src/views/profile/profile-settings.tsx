@@ -23,6 +23,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { useTogether } from "@/lib/together/provider";
 import { useProfiles } from "@/lib/profiles";
+import { isNuvioProviderActive } from "@/lib/active-profile-id";
 import { nameEquals } from "@/lib/account/name-sync";
 import { setPrivate } from "@/lib/social/privacy";
 import { useSettings } from "@/lib/settings";
@@ -36,6 +37,7 @@ import { ProfileCardsPicker } from "./profile-cards-picker";
 import { ProfileMedia } from "./profile-media";
 import { LocationSelect } from "./location-select";
 import { CustomizationPanel } from "./customization/customization-panel";
+import { ProfileThemePicker } from "./profile-theme-picker";
 import { AboutEditor } from "./customization/about-editor";
 import { useCustomUrlAvailability, type UrlStatus } from "./use-customurl-availability";
 import type {
@@ -372,7 +374,14 @@ export function ProfileSettings({
       const next = await saveSettings(form);
       const trimmed = form.alias.trim();
       if (trimmed && !nameEquals(trimmed, displayName)) setDisplayName(trimmed);
-      if (activeProfile && !activeProfile.kid && trimmed && trimmed !== activeProfile.name) {
+      if (
+        !isNuvioProviderActive() &&
+        activeProfile &&
+        activeProfile.isPrimary &&
+        !activeProfile.kid &&
+        trimmed &&
+        trimmed !== activeProfile.name
+      ) {
         updateProfile(activeProfile.id, { name: trimmed });
       }
       onSaved(next);
@@ -580,6 +589,8 @@ export function ProfileSettings({
                     />
 
                     <ProfileMedia summary={summary} onSaved={onSaved} />
+
+                    <ProfileThemePicker summary={summary} onSaved={onSaved} />
 
                     <ActionRow
                       title={t("Customize profile")}

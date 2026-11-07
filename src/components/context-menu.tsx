@@ -2,6 +2,7 @@ import {
   ArrowDown,
   ArrowLeft,
   ArrowUp,
+  Ban,
   BookOpen,
   Bookmark,
   BookmarkCheck,
@@ -19,15 +20,15 @@ import {
   RotateCcw,
   Share2,
   UserPlus,
-  Wallpaper,
   X,
+  ListPlus,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useActiveAddon } from "@/lib/active-addon";
 import { copyText } from "@/components/player/copy-link-button";
 import { emitListToast } from "@/components/lists/list-toast";
 import { shareDeepLink } from "@/lib/deep-link";
-import { useAuth } from "@/lib/auth";
+import { readActiveStremioAuthKey, useAuth } from "@/lib/auth";
 import {
   useContextMenu,
   registeredContextTarget,
@@ -42,6 +43,7 @@ import type { ParticipantLocation } from "@/lib/together/protocol";
 import { useView } from "@/lib/view";
 import { useInWatchlist } from "@/lib/watchlist";
 import {
+  dropContextTitle,
   setContextFavorite,
   setContextWatchlist,
   setContextWatched,
@@ -50,9 +52,11 @@ import {
 import { useContextWatchedState } from "@/lib/context-watched-state";
 import { useTmdbImdbId } from "@/lib/providers/tmdb";
 import { useIsFavorite } from "@/lib/media-favorites";
-import { clearTitleBackdrop, getTitleBackdrop, setTitleBackdrop } from "@/lib/title-backdrop";
 import { MyListSubmenu } from "./context-menu/my-list-submenu";
 import { useSettings } from "@/lib/settings";
+import { DropShowConfirmModal } from "@/components/drop-show-confirm-modal";
+import { getAnimeCanonicalId, getAnimeCwId } from "@/lib/anime-cw-ids";
+import { useCanDropShow } from "@/lib/drop-show-eligibility";
 import {
   NAV_ITEMS,
   effectiveNavOrder,
@@ -61,7 +65,11 @@ import {
   toggleNavHidden,
 } from "@/chrome/nav-items";
 import { setNavEditMode, useNavEditMode } from "@/chrome/nav-edit-mode";
-import { useIsMangaFavorite, useMangaFavorites } from "@/lib/manga-favorites";
+import {
+  mangaFavoriteFailureMessage,
+  useIsMangaFavorite,
+  useMangaFavorites,
+} from "@/lib/manga-favorites";
 import {
   recordMangaChapterRead,
   removeMangaChapterRead,
@@ -81,26 +89,25 @@ import {
   dispatchKeyboardContextMenu,
   editingTarget,
 } from "@/lib/context-content";
-import { useProfiles } from "@/lib/profiles";
+import { anyProfileSharesStremioWith, useProfiles } from "@/lib/profiles";
 import { currentAuthor, subscribeAuthor } from "@/lib/theme-auth";
 import { MenuSurface, menuItemClass, useMenuExecution } from "./context-menu/menu-surface";
 import { ActionItems, QuickActions, MenuIcon } from "./context-menu/action-items";
-import { findAction, type ActionSource } from "@/lib/context-actions";
-import {
-  contextNavigationFooter,
-  omitContextActions,
-  partitionContextActions,
-} from "@/lib/context-quick-actions";
+import type { ActionSource } from "@/lib/context-actions";
+import { contextNavigationFooter, partitionContextActions } from "@/lib/context-quick-actions";
 import { contentActions } from "./context-menu/content-actions";
-import { ContextImageViewer } from "./context-image-viewer";
-import type { ContextImage } from "@/lib/context-image";
 import { parseExternalLink } from "@/lib/social/external-link-policy";
 import { usePageContextTarget } from "@/chrome/context-page-navigation";
-import { isPageContextBackground } from "@/lib/context-page-background";
+import { isBackgroundMenuTarget, isPageContextBackground } from "@/lib/context-page-background";
 import { useManualDownload } from "./context-menu/use-manual-download";
 import { LastPlaybackCommand } from "./context-menu/last-playback-command";
 import { MenuBrandFooter } from "./context-menu/menu-brand-footer";
 import { playerContextSources } from "./context-menu/player-actions";
+import { queueAdd, queueIndexOf } from "@/lib/queue";
+import { captureMembershipProfile, isMembershipProfileCurrent } from "@/lib/membership-operations";
+import { ANIME_CLOUD_ID, cloudWriteId, libraryGetOneStrict, type LibraryItem } from "@/lib/stremio";
+import { resolveQueueEpisode } from "@/lib/queue-resolve-episode";
+import { useQueueSurface } from "@/hooks/use-queue-surface";
 
 const MENU_WIDTH = 220;
 const SUBTITLE_MENU_WIDTH = 360;
@@ -126,6 +133,15 @@ const VIEW_LABELS: Record<ViewSummonable, string> = {
 
 export function ContextMenu() {
   const { state, close: closeCurrent, completeClose, open } = useContextMenu();
+  const queueSurface = useQueueSurface();
+  const queueMenuRef = useRef(state);
+  queueMenuRef.current = state;
+
+  useEffect(() => {
+    return () => {
+      queueMenuRef.current = null;
+    };
+  }, []);
   const close = useCallback(
     (restoreFocus = true) => closeCurrent(restoreFocus, state?.session),
     [closeCurrent, state?.session],
@@ -140,7 +156,6 @@ export function ContextMenu() {
     openService,
     openAddonDetail,
     openSettings,
-    meta: currentMeta,
     topKind,
     topPath,
     player,
@@ -151,13 +166,15 @@ export function ContextMenu() {
     state?.target.kind === "meta" && state.target.player ? availablePlayerActions : null;
   const t = useT();
   const activeAddon = useActiveAddon();
-  const { activeProfile } = useProfiles();
-  const { user: stremioUser } = useAuth();
+  const { activeProfile, profiles } = useProfiles();
+  const { user: stremioUser, authKey } = useAuth();
   const authorId = useSyncExternalStore(
     subscribeAuthor,
     () => currentAuthor()?.id ?? null,
     () => null,
   );
+  // A docked live player can coexist with page space. The semantic target below
+  // still excludes the player surface itself from navigation and last playback.
   const pageContext = usePageContextTarget({ includePlayer: true });
   const playerMenu = useRef({ session: state?.session, src: playerActions?.src });
   if (playerMenu.current.session !== state?.session)
@@ -169,18 +186,20 @@ export function ContextMenu() {
       ? current
       : null;
   };
+  const [dropRequest, setDropRequest] = useState<{
+    id: string;
+    type?: string;
+    name: string;
+    poster?: string;
+    imdbId?: string | null;
+    background?: string | null;
+    animeId?: string | null;
+  } | null>(null);
   const { beginManualDownload, manualDownloadDialog } = useManualDownload({
     actorKey: `${activeProfile?.id ?? ""}:${authorId ?? ""}:${stremioUser?._id ?? ""}`,
   });
-  const [viewedImage, setViewedImage] = useState<{
-    image: ContextImage;
-    origin: HTMLElement | null;
-  } | null>(null);
-  const viewImage = (image: ContextImage) =>
-    setViewedImage({ image, origin: state?.origin ?? null });
   useEffect(() => {
     closeCurrent(false);
-    setViewedImage(null);
   }, [topPath, activeProfile?.id, authorId, stremioUser?._id, closeCurrent]);
   const { openAt } = useContextMenu();
   useEffect(() => {
@@ -306,6 +325,18 @@ export function ContextMenu() {
   const [watchedError, setWatchedError] = useState<{ session: number; message: string } | null>(
     null,
   );
+  const canDropTrackedShow = useCanDropShow(
+    state?.target.kind === "meta" &&
+      !playerActions &&
+      (targetType === "series" || targetType === "anime")
+      ? {
+          id: state.target.meta.id,
+          type: targetType,
+          imdbId: targetImdb,
+          animeId: getAnimeCwId(state.target.meta.id) ?? getAnimeCanonicalId(state.target.meta.id),
+        }
+      : null,
+  );
   const isWatchlisted = useInWatchlist(targetMetaId, [targetImdb]);
   const isFav = useIsFavorite(targetMetaId);
   const { settings: appSettings, update: updateSettings } = useSettings();
@@ -374,15 +405,11 @@ export function ContextMenu() {
         open(e, pageContext);
         return;
       }
-      const backdropEl =
-        e.target instanceof HTMLElement ? e.target.closest("[data-title-backdrop]") : null;
-      if (backdropEl && currentMeta) {
-        const backdropUrl = backdropEl.getAttribute("data-title-backdrop");
-        if (backdropUrl) {
-          e.preventDefault();
-          open(e, { kind: "backdrop", metaId: currentMeta.id, url: backdropUrl });
-          return;
-        }
+      if (el?.closest("[data-title-backdrop]")) {
+        // Artwork without context commands is still an occupied surface.
+        e.preventDefault();
+        closeCurrent(false);
+        return;
       }
       if (el?.closest("[data-harbor-player]") && player?.meta) {
         const source = currentPlayerActions()?.src;
@@ -414,20 +441,25 @@ export function ContextMenu() {
     };
     document.addEventListener("contextmenu", handler);
     return () => document.removeEventListener("contextmenu", handler);
-  }, [open, closeCurrent, currentMeta, player?.meta, topKind, activeAddon, pageContext, inSession]);
+  }, [open, closeCurrent, player?.meta, topKind, activeAddon, pageContext, inSession]);
 
-  const viewer = viewedImage ? (
-    <ContextImageViewer
-      image={viewedImage.image}
-      returnFocus={viewedImage.origin}
-      onClose={() => setViewedImage(null)}
+  const dropConfirmDialog = dropRequest ? (
+    <DropShowConfirmModal
+      title={dropRequest.name}
+      onClose={() => setDropRequest(null)}
+      onConfirm={async () => {
+        const { animeId, ...input } = dropRequest;
+        const result = await dropContextTitle(input, { animeId });
+        requireMediaActionSuccess(result);
+        emitListToast(t("Dropped {title}", { title: input.name }));
+      }}
     />
   ) : null;
   if (!state)
     return (
       <>
-        {viewer}
         {manualDownloadDialog}
+        {dropConfirmDialog}
       </>
     );
 
@@ -439,19 +471,12 @@ export function ContextMenu() {
       ? { src: target.meta.poster, publicUrl: target.meta.poster, label: target.meta.name }
       : undefined);
   const isPlayer = target.kind === "meta" && !!target.player;
-  const allowQuick =
-    target.navigation !== false &&
-    target.kind !== "edit" &&
-    target.kind !== "subtitle" &&
-    target.kind !== "backdrop" &&
-    !(target.kind === "meta" && target.player);
+  const isBackground = isBackgroundMenuTarget(target);
   const navigation = () =>
-    (allowQuick || isPlayer) && pageContext?.kind === "actions" && pageContext.isValid?.() !== false
+    isBackground && pageContext?.kind === "actions" && pageContext.isValid?.() !== false
       ? pageContext.actions()
       : [];
-  const playerSources = isPlayer
-    ? playerContextSources(readMenuPlayer, () => findAction(navigation(), "page:go:settings"))
-    : null;
+  const playerSources = isPlayer ? playerContextSources(readMenuPlayer) : null;
   const availableActions = (source?: ActionSource) =>
     source?.isValid?.() === false ? [] : (source?.actions() ?? []);
   const makeParts = () => {
@@ -461,43 +486,32 @@ export function ContextMenu() {
         : target.kind === "meta"
           ? [...availableActions(target.primary), ...availableActions(target.extra)]
           : [];
-    const content = contentActions(
-      { ...target, image: artwork },
-      viewImage,
-      target.kind === "content",
-    );
-    return allowQuick
-      ? partitionContextActions(entity, content, navigation())
-      : { quick: [], entity, content };
+    const content = contentActions({ ...target, image: artwork });
+    return partitionContextActions(entity, content, navigation(), target);
   };
   const parts = makeParts();
   const filteredSource = (source: ActionSource): ActionSource => ({
     ...source,
-    actions: () =>
-      omitContextActions(
-        source.actions(),
-        new Set([
-          ...makeParts().quick.map((action) => action.id),
-          ...contextNavigationFooter(navigation(), makeParts().quick).map((action) => action.id),
-        ]),
-      ),
+    // Page commands are composed once, only for a semantic background target.
+    // Item-specific copies stay in their original source as ordinary rows.
+    actions: () => source.actions().filter((action) => !action.id.startsWith("page:")),
   });
-  const quickSource: ActionSource = playerSources?.quick ?? {
+  const quickSource: ActionSource = {
     actions: () => makeParts().quick,
     isValid: target.isValid,
   };
-  const menuWidth = subtitleDetails
-    ? SUBTITLE_MENU_WIDTH
-    : allowQuick || isPlayer
-      ? 264
-      : MENU_WIDTH;
+  const menuWidth = subtitleDetails ? SUBTITLE_MENU_WIDTH : isBackground ? 264 : MENU_WIDTH;
 
   const items: React.ReactNode[] = [];
   let membershipMenu: {
     index: number;
     props: React.ComponentProps<typeof MyListSubmenu>;
   } | null = null;
-  if (state.target.kind === "meta" && state.target.primary)
+  if (
+    state.target.kind === "meta" &&
+    state.target.primary &&
+    filteredSource(state.target.primary).actions().length
+  )
     items.push(
       <ActionItems key="primary" source={filteredSource(state.target.primary)} onClose={close} />,
       <Separator key="primary-separator" />,
@@ -564,6 +578,86 @@ export function ContextMenu() {
           icon={<Info size={14} strokeWidth={2} />}
           label={t("View details")}
           onClick={handleDetails}
+        />,
+      );
+    }
+    if (queueSurface && organizedMedia && (!episodeScope || targetEpisode)) {
+      const exactTarget = meta.type === "movie" || !!targetEpisode;
+      const queued = exactTarget && queueIndexOf(meta, targetEpisode) >= 0;
+
+      items.push(
+        <Item
+          key="add-to-queue"
+          icon={
+            queued ? <Check size={14} strokeWidth={2} /> : <ListPlus size={14} strokeWidth={2} />
+          }
+          label={queued ? t("In your queue") : t("Add to queue")}
+          accent={queued}
+          disabled={queued}
+          onClick={async () => {
+            if (exactTarget) {
+              queueAdd(meta, targetEpisode);
+              close();
+              return;
+            }
+
+            const session = state.session;
+            const profile = captureMembershipProfile();
+            const requestAuthKey = authKey;
+            const privateOnly =
+              appSettings.cwPerProfile && anyProfileSharesStremioWith(activeProfile, profiles);
+
+            const isCurrent = () => {
+              const current = queueMenuRef.current;
+              return (
+                current?.session === session &&
+                current.phase === "open" &&
+                current.target.isValid?.() !== false &&
+                isMembershipProfileCurrent(profile) &&
+                readActiveStremioAuthKey() === requestAuthKey
+              );
+            };
+
+            const assertCurrent = () => {
+              if (!isCurrent()) {
+                throw new Error("The queue request is no longer active.");
+              }
+            };
+
+            assertCurrent();
+
+            let libraryItem: LibraryItem | null = null;
+            const anime = meta.type === "anime" || ANIME_CLOUD_ID.test(meta.id);
+
+            if (!privateOnly && !anime && requestAuthKey && appSettings.cwSources.library) {
+              const libraryId = cloudWriteId(meta.id, targetImdb ?? null, !!targetImdb);
+
+              if (libraryId) {
+                libraryItem = await libraryGetOneStrict(requestAuthKey, libraryId);
+                assertCurrent();
+              }
+            }
+
+            const episode = await resolveQueueEpisode({
+              meta,
+              imdbId: targetImdb,
+              tmdbKey: appSettings.tmdbKey,
+              libraryItem,
+              privateOnly,
+              isCurrent,
+            });
+
+            assertCurrent();
+
+            if (!episode) {
+              throw new Error(
+                "Could not find an episode to add. Open the title and choose an episode.",
+              );
+            }
+
+            queueAdd(meta, episode);
+            close();
+          }}
         />,
       );
     }
@@ -639,10 +733,9 @@ export function ContextMenu() {
         },
       };
     if (organizedMedia && !playerActions && (!episodeScope || targetEpisode)) {
-      items.push(<Separator key="title-state-separator" />);
       const summary = watchedState.summary;
       const status = watchedState.loading
-        ? t("Checking watched status…")
+        ? null
         : summary?.status === "unknown"
           ? t("Watched status unavailable")
           : summary?.status === "partial"
@@ -651,6 +744,20 @@ export function ContextMenu() {
                 total: summary.total,
               })
             : null;
+      const choices = watchedState.loading
+        ? []
+        : summary?.status === "watched"
+          ? [false]
+          : summary?.status === "unwatched"
+            ? [true]
+            : [true, false];
+      if (
+        status ||
+        summary?.unavailable.length ||
+        choices.length ||
+        watchedError?.session === state.session
+      )
+        items.push(<Separator key="title-state-separator" />);
       if (status)
         items.push(
           <p key="watched-status" role="status" className="px-3 py-1.5 text-[12px] text-ink-subtle">
@@ -665,13 +772,6 @@ export function ContextMenu() {
             })}
           </p>,
         );
-      const choices = watchedState.loading
-        ? []
-        : summary?.status === "watched"
-          ? [false]
-          : summary?.status === "unwatched"
-            ? [true]
-            : [true, false];
       choices.forEach((on, index) =>
         items.push(
           <Item
@@ -741,14 +841,41 @@ export function ContextMenu() {
           </p>,
         );
     }
-    items.push(
-      <Item
-        key="share-link"
-        icon={<Share2 size={14} strokeWidth={2} />}
-        label={t("Share as link")}
-        onClick={() => shareLink(meta.type, meta.id)}
-      />,
-    );
+    if (organizedMedia && meta.type !== "movie" && !playerActions && canDropTrackedShow) {
+      items.push(
+        <Item
+          key="drop-show"
+          icon={<Ban size={14} strokeWidth={2.1} className="text-danger" />}
+          label={t("Drop show")}
+          onClick={() => {
+            const animeId =
+              getAnimeCwId(meta.id) ??
+              (targetImdb ? getAnimeCwId(targetImdb) : null) ??
+              getAnimeCanonicalId(meta.id) ??
+              (targetImdb ? getAnimeCanonicalId(targetImdb) : null);
+            setDropRequest({
+              id: meta.id,
+              type: meta.type,
+              name: meta.name,
+              poster: meta.poster,
+              imdbId: targetImdb,
+              background: meta.background,
+              animeId,
+            });
+            close(false);
+          }}
+        />,
+      );
+    }
+    if (meta.type !== "movie" && meta.type !== "series")
+      items.push(
+        <Item
+          key="share-link"
+          icon={<Share2 size={14} strokeWidth={2} />}
+          label={t("Share as link")}
+          onClick={() => shareLink(meta.type, meta.id)}
+        />,
+      );
     if (organizedMedia && inSession && !playerActions) {
       items.push(
         <Item
@@ -796,34 +923,6 @@ export function ContextMenu() {
           icon={<UserPlus size={14} strokeWidth={2} />}
           label={t("Bring friends to {label}", { label })}
           onClick={handleBringAddon}
-        />,
-      );
-    }
-  } else if (state.target.kind === "backdrop") {
-    const { metaId, url } = state.target;
-    const isCurrent = getTitleBackdrop(metaId) === url;
-    items.push(
-      <Item
-        key="set-title-backdrop"
-        icon={<Wallpaper size={14} strokeWidth={2} />}
-        label={t("Set as a backdrop")}
-        onClick={() => {
-          setTitleBackdrop(metaId, url);
-          close();
-        }}
-        accent={isCurrent}
-      />,
-    );
-    if (getTitleBackdrop(metaId)) {
-      items.push(
-        <Item
-          key="reset-title-backdrop"
-          icon={<RotateCcw size={14} strokeWidth={2} />}
-          label={t("Reset to original")}
-          onClick={() => {
-            clearTitleBackdrop(metaId);
-            close();
-          }}
         />,
       );
     }
@@ -915,7 +1014,13 @@ export function ContextMenu() {
         icon={<Heart size={14} strokeWidth={2} fill={isMangaFav ? "currentColor" : "none"} />}
         label={isMangaFav ? t("Favorited") : t("Favorite")}
         onClick={() => {
-          toggleMangaFav({ id: target.id, title: target.title, cover: target.cover });
+          const result = toggleMangaFav({
+            id: target.id,
+            title: target.title,
+            cover: target.cover,
+          });
+          const message = mangaFavoriteFailureMessage(result, t);
+          if (message) emitListToast(message, "error");
           close();
         }}
         accent={isMangaFav}
@@ -1218,15 +1323,16 @@ export function ContextMenu() {
       <ActionItems key="extra" source={filteredSource(state.target.extra)} onClose={close} />,
     );
   if (parts.content.some((action) => action.id === "selection:copy")) {
+    const separator = items.length ? [<Separator key="selection-separator" />] : [];
     items.unshift(
       <ActionItems
         key="selection"
-        source={{ actions: () => contentActions({ selection: target.selection }, viewImage, true) }}
+        source={{ actions: () => contentActions({ selection: target.selection }) }}
         onClose={close}
       />,
-      <Separator key="selection-separator" />,
+      ...separator,
     );
-    if (membershipMenu) membershipMenu.index += 2;
+    if (membershipMenu) membershipMenu.index += 1 + separator.length;
   }
   const tools = parts.content.filter((action) => action.id !== "selection:copy");
   if (tools.length)
@@ -1239,24 +1345,24 @@ export function ContextMenu() {
         onClose={close}
       />,
     );
-  // The player reuses navigation policy for Settings only, never browsing rows.
   const navigationFooter = () =>
-    isPlayer ? [] : contextNavigationFooter(navigation(), makeParts().quick);
+    isBackground ? contextNavigationFooter(navigation(), makeParts().quick) : [];
   const footer = navigationFooter();
   if (items.length === 0 && parts.quick.length === 0 && footer.length === 0)
     return (
       <>
-        {viewer}
+        <EmptyMenu session={state.session} close={closeCurrent} completeClose={completeClose} />
         {manualDownloadDialog}
+        {dropConfirmDialog}
       </>
     );
 
   return (
     <>
-      {viewer}
       {manualDownloadDialog}
-      <LastPlaybackCommand key={state.session} enabled={allowQuick} onClose={close}>
-        {(last) => (
+      {dropConfirmDialog}
+      <LastPlaybackCommand key={state.session} enabled={isBackground} onClose={close}>
+        {(_last, lastRow) => (
           <MenuSurface
             key={state.session}
             point={state.pos}
@@ -1280,12 +1386,7 @@ export function ContextMenu() {
                     : t("Actions")
             }
           >
-            {last && (
-              <>
-                <ActionItems source={{ actions: () => [last] }} onClose={close} />
-                {(items.length > 0 || footer.length > 0) && <Separator />}
-              </>
-            )}
+            {lastRow}
             {membershipMenu ? (
               <>
                 {items.slice(0, membershipMenu.index)}
@@ -1314,6 +1415,24 @@ export function ContextMenu() {
       </LastPlaybackCommand>
     </>
   );
+}
+
+/** A consumed image/empty entity must not keep hover previews or validation
+ * listeners suspended just because it has no menu surface to finish closing. */
+function EmptyMenu({
+  session,
+  close,
+  completeClose,
+}: {
+  session: number;
+  close: (restoreFocus: boolean, expectedSession: number) => void;
+  completeClose: (expectedSession: number) => void;
+}) {
+  useEffect(() => {
+    close(false, session);
+    completeClose(session);
+  }, [session, close, completeClose]);
+  return null;
 }
 
 function SubtitleDetailsCard({

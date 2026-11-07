@@ -1,3 +1,4 @@
+import reviews from "./hi/reviews";
 import playOrders from "./hi/play-orders";
 import gameRomLibrary from "./hi/game-rom-library";
 import gameNotes from "./hi/game-notes";
@@ -89,9 +90,12 @@ import catalogPR from "./hi/catalog-p-r";
 import catalogSU from "./hi/catalog-s-u";
 import catalogVZ from "./hi/catalog-v-z";
 import coverage from "./hi/coverage";
+import subtitles from "./hi/subtitles";
 import plugins from "./hi/plugins";
 import brands from "./hi/brands";
 import bpSports from "./hi/bp-sports";
+import queueBasket from "./hi/queue-basket";
+import liveWeb from "./hi/live-web";
 
 import nytTv from "./hi/nyt-tv";
 
@@ -276,6 +280,7 @@ const hi: Record<string, string> = {
   ...catalogSU,
   ...catalogVZ,
   ...coverage,
+  ...subtitles,
   ...settingsRefinements,
   ...plugins,
   ...brands,
@@ -354,6 +359,9 @@ const hi: Record<string, string> = {
   ...gameRomLibrary,
   ...gameNotes,
   ...playOrders,
+  ...reviews,
+  ...queueBasket,
+  ...liveWeb,
 };
 
 export default hi;

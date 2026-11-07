@@ -27,7 +27,10 @@ const QUALITY_LINES: Record<Settings["mpvQuality"], string[]> = {
   ],
 };
 
-export function compileMpvOptions(s: Settings, opts?: { anime4k?: boolean }): string {
+export function compileMpvOptions(
+  s: Settings,
+  opts?: { anime4k?: boolean; totalPhysBytes?: number },
+): string {
   const lines: string[] = (QUALITY_LINES[s.mpvQuality] ?? []).filter(
     (line) => s.playerHdrToSdr || !line.startsWith("hdr-compute-peak="),
   );
@@ -41,7 +44,7 @@ export function compileMpvOptions(s: Settings, opts?: { anime4k?: boolean }): st
   }
   if (s.mpvHwdec === "on") lines.push("hwdec=yes");
   else if (s.mpvHwdec === "off") lines.push("hwdec=no");
-  lines.push(...bufferMpvLines(bufferSizeFor(s)));
+  lines.push(...bufferMpvLines(bufferSizeFor(s), opts?.totalPhysBytes));
   if (s.mpvDownmixStereo) lines.push("audio-channels=stereo");
   if (s.audioDevice && s.audioDevice !== "auto") lines.push(`audio-device=${s.audioDevice}`);
   if (s.playerDisplayPanel === "oled" && s.playerHdrToSdr) lines.push("target-contrast=inf");
@@ -62,7 +65,7 @@ export function svpMpvLines(s: Settings, svpActive: boolean): string {
 export function mergeMpvOptions(
   s: Settings,
   svpActive: boolean,
-  opts?: { anime4k?: boolean },
+  opts?: { anime4k?: boolean; totalPhysBytes?: number },
 ): string | undefined {
   const merged = [compileMpvOptions(s, opts), svpMpvLines(s, svpActive), s.mpvExtraOptions || ""]
     .filter((p) => p.trim())
@@ -74,6 +77,35 @@ const RISKY =
   /^(scripts?|load-script|input-ipc-server|input-conf|input-cmdlist|ytdl-raw-options)$/i;
 
 export type MpvLineCheck = { valid: number; skipped: number; risky: string[] };
+
+/**
+ * Keys the user set explicitly in Advanced (mpv.conf). Harbor still owns every
+ * playback property it writes at runtime, except these: the panel promises the
+ * user's values override Harbor's settings, so runtime passes must not reset
+ * them.
+ */
+export function mpvExtraOptionKeys(raw: string | undefined | null): Set<string> {
+  const keys = new Set<string>();
+  for (const line of (raw ?? "").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("//")) continue;
+    const body = (trimmed.startsWith("--") ? trimmed.slice(2) : trimmed).trim();
+    const withValue = body.includes("=") ? body.split("=", 1)[0] : body.split(/\s+/, 1)[0];
+    const key = withValue.trim().toLowerCase();
+    if (!key || key === "log-file" || key === "terminal") continue;
+    keys.add(key);
+  }
+  return keys;
+}
+
+/** Visual subtitle options require libmpv to draw subtitles instead of the HTML overlay. */
+export function hasCustomMpvSubtitleStyle(raw: string | undefined | null): boolean {
+  return [...mpvExtraOptionKeys(raw)].some((key) =>
+    /^(?:sub-(?:font(?:-.*)?|color|border(?:-.*)?|outline(?:-.*)?|shadow(?:-.*)?|back(?:-.*)?|spacing|line-spacing|margin-[xy]|pos|align-[xy]|use-margins|ass-override|scale|bold|italic|blur|justify)|ass-line-spacing)$/.test(
+      key,
+    ),
+  );
+}
 
 export function validateMpvOptions(raw: string): MpvLineCheck {
   let valid = 0;

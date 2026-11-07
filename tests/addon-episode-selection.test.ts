@@ -53,6 +53,9 @@ function harness(layout: "list" | "grid" | "strip", videos: NonNullable<Meta["vi
     "react-dom": { createPortal() {} },
     "lucide-react": { Check: "Check", ChevronDown: "ChevronDown" },
     "@/components/icons/play-filled": { Play: "Play" },
+    "@/components/episode-release-countdown": {
+      EpisodeReleaseCountdown: "EpisodeReleaseCountdown",
+    },
     "@/components/episode-watched-menu": { EpisodeWatchedMenu: "EpisodeWatchedMenu" },
     "@/lib/manual-watched": {
       manualEpisodeKeys: () => ({ watched: [], unwatched: [] }),
@@ -67,6 +70,7 @@ function harness(layout: "list" | "grid" | "strip", videos: NonNullable<Meta["vi
     },
     "@/lib/i18n": { useT: () => (key: string) => key },
     "./episode-download-button": { EpisodeDownloadButton: "EpisodeDownloadButton" },
+    "./episode-reviews-dialog": { EpisodeReviewsButton: "EpisodeReviewsButton" },
     "@/lib/episode-progress": {
       resumeDefaultSeason: (_id: any, stats: any) => stats[0]?.seasonNumber ?? 0,
     },
@@ -89,6 +93,7 @@ function harness(layout: "list" | "grid" | "strip", videos: NonNullable<Meta["vi
     "@/lib/season-view-pref": seasonViewPref,
     "./episode-rating-badge": { EpisodeRatingBadge: "EpisodeRatingBadge" },
     "./use-episode-imdb-ratings": { useEpisodeImdbRatings: () => new Map() },
+    "@/lib/active-profile-id": { isNuvioProviderActive: () => false },
   };
   const exports: Record<string, any> = {};
   new Function("require", "exports", compile(read("src/views/detail/cinemeta-episodes.tsx")))(

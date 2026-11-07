@@ -1,3 +1,4 @@
+import reviews from "./de/reviews";
 import playOrders from "./de/play-orders";
 import gameRomLibrary from "./de/game-rom-library";
 import gameNotes from "./de/game-notes";
@@ -115,9 +116,12 @@ import awards from "./de/awards";
 import bpSources from "./de/bp-sources";
 import together from "./de/together";
 import coverage from "./de/coverage";
+import subtitles from "./de/subtitles";
 import plugins from "./de/plugins";
 import brands from "./de/brands";
 import bpSports from "./de/bp-sports";
+import queueBasket from "./de/queue-basket";
+import liveWeb from "./de/live-web";
 
 import nytTv from "./de/nyt-tv";
 
@@ -334,6 +338,7 @@ const de: Record<string, string> = {
   ...bpSources,
   ...together,
   ...coverage,
+  ...subtitles,
   ...settingsRefinements,
   ...plugins,
   ...brands,
@@ -413,6 +418,9 @@ const de: Record<string, string> = {
   ...gameRomLibrary,
   ...gameNotes,
   ...playOrders,
+  ...reviews,
+  ...queueBasket,
+  ...liveWeb,
 };
 
 export default de;

@@ -99,8 +99,9 @@ export async function searchAddonCatalogs(
     for (const m of r.value.metas) {
       if (!m?.id || seen.has(m.id)) continue;
       seen.add(m.id);
-      const tagged = {
+      const tagged: Meta = {
         ...m,
+        type: m.type || (r.value.type === "series" ? "series" : "movie"),
         addonOrigin: r.value.origin,
         ...(r.value.collection ? { isCollection: true } : null),
       };

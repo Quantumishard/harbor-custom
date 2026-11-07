@@ -82,6 +82,8 @@ for (const remote of [
     const queue = load(
       "src/lib/stremio-write-queue.ts",
       {
+        "./active-profile-id": { isNuvioProviderActive: () => false },
+        "@/lib/active-profile-id": { isNuvioProviderActive: () => false },
         "@/lib/stremio": {
           libraryGetOneStrict: async () => remote,
           libraryPut: async (auth, item) => {

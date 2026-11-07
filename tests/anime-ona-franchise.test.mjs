@@ -32,6 +32,8 @@ function load(path, dependencies, select) {
   }).outputText;
   const exports = {};
   new Function("require", "exports", compiled)((id) => {
+    if (id === "@/lib/metadata-policy" || id === "./metadata-policy")
+      return { addonOnlyMetadata: () => false };
     assert.ok(id in dependencies, `Unexpected dependency: ${id}`);
     return dependencies[id];
   }, exports);
@@ -245,6 +247,7 @@ test("opening Edgerunners pools its ONA sequel and fills all Season 2 titles wit
     "@/lib/providers/anime-kitsu-addon": { animeKitsuMeta: async () => addon(50016, 2) },
     "@/lib/providers/kitsu": { kitsuEpisodes: async () => rawEpisodes(50016) },
     "@/lib/providers/anime-mapping": {
+      animeMappingByKitsu: async () => mapping,
       kitsuToTvdb: async () => null,
       applyAnidbSeasonWindow: async () => {},
     },

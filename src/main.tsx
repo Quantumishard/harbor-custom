@@ -1,5 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
+import { StrictMode, Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "@/App";
 import { hydrateCustomThemes } from "@/lib/custom-themes";
@@ -7,10 +7,9 @@ import { getUiLanguage } from "@/lib/i18n/store";
 import { ensureUiLocale } from "@/lib/i18n/load-locale";
 import { applyOsDataset } from "@/lib/platform";
 import { loadSecrets } from "@/lib/secret-store";
-import { initializeMusic } from "@/lib/music/player";
+import { getInstallFeatures, loadInstallFeatures } from "@/lib/features/install";
 import { initSubtitleCache } from "@/lib/subtitles/subtitle-cache";
 import { CaptionsApp } from "@/views/captions-app";
-import { DjDeckApp } from "@/views/dj-deck-app";
 import { ModalOverlayApp } from "@/views/modal-overlay-app";
 import { HdrOverlayApp } from "@/views/hdr-overlay-app";
 import { hdrOverlayEmitAction } from "@/lib/hdr-overlay";
@@ -21,6 +20,12 @@ import "@/index.css";
 import "flag-icons/css/flag-icons.min.css";
 import { startTaskbarProgress } from "@/lib/download/taskbar-progress";
 import { completeBetaReturnPreferences } from "@/lib/updater/beta-return";
+import { proactiveStorageCleanup } from "@/lib/storage-recovery";
+
+// Loaded only when a DJ window is actually opened; not part of the core entry graph.
+const DjDeckApp = lazy(() =>
+  import("@/views/dj-deck-app").then((module) => ({ default: module.DjDeckApp })),
+);
 
 let returnPreferencesReady = true;
 
@@ -96,7 +101,6 @@ const isHdrOverlay = detectHdrOverlay();
 const isCaptions = detectCaptions();
 const isDjDeck = detectDjDeck();
 if (isDjDeck) {
-  void initializeMusic().catch(() => {});
   window.addEventListener("keydown", (event) => {
     if (event.key === "Escape" || (event.ctrlKey && event.key.toLowerCase() === "w")) {
       void import("@tauri-apps/api/window")
@@ -217,7 +221,18 @@ function MainRoot() {
   return <App onReady={markAppReady} />;
 }
 
+/** PIP, modal, captions, HDR overlay, DJ deck and the detached player all load this same
+ *  index.html and share its localStorage. Opening one must not evict caches the main window
+ *  is in the middle of using. */
+const isAuxWindow = isPip || isVideoPip || isModal || isHdrOverlay || isCaptions || isDjDeck;
+
 async function mount() {
+  // Must run before anything writes: on a full localStorage every setItem throws, and the
+  // first unguarded one during the initial render kills the tree before onReady fires, so
+  // the boot splash never clears. Cleaning up from inside a component is too late.
+  if (!isAuxWindow) proactiveStorageCleanup();
+  await loadInstallFeatures();
+  const musicEnabled = getInstallFeatures().music;
   if (
     "__TAURI_INTERNALS__" in window &&
     !isHdrOverlay &&
@@ -234,8 +249,8 @@ async function mount() {
     loadSecrets(),
     hydrateCustomThemes().catch(() => {}),
     ensureUiLocale(getUiLanguage()),
-    !isHdrOverlay && !isModal && !isCaptions && !isPip && !isVideoPip && !isDjDeck
-      ? initializeMusic()
+    musicEnabled && !isHdrOverlay && !isModal && !isCaptions && !isPip && !isVideoPip
+      ? import("@/lib/music/player").then(({ initializeMusic }) => initializeMusic())
       : Promise.resolve(),
   ]);
   if (!isHdrOverlay && !isModal && !isCaptions && !isDjDeck) void initSubtitleCache();
@@ -246,7 +261,11 @@ async function mount() {
       {isHdrOverlay ? (
         <HdrOverlayApp />
       ) : isDjDeck ? (
-        <DjDeckApp />
+        musicEnabled ? (
+          <Suspense fallback={null}>
+            <DjDeckApp />
+          </Suspense>
+        ) : null
       ) : isCaptions ? (
         <CaptionsApp />
       ) : isModal ? (
