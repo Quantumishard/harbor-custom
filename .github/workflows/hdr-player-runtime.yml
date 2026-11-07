@@ -41,9 +41,10 @@ jobs:
         shell: msys2 {0}
         run: |
           set -euo pipefail
-          git clone --filter=blob:none https://github.com/mpv-player/mpv.git mpv-src
+          git clone -c core.autocrlf=false --filter=blob:none https://github.com/mpv-player/mpv.git mpv-src
           cd mpv-src
           git checkout 902818753849d9ad8f0096fad6ca5aeaa37113b9
+          sed -i 's/\r$//' ../patches/mpv-force-render-cache.patch
           git apply --check ../patches/mpv-force-render-cache.patch
           git apply ../patches/mpv-force-render-cache.patch
           meson setup build --buildtype=release -Dcplayer=false -Dlibmpv=true -Dlua=enabled -Djavascript=enabled -Dvapoursynth=enabled -Dtests=false
