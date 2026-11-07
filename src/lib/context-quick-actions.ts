@@ -14,6 +14,19 @@ export function omitContextActions(
   });
 }
 
+/** Keep the expanded desktop menu on title/item surfaces, respecting isolated contexts. */
+export function allowsContextNavigation(target?: ContextMenuTarget): boolean {
+  return (
+    !!target &&
+    target.navigation !== false &&
+    (isBackgroundMenuTarget(target) ||
+      (target.kind === "meta" && !target.player) ||
+      (target.kind === "actions" &&
+        target.scope !== "page-background" &&
+        !!target.actions?.().length))
+  );
+}
+
 export function partitionContextActions(
   entity: ContextAction[],
   content: ContextAction[],
@@ -21,11 +34,11 @@ export function partitionContextActions(
   target?: ContextMenuTarget,
 ): { quick: ContextAction[]; entity: ContextAction[]; content: ContextAction[] } {
   const quick = (
-    isBackgroundMenuTarget(target)
+    allowsContextNavigation(target)
       ? [findAction(navigation, "page:back"), findAction(navigation, "page:go:settings")]
       : []
   ).filter((action): action is ContextAction => !!action);
-  // Page commands are exclusively rendered in the background strip/footer.
+  // Page commands are rendered once in the navigation strip/footer.
   // Item copy commands remain in their original command list.
   const moved = new Set(
     entity.filter((action) => action.id.startsWith("page:")).map((action) => action.id),

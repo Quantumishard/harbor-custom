@@ -1,3 +1,5 @@
+import { useContextTarget } from "@/lib/context-menu";
+import type { ContextAction } from "@/lib/context-actions";
 import { Check, Download, ImagePlus, RotateCcw } from "lucide-react";
 import { Play } from "@/components/icons/play-filled";
 import { HoverTooltip } from "@/components/hover-tooltip";
@@ -35,7 +37,15 @@ function TileButton({
   );
 }
 
-export function VideoTile({ v, onPlay, onDownload }: { v: GalleryVideo; onPlay: () => void; onDownload: () => void }) {
+export function VideoTile({
+  v,
+  onPlay,
+  onDownload,
+}: {
+  v: GalleryVideo;
+  onPlay: () => void;
+  onDownload: () => void;
+}) {
   return (
     <div className="group flex w-full flex-col gap-2.5">
       <div className="relative">
@@ -50,14 +60,18 @@ export function VideoTile({ v, onPlay, onDownload }: { v: GalleryVideo; onPlay: 
             loading="lazy"
             className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
           />
-          <span className="absolute inset-0 flex items-center justify-center bg-canvas/30 opacity-0 transition-opacity group-hover:opacity-100">
+          <span className="absolute inset-0 flex items-center justify-center bg-canvas/30 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
             <span className="flex h-12 w-12 items-center justify-center rounded-full bg-ink text-canvas">
               <Play size={18} fill="currentColor" />
             </span>
           </span>
         </button>
-        <span className="absolute end-2 top-2 opacity-0 transition-opacity group-hover:opacity-100">
-          <TileButton icon={<Download size={15} strokeWidth={2.2} />} label={t("Download")} onClick={onDownload} />
+        <span className="absolute end-2 top-2 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+          <TileButton
+            icon={<Download size={15} strokeWidth={2.2} />}
+            label={t("Download")}
+            onClick={onDownload}
+          />
         </span>
       </div>
       <div className="flex flex-col gap-0.5 px-0.5">
@@ -91,11 +105,37 @@ export function ImageTile({
   backdropPinned?: boolean;
   pinnable?: boolean;
 }) {
+  const contextRef = useContextTarget(() => {
+    const actions: ContextAction[] = [];
+    if (onSetPoster)
+      actions.push({
+        id: "artwork:poster",
+        label: posterPinned ? t("Reset to default poster") : t("Set as show poster"),
+        run: onSetPoster,
+      });
+    if (onSetShowBackdrop)
+      actions.push({
+        id: "artwork:backdrop",
+        label: backdropPinned ? t("Reset to default backdrop") : t("Set as show backdrop"),
+        run: onSetShowBackdrop,
+      });
+    if (onSetBackdrop)
+      actions.push({ id: "artwork:theme", label: t("Set as theme backdrop"), run: onSetBackdrop });
+    return {
+      kind: "actions",
+      id: `artwork:${src}`,
+      label: t("Image"),
+      navigation: false,
+      image: { src, publicUrl: src },
+      actions: () => actions,
+    };
+  });
   const aspect = ratio === "landscape" ? "aspect-video" : "aspect-[2/3]";
   const pinnedLabel = posterPinned ? t("Show poster") : backdropPinned ? t("Show backdrop") : null;
   return (
     <div className="group relative w-full" data-title-backdrop={pinnable ? src : undefined}>
       <button
+        ref={contextRef}
         type="button"
         onClick={onOpen}
         className={`block w-full cursor-zoom-in overflow-hidden rounded-xl bg-elevated/40 ${
@@ -115,7 +155,7 @@ export function ImageTile({
           {pinnedLabel}
         </span>
       )}
-      <span className="absolute end-2 top-2 flex items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
+      <span className="absolute end-2 top-2 flex items-center gap-1.5 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
         {onSetPoster && (
           <TileButton
             icon={
@@ -149,7 +189,11 @@ export function ImageTile({
             onClick={onSetBackdrop}
           />
         )}
-        <TileButton icon={<Download size={15} strokeWidth={2.2} />} label={t("Download")} onClick={onDownload} />
+        <TileButton
+          icon={<Download size={15} strokeWidth={2.2} />}
+          label={t("Download")}
+          onClick={onDownload}
+        />
       </span>
     </div>
   );
@@ -168,9 +212,27 @@ export function LogoTile({
   onDownload: () => void;
   onSetLogo?: () => void;
 }) {
+  const contextRef = useContextTarget(() => ({
+    kind: "actions",
+    id: `artwork:logo:${src}`,
+    label: t("Image"),
+    navigation: false,
+    image: { src, publicUrl: src },
+    actions: () =>
+      onSetLogo
+        ? [
+            {
+              id: "artwork:logo",
+              label: pinned ? t("Reset to default logo") : t("Set as show logo"),
+              run: onSetLogo,
+            },
+          ]
+        : [],
+  }));
   return (
     <div className="group relative flex h-[120px] w-full">
       <button
+        ref={contextRef}
         type="button"
         onClick={onOpen}
         className={`flex w-full cursor-zoom-in items-center justify-center rounded-xl border p-5 ${
@@ -190,7 +252,7 @@ export function LogoTile({
           {t("Show logo")}
         </span>
       )}
-      <span className="absolute end-2 top-2 flex items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
+      <span className="absolute end-2 top-2 flex items-center gap-1.5 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
         {onSetLogo && (
           <TileButton
             icon={
@@ -204,7 +266,11 @@ export function LogoTile({
             onClick={onSetLogo}
           />
         )}
-        <TileButton icon={<Download size={15} strokeWidth={2.2} />} label={t("Download")} onClick={onDownload} />
+        <TileButton
+          icon={<Download size={15} strokeWidth={2.2} />}
+          label={t("Download")}
+          onClick={onDownload}
+        />
       </span>
     </div>
   );

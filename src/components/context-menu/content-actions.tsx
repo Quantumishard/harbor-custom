@@ -1,7 +1,14 @@
-import { Copy, ExternalLink, Link2 } from "lucide-react";
+import { Copy, Download, Image, ExternalLink, Link2, ZoomIn } from "lucide-react";
+import { UiIcon } from "@/components/ui-icon";
 import type { ContentContext } from "@/lib/context-content";
 import type { ContextAction } from "@/lib/context-actions";
-import { publicContextImageUrl } from "@/lib/context-image-policy";
+import {
+  copyContextImage,
+  saveContextImage,
+  publicContextImageUrl,
+  canCopyContextImage,
+  type ContextImage,
+} from "@/lib/context-image";
 import { copyText } from "@/components/player/copy-link-button";
 import { parseExternalLink } from "@/lib/social/external-link-policy";
 import { openLinkOut } from "@/lib/social/link-out";
@@ -11,7 +18,11 @@ export async function copyContextText(text: string): Promise<void> {
   if (!(await copyText(text))) throw new Error(t("Could not copy to the clipboard."));
 }
 
-export function contentActions(content: ContentContext): ContextAction[] {
+export function contentActions(
+  content: ContentContext,
+  showImage: (image: ContextImage) => void,
+  standalone: boolean,
+): ContextAction[] {
   const actions: ContextAction[] = [];
   if (content.selection)
     actions.push({
@@ -48,6 +59,64 @@ export function contentActions(content: ContentContext): ContextAction[] {
         icon: <Link2 size={14} />,
         run: () => copyContextText(shareable),
         group: "link",
+      });
+  }
+  if (content.image) {
+    const image = content.image;
+    const children: ContextAction[] = [
+      {
+        id: "image:view",
+        label: t("View image"),
+        icon: <ZoomIn size={14} />,
+        run: () => showImage(image),
+        restoreFocus: false,
+      },
+      {
+        id: "image:save",
+        label: t("Save image…"),
+        icon: <Download size={14} />,
+        run: async () => {
+          await saveContextImage(image);
+        },
+      },
+      ...(canCopyContextImage()
+        ? [
+            {
+              id: "image:copy",
+              label: t("Copy image"),
+              icon: <UiIcon name="copy-image" className="size-4" />,
+              run: () => copyContextImage(image),
+            },
+          ]
+        : []),
+    ];
+    const url = publicContextImageUrl(image);
+    if (url)
+      children.push(
+        {
+          id: "image:copy-link",
+          label: t("Copy image link"),
+          group: "link",
+          icon: <Link2 size={14} />,
+          run: () => copyContextText(url),
+        },
+        {
+          id: "image:open-link",
+          label: t("Open image link"),
+          group: "link",
+          icon: <ExternalLink size={14} />,
+          run: () => openLinkOut(url),
+          restoreFocus: false,
+        },
+      );
+    if (standalone) actions.push(...children);
+    else
+      actions.push({
+        id: "image",
+        label: t("Image"),
+        group: "content",
+        icon: <Image size={14} />,
+        children,
       });
   }
   return actions;

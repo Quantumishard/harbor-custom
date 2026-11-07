@@ -93,12 +93,19 @@ import { anyProfileSharesStremioWith, useProfiles } from "@/lib/profiles";
 import { currentAuthor, subscribeAuthor } from "@/lib/theme-auth";
 import { MenuSurface, menuItemClass, useMenuExecution } from "./context-menu/menu-surface";
 import { ActionItems, QuickActions, MenuIcon } from "./context-menu/action-items";
+import { findAction } from "@/lib/context-actions";
 import type { ActionSource } from "@/lib/context-actions";
-import { contextNavigationFooter, partitionContextActions } from "@/lib/context-quick-actions";
+import {
+  allowsContextNavigation,
+  contextNavigationFooter,
+  partitionContextActions,
+} from "@/lib/context-quick-actions";
+import { ContextImageViewer } from "@/components/context-image-viewer";
+import type { ContextImage } from "@/lib/context-image";
 import { contentActions } from "./context-menu/content-actions";
 import { parseExternalLink } from "@/lib/social/external-link-policy";
 import { usePageContextTarget } from "@/chrome/context-page-navigation";
-import { isBackgroundMenuTarget, isPageContextBackground } from "@/lib/context-page-background";
+import { isPageContextBackground } from "@/lib/context-page-background";
 import { useManualDownload } from "./context-menu/use-manual-download";
 import { LastPlaybackCommand } from "./context-menu/last-playback-command";
 import { MenuBrandFooter } from "./context-menu/menu-brand-footer";
@@ -201,6 +208,15 @@ export function ContextMenu() {
   useEffect(() => {
     closeCurrent(false);
   }, [topPath, activeProfile?.id, authorId, stremioUser?._id, closeCurrent]);
+  const [viewedImage, setViewedImage] = useState<{
+    image: ContextImage;
+    origin: HTMLElement | null;
+  } | null>(null);
+  const viewImage = (image: ContextImage) =>
+    setViewedImage({ image, origin: state?.origin ?? null });
+  useEffect(() => {
+    setViewedImage(null);
+  }, [topPath, activeProfile?.id, authorId, stremioUser?._id]);
   const { openAt } = useContextMenu();
   useEffect(() => {
     const keyboardContext = (event: KeyboardEvent) => {
@@ -455,9 +471,17 @@ export function ContextMenu() {
       }}
     />
   ) : null;
+  const viewer = viewedImage ? (
+    <ContextImageViewer
+      image={viewedImage.image}
+      returnFocus={viewedImage.origin}
+      onClose={() => setViewedImage(null)}
+    />
+  ) : null;
   if (!state)
     return (
       <>
+        {viewer}
         {manualDownloadDialog}
         {dropConfirmDialog}
       </>
@@ -471,9 +495,11 @@ export function ContextMenu() {
       ? { src: target.meta.poster, publicUrl: target.meta.poster, label: target.meta.name }
       : undefined);
   const isPlayer = target.kind === "meta" && !!target.player;
-  const isBackground = isBackgroundMenuTarget(target);
+  const allowNavigation = allowsContextNavigation(target);
   const navigation = () =>
-    isBackground && pageContext?.kind === "actions" && pageContext.isValid?.() !== false
+    (allowNavigation || isPlayer) &&
+    pageContext?.kind === "actions" &&
+    pageContext.isValid?.() !== false
       ? pageContext.actions()
       : [];
   const playerSources = isPlayer ? playerContextSources(readMenuPlayer) : null;
@@ -486,7 +512,11 @@ export function ContextMenu() {
         : target.kind === "meta"
           ? [...availableActions(target.primary), ...availableActions(target.extra)]
           : [];
-    const content = contentActions({ ...target, image: artwork });
+    const content = contentActions(
+      { ...target, image: artwork },
+      viewImage,
+      target.kind === "content",
+    );
     return partitionContextActions(entity, content, navigation(), target);
   };
   const parts = makeParts();
@@ -497,10 +527,18 @@ export function ContextMenu() {
     actions: () => source.actions().filter((action) => !action.id.startsWith("page:")),
   });
   const quickSource: ActionSource = {
-    actions: () => makeParts().quick,
+    actions: () => {
+      if (!isPlayer) return makeParts().quick;
+      const settings = findAction(navigation(), "page:go:settings");
+      return settings ? [{ ...settings, id: "player:settings" }] : [];
+    },
     isValid: target.isValid,
   };
-  const menuWidth = subtitleDetails ? SUBTITLE_MENU_WIDTH : isBackground ? 264 : MENU_WIDTH;
+  const menuWidth = subtitleDetails
+    ? SUBTITLE_MENU_WIDTH
+    : allowNavigation || isPlayer
+      ? 264
+      : MENU_WIDTH;
 
   const items: React.ReactNode[] = [];
   let membershipMenu: {
@@ -867,15 +905,14 @@ export function ContextMenu() {
         />,
       );
     }
-    if (meta.type !== "movie" && meta.type !== "series")
-      items.push(
-        <Item
-          key="share-link"
-          icon={<Share2 size={14} strokeWidth={2} />}
-          label={t("Share as link")}
-          onClick={() => shareLink(meta.type, meta.id)}
-        />,
-      );
+    items.push(
+      <Item
+        key="share-link"
+        icon={<Share2 size={14} strokeWidth={2} />}
+        label={t("Share as link")}
+        onClick={() => shareLink(meta.type, meta.id)}
+      />,
+    );
     if (organizedMedia && inSession && !playerActions) {
       items.push(
         <Item
@@ -1327,7 +1364,7 @@ export function ContextMenu() {
     items.unshift(
       <ActionItems
         key="selection"
-        source={{ actions: () => contentActions({ selection: target.selection }) }}
+        source={{ actions: () => contentActions({ selection: target.selection }, viewImage, true) }}
         onClose={close}
       />,
       ...separator,
@@ -1346,12 +1383,13 @@ export function ContextMenu() {
       />,
     );
   const navigationFooter = () =>
-    isBackground ? contextNavigationFooter(navigation(), makeParts().quick) : [];
+    allowNavigation ? contextNavigationFooter(navigation(), makeParts().quick) : [];
   const footer = navigationFooter();
   if (items.length === 0 && parts.quick.length === 0 && footer.length === 0)
     return (
       <>
         <EmptyMenu session={state.session} close={closeCurrent} completeClose={completeClose} />
+        {viewer}
         {manualDownloadDialog}
         {dropConfirmDialog}
       </>
@@ -1359,9 +1397,10 @@ export function ContextMenu() {
 
   return (
     <>
+      {viewer}
       {manualDownloadDialog}
       {dropConfirmDialog}
-      <LastPlaybackCommand key={state.session} enabled={isBackground} onClose={close}>
+      <LastPlaybackCommand key={state.session} enabled={allowNavigation} onClose={close}>
         {(_last, lastRow) => (
           <MenuSurface
             key={state.session}

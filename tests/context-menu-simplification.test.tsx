@@ -9,6 +9,7 @@ import { createRoot } from "react-dom/client";
 import * as icons from "lucide-react";
 import * as context from "../src/lib/context-menu.tsx";
 import * as content from "../src/lib/context-content.ts";
+import * as actions from "../src/lib/context-actions.ts";
 import * as partition from "../src/lib/context-quick-actions.ts";
 import * as backgroundPolicy from "../src/lib/context-page-background.ts";
 import * as surface from "../src/components/context-menu/menu-surface.tsx";
@@ -97,7 +98,7 @@ function harness() {
     "@/lib/context-content": content,
     "@/lib/context-quick-actions": partition,
     "@/lib/context-page-background": backgroundPolicy,
-    "@/lib/context-actions": {},
+    "@/lib/context-actions": actions,
     "@/lib/i18n": { t: (s: string) => s, useT: () => (s: string) => s },
     "@/lib/active-addon": { useActiveAddon: () => null },
     "@/components/player/copy-link-button": { copyText: async () => true },
@@ -140,6 +141,9 @@ function harness() {
         </>
       ),
     },
+    "@/components/drop-show-confirm-modal": { DropShowConfirmModal: () => null },
+    "@/lib/anime-cw-ids": { getAnimeCanonicalId: () => null, getAnimeCwId: () => null },
+    "@/lib/drop-show-eligibility": { useCanDropShow: () => false },
     "@/lib/settings": {
       useSettings: () => ({
         settings: { navCustomization: { order: [], hidden: [] } },
@@ -293,7 +297,7 @@ function harness() {
   };
 }
 
-test("actual menus reserve navigation/last playback for declared background and keep entity Copy as a row", async () => {
+test("expanded item menus retain navigation and copying while image tools stay isolated", async () => {
   const h = harness();
   await h.render();
   try {
@@ -314,9 +318,17 @@ test("actual menus reserve navigation/last playback for declared background and 
       label: "Collection",
       actions: () => [{ id: "collection:copy", label: "Copy share link", run: h.copy }],
     });
-    assert.deepEqual(h.labels(), ["Copy share link"]);
-    assert.equal(document.querySelector("[data-context-quick]") === null, true);
-    assert.equal(h.reads, before, "item menus never resolve last playback");
+    assert.deepEqual(h.labels(), [
+      "Back",
+      "Settings",
+      "Resume last watched",
+      "Copy share link",
+      "Open my profile",
+      "Go to",
+      "Refresh",
+    ]);
+    assert.ok(document.querySelector("[data-context-quick]"));
+    assert.ok(h.reads > before, "expanded item menus offer last playback");
     await React.act(() =>
       (
         document.querySelector('[data-context-action="collection:copy"]') as HTMLButtonElement
@@ -324,22 +336,19 @@ test("actual menus reserve navigation/last playback for declared background and 
     );
     assert.equal(h.copied, 1);
     await h.open({ kind: "content", image: { src: "https://fixture.invalid/image.png" } });
+    assert.ok(h.labels().includes("View image"));
+    assert.ok(h.labels().includes("Save image…"));
     assert.equal(
-      document.querySelector('[role="menu"]') === null,
-      true,
-      "empty image target does not become a page menu",
-    );
-    assert.equal(
-      h.state === null,
-      true,
-      "an empty target releases the menu ownership, not only its surface",
+      document.querySelector("[data-context-quick]"),
+      null,
+      "image tools do not inherit navigation",
     );
   } finally {
     await h.dispose();
   }
 });
 
-test("rendered movie menu has no toolbar, image/sharing/waiting tools, or orphan watched separator", async () => {
+test("rendered movie menu retains expanded tools and preserves focus as watched status arrives", async () => {
   const h = harness();
   await h.render();
   try {
@@ -348,15 +357,23 @@ test("rendered movie menu has no toolbar, image/sharing/waiting tools, or orphan
       meta: { id: "fixture", type: "movie", name: "Movie", poster: "fixture.png" },
     });
     assert.deepEqual(h.labels(), [
+      "Back",
+      "Settings",
+      "Resume last watched",
       "View details",
       "Download",
       "Add to watchlist",
       "Add to favorites",
       "Add to list",
+      "Share as link",
+      "Image",
+      "Open my profile",
+      "Go to",
+      "Refresh",
     ]);
-    assert.equal(document.querySelector('[role="separator"]') === null, true);
-    assert.equal(document.querySelector("[data-context-quick]") === null, true);
-    assert.equal(h.reads, 0);
+    assert.ok(document.querySelector('[role="separator"]'));
+    assert.ok(document.querySelector("[data-context-quick]"));
+    assert.ok(h.reads > 0);
     const download = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
       (e) => e.textContent === "Download",
     )!;
@@ -392,20 +409,20 @@ test("the official queue command remains available on queue-enabled surfaces", a
     )!;
     assert.ok(existing);
     assert.equal(existing.disabled, true);
-    assert.equal(document.querySelector("[data-context-quick]") === null, true);
+    assert.ok(document.querySelector("[data-context-quick]"));
   } finally {
     await h.dispose();
   }
 });
 
-test("managed image context is consumed and native editing remains untouched", async () => {
+test("managed image context exposes tools and native editing remains untouched", async () => {
   const h = harness();
   await h.render();
   try {
     const imageEvent = new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true });
     await React.act(() => document.getElementById("image")!.dispatchEvent(imageEvent));
     assert.equal(imageEvent.defaultPrevented, true);
-    assert.equal(document.querySelector('[role="menu"]') === null, true);
+    assert.ok(h.labels().includes("View image"));
     const editEvent = new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true });
     await React.act(() => document.getElementById("editor")!.dispatchEvent(editEvent));
     assert.equal(editEvent.defaultPrevented, false);
@@ -441,7 +458,7 @@ test("empty cards and independent controls are not background, while true page s
   }
 });
 
-test("a docked live player keeps page-background navigation without adding it to the player menu", async () => {
+test("a docked live player retains Settings without unrelated browsing navigation", async () => {
   const h = harness();
   const meta = { id: "playing", type: "movie", name: "Playing" };
   h.player = { meta, src: {}, toggleFullscreen() {} };
@@ -457,11 +474,9 @@ test("a docked live player keeps page-background navigation without adding it to
       "Refresh",
     ]);
     await h.open({ kind: "meta", player: true, meta });
-    assert.equal(document.querySelector("[data-context-quick]") === null, true);
+    assert.ok(document.querySelector("[data-context-quick]"));
     assert.equal(
-      h
-        .labels()
-        .some((label) => /Back|Settings|last watched|my profile|Go to|Refresh/.test(label ?? "")),
+      h.labels().some((label) => /Back|last watched|my profile|Go to|Refresh/.test(label ?? "")),
       false,
     );
     assert.ok(h.labels().includes("Full screen"));
