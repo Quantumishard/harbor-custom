@@ -27,6 +27,12 @@ const settings = {
 };
 assert.equal(generalShaderChain(settings, "pq").length, 5);
 assert.equal(shaderCompanionProps(settings, "pq")["sub-hdr-peak"], "10000");
+assert.equal(shaderCompanionProps(settings, "pq")["blend-subtitles"], "no");
+assert.equal(shaderCompanionProps(settings, "pq")["hdr-reference-white"], "10000");
+assert.equal(shaderCompanionProps(settings, "pq")["image-subs-hdr-peak"], "10000");
+for (const name of ["video-sync", "interpolation", "cscale"]) {
+  assert.ok(!(name in shaderCompanionProps(settings, "pq")));
+}
 for (const gamma of [undefined, "", "bt.1886", "srgb", "hlg"]) {
   assert.equal(generalShaderChain(settings, gamma).length, 0);
   assert.equal(Object.keys(shaderCompanionProps(settings, gamma)).length, 0);
@@ -41,6 +47,9 @@ assert.equal(generalShaderChain({ ...settings, playerRtxHdr: true }, "pq").lengt
     ["tone-mapping", "auto"],
     ["gamut-mapping-mode", "auto"],
     ["sub-hdr-peak", "auto"],
+    ["blend-subtitles", "yes"],
+    ["hdr-reference-white", 203],
+    ["image-subs-hdr-peak", 1000],
   ]);
   const initial = Array.from(values);
   const writes = [];
@@ -54,13 +63,13 @@ assert.equal(generalShaderChain({ ...settings, playerRtxHdr: true }, "pq").lengt
   await controller.apply(shaderCompanionProps(settings, "pq"));
   assert.equal(values.get("target-trc"), "pq");
   assert.equal(values.get("sub-hdr-peak"), "10000");
+  assert.equal(values.get("blend-subtitles"), "no");
+  assert.equal(values.get("hdr-reference-white"), "10000");
+  assert.equal(values.get("image-subs-hdr-peak"), "10000");
   await controller.apply(shaderCompanionProps(settings, "bt.1886"));
   assert.deepEqual(Array.from(values), initial);
   assert.ok(
-    writes.every(
-      (name) =>
-        !["sub-pos", "sub-margin-y", "sub-ass-override", "image-subs-hdr-peak"].includes(name),
-    ),
+    writes.every((name) => !["sub-pos", "sub-margin-y", "sub-ass-override"].includes(name)),
   );
   values.set("sub-hdr-peak", 300);
   await controller.apply(shaderCompanionProps(settings, "pq"));
