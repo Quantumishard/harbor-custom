@@ -10,12 +10,17 @@ const code = ts.transpileModule(source, {
 const props = new Map();
 const context = {
   exports: {},
-  require: () => ({
-    invoke: (_command, args) => {
-      props.set(args.name, args.value);
-      return Promise.resolve();
-    },
-  }),
+  setTimeout,
+  clearTimeout,
+  require: (name) =>
+    name === "./mpv-tuning"
+      ? { mpvExtraOptionKeys: () => new Set() }
+      : {
+          invoke: (_command, args) => {
+            props.set(args.name, args.value);
+            return Promise.resolve();
+          },
+        },
 };
 vm.runInNewContext(code, context);
 // A leftover saved value from the reverted build must have no effect.

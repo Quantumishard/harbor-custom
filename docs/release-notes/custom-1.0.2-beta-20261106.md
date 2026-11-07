@@ -14,11 +14,12 @@ The changed interface and Windows app core are compiled for version 1.0.2 with W
 
 ## Validation
 
-- 249 targeted custom and upstream regression tests passed, covering recommendations, catalog/metadata identity, HDR Toys, thumbnails, dismissals, original audio/subtitles, episode ratings, queues, RAM buffering, finale detection, metadata priority, and Whisper setup.
+- 257 targeted custom and upstream regression tests passed, covering recommendations, catalog/metadata identity, HDR Toys, thumbnails, dismissals, original audio/subtitles, episode ratings, queues, RAM buffering, finale detection, metadata priority, and Whisper setup.
 - TypeScript typecheck and the native `cargo check` with Whisper support passed.
 - Custom source checks found no errors. Existing warnings in the filename-control-character regex and search-result array allocation are unchanged in behavior.
 - Release publication includes an embedded-interface verification report, a per-file portable archive checksum manifest, and uploaded-asset checksum verification.
 - Live provider playback and Linux execution are not verified by this Windows build.
 
 Download the **complete portable ZIP**, fully quit Harbor, and extract it into a new folder. Existing settings and HDR Toys files remain in AppData. All previous releases remain available as fallbacks.
+
 
