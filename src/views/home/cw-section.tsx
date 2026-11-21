@@ -52,21 +52,23 @@ export function CWSection({
     kind: "actions",
     id: "home:continue-watching:diagnostics",
     label: t("Continue Watching"),
-    actions: () => [{
-      id: "home:continue-watching:copy-snapshot",
-      label: "Copy CW",
-      icon: <ClipboardCopy size={16} />,
-      disabled: copyStatus === "busy" || (loading && items.length === 0),
-      run: async () => {
-        if (!onCopyCw) return;
-        setCopyStatus("busy");
-        try {
-          if (!await onCopyCw()) throw new Error("Could not copy the CW snapshot.");
-        } finally {
-          setCopyStatus("idle");
-        }
+    actions: () => [
+      {
+        id: "home:continue-watching:copy-snapshot",
+        label: "Copy CW",
+        icon: <ClipboardCopy size={16} />,
+        disabled: copyStatus === "busy" || (loading && items.length === 0),
+        run: async () => {
+          if (!onCopyCw) return;
+          setCopyStatus("busy");
+          try {
+            if (!(await onCopyCw())) throw new Error("Could not copy the CW snapshot.");
+          } finally {
+            setCopyStatus("idle");
+          }
+        },
       },
-    }],
+    ],
   });
   const heading = onCopyCw ? (
     <span
@@ -84,7 +86,9 @@ export function CWSection({
     >
       {t("Continue Watching")}
     </span>
-  ) : t("Continue Watching");
+  ) : (
+    t("Continue Watching")
+  );
 
   // Shadow phase: observe what identity would resolve for these cards without
   // changing the row. Loaded lazily and gated by the shadow flag.
@@ -136,9 +140,7 @@ export function CWSection({
   if (loading && items.length === 0) {
     return (
       <div className="flex flex-col gap-4 animate-in fade-in duration-200">
-        <h3 className="text-[17px] font-medium tracking-tight text-ink">
-          {heading}
-        </h3>
+        <h3 className="text-[17px] font-medium tracking-tight text-ink">{heading}</h3>
         <div className="flex gap-4 overflow-hidden py-1">
           {Array.from({ length: 4 }).map((_, idx) => (
             <div key={idx} className="flex w-[260px] shrink-0 flex-col gap-2.5 animate-pulse">

@@ -364,9 +364,7 @@ export function usePlayerMedia(params: {
     enabledSetting: settings.animeIdentityEnabled && settings.animeIdentityLiveScrobbleEnabled,
   });
   const trackerSrc = useMemo(
-    () => liveScrobble.proof
-      ? { ...src, episode: liveScrobble.proof.episode }
-      : src,
+    () => (liveScrobble.proof ? { ...src, episode: liveScrobble.proof.episode } : src),
     [src, liveScrobble.proof],
   );
   useTraktScrobble({ src: trackerSrc, snap, liveScrobble });
@@ -433,7 +431,15 @@ export function usePlayerMedia(params: {
   ]);
 
   useActualPlayback(src, snap);
-  useResumeAutosave({ src, snap, season, episode, resolvedImdbId, resolvedImdbVerified, liveScrobble });
+  useResumeAutosave({
+    src,
+    snap,
+    season,
+    episode,
+    resolvedImdbId,
+    resolvedImdbVerified,
+    liveScrobble,
+  });
   useStremioSync({
     src,
     snap,

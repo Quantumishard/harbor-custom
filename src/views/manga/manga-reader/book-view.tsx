@@ -307,7 +307,11 @@ export function BookFlip({
           (host && hosts.has(host) ? IMAGE_FALLBACK_HEADERS : undefined);
         // Only route chapter images through this temporary fetch hook.
         // Other requests must retain the original Fetch semantics.
-        if (supplied && chapterUrls.has(u) && (!init?.method || init.method.toUpperCase() === "GET")) {
+        if (
+          supplied &&
+          chapterUrls.has(u) &&
+          (!init?.method || init.method.toUpperCase() === "GET")
+        ) {
           return chapterImageBlob(u, supplied).then(
             (blob) => new Response(blob, { status: 200, headers: { "content-type": blob.type } }),
           );

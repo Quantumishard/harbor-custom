@@ -16,7 +16,10 @@ function ratingsRequest(path: string): [string, RequestInit] {
     // Sandboxed profiles may disable local storage.
   }
   return apiKey
-    ? [`${SELF_HOSTED_RATINGS_BASE}/${path}`, { redirect: "error", headers: { "X-API-Key": apiKey } }]
+    ? [
+        `${SELF_HOSTED_RATINGS_BASE}/${path}`,
+        { redirect: "error", headers: { "X-API-Key": apiKey } },
+      ]
     : [`${BASE}/${path}`, {}];
 }
 

@@ -1452,7 +1452,6 @@ export function PlayPicker({
             )}
           </>
         )}
-
       </div>
       {(settings.pickerLayout === "stremio" || isDownload) &&
         filteredPicker &&

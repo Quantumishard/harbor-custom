@@ -610,9 +610,7 @@ export const ContinueCard = memo(function ContinueCard({
   // video is loading; the live video mapping takes precedence when available.
   const animeSeasonMapped =
     providerMappedEpisode(effectiveKitsuVideo, ep, seasonForeignCard) ??
-    (upNext
-      ? providerMappedEpisode(item.cwVerifiedProviderMapping, ep, seasonForeignCard)
-      : null);
+    (upNext ? providerMappedEpisode(item.cwVerifiedProviderMapping, ep, seasonForeignCard) : null);
   const displaySeason = animeSeasonMapped?.season ?? partSeasonCard ?? ep?.season;
   const displayEpisode = animeSeasonMapped?.episode ?? ep?.episode;
   useEffect(() => {
@@ -652,9 +650,7 @@ export const ContinueCard = memo(function ContinueCard({
   // Identity repair only changes the displayed work. Playback must continue
   // reading the original source checkpoint; the episode carries the native
   // Kitsu stream/sourceMetaId for correct picker and tracker targeting.
-  const playbackMeta: Meta = item.cwRepairSourceId
-    ? { ...meta, id: item.cwRepairSourceId }
-    : meta;
+  const playbackMeta: Meta = item.cwRepairSourceId ? { ...meta, id: item.cwRepairSourceId } : meta;
   const rawTitle = translatedTitle || hydratedMeta?.name?.trim() || item.name;
   const displayTitle = isAnimeCwItem(item)
     ? stripAnimeArcSuffix(stripFranchiseSuffix(rawTitle)) || rawTitle
@@ -689,7 +685,8 @@ export const ContinueCard = memo(function ContinueCard({
       effectiveKitsuVideo ?? (ep ? await resolveCwAnimeVideo(item, ep).catch(() => null) : null);
     const stateStreamId = item.state?.video_id;
     const directStreamId =
-      item.cwRepairNativeStreamId ?? video?.id ??
+      item.cwRepairNativeStreamId ??
+      video?.id ??
       (/^kitsu:\d+:\d+$/.test(stateStreamId ?? "") ? stateStreamId : undefined);
     const animePlay = await resolveCwAnimePlayEpisode({
       metaId: item._id,
@@ -760,7 +757,8 @@ export const ContinueCard = memo(function ContinueCard({
     // The original checkpoint owns playback, while the verified Kitsu entry
     // owns this stream and its AniList/MAL/Simkl episode progress.
     if (episode && item.cwRepairSourceId && /^kitsu:[1-9]\d*$/.test(item._id)) {
-      const saved = item.cwRepairNativeStreamId ??
+      const saved =
+        item.cwRepairNativeStreamId ??
         (/^kitsu:[1-9]\d*:[1-9]\d*$/.test(item.state?.video_id ?? "")
           ? item.state?.video_id
           : episode.kitsuStreamId);

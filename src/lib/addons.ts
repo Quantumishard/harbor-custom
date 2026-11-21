@@ -668,7 +668,10 @@ export async function fetchAddonCatalogPage(
     parts.push(`${encodeURIComponent(e.name)}=${encodeURIComponent(e.value)}`);
   if (skip > 0) parts.push(`skip=${skip}`);
   const seg = parts.length ? `/${parts.join("&")}` : "";
-  const res = await fetchWithTimeout(addonResourceUrl(base, `catalog/${type}/${id}${seg}.json`), options.timeoutMs);
+  const res = await fetchWithTimeout(
+    addonResourceUrl(base, `catalog/${type}/${id}${seg}.json`),
+    options.timeoutMs,
+  );
   if (!res) {
     if (options.throwOnNetworkError) throw new Error("Catalog request timed out");
     return [];

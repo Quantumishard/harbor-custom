@@ -87,7 +87,11 @@ import {
 import { sortCwFinal } from "@/lib/cw-order";
 import { buildCwShareSnapshot } from "@/lib/cw-share-snapshot";
 import { copyText } from "@/lib/clipboard-text";
-import { reconcileCompletedMovies, movieCompletionAliasWarmRows, isCompletedMovieCheckpoint } from "@/lib/cw-movie-completion";
+import {
+  reconcileCompletedMovies,
+  movieCompletionAliasWarmRows,
+  isCompletedMovieCheckpoint,
+} from "@/lib/cw-movie-completion";
 import { cwCacheOwnerKey } from "@/lib/cw-derived-caches";
 import {
   cwAnimeVersion,
@@ -780,18 +784,34 @@ export function Home({
     if (isNuvioProvider) return;
     const pool = [
       ...(!hideSharedCw && settings.cwSources.library
-        ? items.filter((i) => !ANIME_CLOUD_ID.test(i._id)) : []),
+        ? items.filter((i) => !ANIME_CLOUD_ID.test(i._id))
+        : []),
       ...localCwItems.filter((i) => i.external !== "nuvio"),
     ];
-    if (!hideSharedCw) pool.push(...externalCw.filter((row) =>
-      row.external === "trakt" ? settings.cwSources.trakt :
-      row.external === "simkl" ? settings.cwSources.simkl :
-      row.external === "publicmetadb" ? settings.cwSources.publicmetadb : false));
+    if (!hideSharedCw)
+      pool.push(
+        ...externalCw.filter((row) =>
+          row.external === "trakt"
+            ? settings.cwSources.trakt
+            : row.external === "simkl"
+              ? settings.cwSources.simkl
+              : row.external === "publicmetadb"
+                ? settings.cwSources.publicmetadb
+                : false,
+        ),
+      );
     const candidates = movieCompletionAliasWarmRows(pool);
     if (candidates.length > 0)
       void warmCwAnimeIdentities(candidates, { tmdbKey: settings.tmdbKey }).catch(() => {});
-  }, [items, externalCw, localCwItems, hideSharedCw, isNuvioProvider,
-      settings.cwSources, settings.tmdbKey]);
+  }, [
+    items,
+    externalCw,
+    localCwItems,
+    hideSharedCw,
+    isNuvioProvider,
+    settings.cwSources,
+    settings.tmdbKey,
+  ]);
 
   const continueWatching = useMemo(() => {
     const disabledSources = new Set<string>();
@@ -831,8 +851,8 @@ export function Home({
     const cwPool = isNuvioProvider
       ? cwBase
       : [...cwBase, ...localCwItems.filter((i) => i.external !== "nuvio")];
-    const eligible = reconcileCompletedMovies(cwPool).rows
-      .filter(
+    const eligible = reconcileCompletedMovies(cwPool)
+      .rows.filter(
         (i) =>
           (i.type as string) !== "other" &&
           !i._id.startsWith("iptv:") &&
@@ -1026,15 +1046,24 @@ export function Home({
 
   const copyCurrentCw = useCallback(async (): Promise<boolean> => {
     const sources = {
-      library: !isNuvioProvider && !hideSharedCw && settings.cwSources.library
-        ? items.filter((item) => !ANIME_CLOUD_ID.test(item._id)) : [],
+      library:
+        !isNuvioProvider && !hideSharedCw && settings.cwSources.library
+          ? items.filter((item) => !ANIME_CLOUD_ID.test(item._id))
+          : [],
       local: isNuvioProvider ? [] : localCwItems.filter((item) => item.external !== "nuvio"),
       external: externalCw.filter((item) =>
-        item.external === "nuvio" ? isNuvioProvider :
-          !isNuvioProvider && !hideSharedCw &&
-          (item.external === "simkl" ? settings.cwSources.simkl :
-            item.external === "trakt" ? settings.cwSources.trakt :
-              item.external === "publicmetadb" ? settings.cwSources.publicmetadb : false)),
+        item.external === "nuvio"
+          ? isNuvioProvider
+          : !isNuvioProvider &&
+            !hideSharedCw &&
+            (item.external === "simkl"
+              ? settings.cwSources.simkl
+              : item.external === "trakt"
+                ? settings.cwSources.trakt
+                : item.external === "publicmetadb"
+                  ? settings.cwSources.publicmetadb
+                  : false),
+      ),
       manual: isNuvioProvider ? [] : manualWatchedLibraryItems(),
     };
     const snapshot = buildCwShareSnapshot({
@@ -1056,9 +1085,16 @@ export function Home({
     });
     return copyText(JSON.stringify(snapshot, null, 2));
   }, [
-    items, localCwItems, externalCw, continueWatching, cwItems,
-    isNuvioProvider, hideSharedCw, settings.cwSources,
-    settings.accountProvider, settings.cwPerProfile,
+    items,
+    localCwItems,
+    externalCw,
+    continueWatching,
+    cwItems,
+    isNuvioProvider,
+    hideSharedCw,
+    settings.cwSources,
+    settings.accountProvider,
+    settings.cwPerProfile,
   ]);
 
   useEffect(() => {
