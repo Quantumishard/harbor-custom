@@ -31,6 +31,7 @@ function load(relative: string, dependencies: Record<string, any>) {
 
 const icons = new Proxy({}, { get: () => () => null });
 const nothing = () => {};
+let artworkSaves = 0;
 const navigation = { goToArtist: nothing, goToAlbum: nothing };
 const translate = (key: string) => key;
 const common = {
@@ -41,11 +42,13 @@ const common = {
   "@/components/anchored-menu": { AnchoredMenu: () => null },
   "@/lib/i18n": { useT: () => translate },
   "@/lib/music/artwork-save": {
-    saveArtwork: () => assert.fail("no image saving from a context menu"),
+    saveArtwork: async () => {
+      artworkSaves++;
+    },
   },
 };
 
-test("music track menus retain playback and text copying without a save-artwork command", async () => {
+test("music track menus retain playback and text copying with artwork saving", async () => {
   const { useMusicTrackMenuItems } = load("../src/components/music/music-track-menu.tsx", {
     ...common,
     "@/components/icons/more-like-this-icon": { MoreLikeThisIcon: () => null },
@@ -76,9 +79,12 @@ test("music track menus retain playback and text copying without a save-artwork 
   );
   await items[0].run();
   assert.equal(played, 1);
+  const before = artworkSaves;
+  await items.find((item: any) => item.id === "artwork").run();
+  assert.equal(artworkSaves, before + 1);
 });
 
-test("music album, artist and playlist menus omit image saving without losing their normal actions", async () => {
+test("music album, artist and playlist menus retain image saving alongside normal actions", async () => {
   const { musicItemMenuItems } = load("../src/components/music/music-item-menu.tsx", {
     ...common,
     "@/components/music/music-cover-card": {
@@ -105,14 +111,17 @@ test("music album, artist and playlist menus omit image saving without losing th
     });
     assert.deepEqual(
       items.map((item: any) => item.id),
-      ["open"],
+      ["open", "artwork"],
     );
     await items[0].run();
     assert.equal(opened, 1);
+    const before = artworkSaves;
+    await items.find((item: any) => item.id === "artwork").run();
+    assert.equal(artworkSaves, before + 1);
   }
 });
 
-test("book-view reader pages remain a trusted reader target without image actions or a viewer portal", async () => {
+test("book-view reader pages remain a trusted reader target with page image actions and a viewer portal", async () => {
   const dom = new JSDOM("<div id='root'></div>", { url: "http://localhost/" });
   Object.assign(globalThis, {
     window: dom.window,
@@ -147,13 +156,8 @@ test("book-view reader pages remain a trusted reader target without image action
       },
     },
     "@/lib/i18n": { useT: () => translate },
-    "./flipbook": {
-      disposeFlipbook: nothing,
-      fitLevel: () => 0,
-      guardPageLoaded: nothing,
-      hasNativeZoom: () => false,
-      nativePan: nothing,
-    },
+    "./flipbook": { guardPageLoaded: nothing, hasNativeZoom: () => false },
+    "./reader-context": { visibleReaderPages: (pages: string[]) => [{ number: 1, src: pages[0] }] },
     "./reader-utils": { measureAspect: async () => 1.4 },
     "./chapter-image-cache": {
       chapterImageBlob: async () => new Blob(["fixture"], { type: "image/png" }),
@@ -181,7 +185,7 @@ test("book-view reader pages remain a trusted reader target without image action
       ),
     );
     assert.equal(targetFactory().kind, "actions");
-    assert.deepEqual(targetFactory().actions(), []);
+    assert.equal(targetFactory().actions()[0].label, "View page {number}");
     const reader = document.querySelector("[tabindex='0']")!;
     await React.act(() =>
       reader.dispatchEvent(
@@ -191,8 +195,9 @@ test("book-view reader pages remain a trusted reader target without image action
         }),
       ),
     );
-    assert.deepEqual(opened.at(-1).actions(), []);
-    assert.equal(viewerMounts, 0);
+    assert.equal(opened.at(-1).actions().length, 1);
+    await React.act(() => opened.at(-1).actions()[0].run());
+    assert.equal(viewerMounts, 1);
   } finally {
     await React.act(() => root.unmount());
     dom.window.close();

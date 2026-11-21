@@ -54,14 +54,14 @@ function Chip({
   );
 }
 
-export function BrandsView({ brand }: { brand: BrandKind }) {
+export function BrandsView({ brand, active = true }: { brand: BrandKind; active?: boolean }) {
   const t = useT();
   const uiLang = useUiLanguage();
   const { settings } = useSettings();
   const { openBrands, openFilter } = useView();
   const scrollRef = useRef<HTMLElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
-  useScrollMemory(`brands:${brand}`, scrollRef);
+  useScrollMemory(`brands:${brand}`, scrollRef, active);
   const { brands, loading } = useBrandRanking(brand, "all");
   const [sort, setSort] = useState<Sort>("popular");
   const [country, setCountry] = useState<string | null>(null);

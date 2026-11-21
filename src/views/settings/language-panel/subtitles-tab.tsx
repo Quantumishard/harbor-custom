@@ -64,6 +64,14 @@ export function SubtitlesLanguageTab() {
           onChange={(v) => update({ subtitlesOffByDefault: v })}
         />
         <ToggleRow
+          label={t("English subtitles for non-English originals")}
+          sub={t(
+            "Use TMDB's original language: automatically select English subtitles for non-English titles, always preferring embedded tracks. English originals and titles with unknown language start without subtitles. Overrides other automatic subtitle preferences; you can still choose subtitles manually.",
+          )}
+          value={settings.englishSubsForForeignOriginal}
+          onChange={(v) => update({ englishSubsForForeignOriginal: v })}
+        />
+        <ToggleRow
           label={t("Choose subtitles before playback")}
           sub={t(
             "Choose the exact track and language after picking a source, before the video starts.",

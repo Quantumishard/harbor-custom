@@ -36,6 +36,7 @@ function animeIdentityHelpers() {
   }).outputText;
   const aliases: Record<string, string> = { "mal:101": "kitsu:900", "anilist:202": "kitsu:900" };
   const mocks: Record<string, unknown> = {
+    "./stremio-item-lock": { withItemLock: (_id: string, run: () => Promise<unknown>) => run() },
     "@/lib/anime-cw-ids": {
       getAnimeCanonicalId: (id: string) => aliases[id] ?? null,
       getAnimeCwId: (id: string) => aliases[id] ?? null,
@@ -81,6 +82,7 @@ function harness(seed?: string, onChange = () => {}, options: { nuvio?: boolean 
   const nuvioDeletes: unknown[][] = [];
   const key = (id: string, s?: number, e?: number) => `${id}|${s}|${e}`;
   const mocks: Record<string, unknown> = {
+    "./stremio-item-lock": { withItemLock: (_id: string, run: () => Promise<unknown>) => run() },
     "./cw-profile": { privateCwProfileId: () => privateProfile },
     "./cw-members": { flattenCwSourceMembers },
     react: {
@@ -720,6 +722,7 @@ test("external backfills preserve dismissals and save true remote progress only 
     const session = {};
     const remoteTime = Date.parse("2026-09-13T10:00:00Z");
     const mocks: Record<string, unknown> = {
+      "./stremio-item-lock": { withItemLock: (_id: string, run: () => Promise<unknown>) => run() },
       "./session": { getSession: () => session },
       "./ids": simklIds,
       "./client": {
@@ -791,7 +794,7 @@ test("episode artwork is opt-in and changing candidates retries the first image"
   assert.match(read("src/lib/settings/defaults.ts"), /cwPreferEpisodeStill: false/);
   const card = read("src/components/continue-card.tsx");
   assert.match(card, /upNext \|\| !settings\.cwPreferEpisodeStill/);
-  assert.match(card, /if \(still && !seen\.has\(still\)\) out\.unshift\(still\)/);
+  assert.match(card, /if \(still && !seen\.has\(still\)\) out\.splice\(thumb \? 1 : 0, 0, still\)/);
   assert.match(card, /setImgIdx\(0\);\s*\}, \[candidates\]\)/);
 });
 

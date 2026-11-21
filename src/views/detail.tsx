@@ -1,5 +1,6 @@
 import { ScrollRootContext } from "@/components/row";
 import { addonBaseUrl } from "@/lib/addon-url";
+import { hasNumberedEpisodes } from "./detail/episode-groups";
 import {
   startTransition,
   useCallback,
@@ -64,6 +65,7 @@ import { mergeBundledAwards } from "@/lib/awards-history";
 import {
   tmdbDetails,
   tmdbImdbId,
+  tmdbSeasonEpisodes,
   tmdbWatchProviders,
   type TmdbDetail,
   type WatchProvider,
@@ -131,6 +133,7 @@ import { profileFromDetail, trackEvent } from "@/lib/discover";
 import { MOVIE_GENRES, TV_GENRES } from "@/lib/feed/tags";
 import { useScrollMemory, useView, type PlayEpisode } from "@/lib/view";
 import { prefetchSegments } from "@/lib/skip-intro";
+import { specificEpisodeTitle } from "@/lib/episode-search";
 import { useT } from "@/lib/i18n";
 import { emitListToast } from "@/components/lists/list-toast";
 import { DropShowConfirmModal } from "@/components/drop-show-confirm-modal";
@@ -234,7 +237,7 @@ import { AnilistComments } from "./detail/anilist-comments";
 import { stremioIdToTraktTarget } from "@/lib/trakt/ids";
 import type { IdResolution } from "@/lib/trakt/ids";
 import { searchAnime } from "@/lib/search";
-import { useTraktRelated } from "@/lib/providers/trakt-related";
+import { useMoreLikeThis } from "@/lib/use-more-like-this";
 
 const NO_METAS: Meta[] = [];
 
@@ -1749,23 +1752,12 @@ function DetailContent({
   const rating = primaryRating.value;
   const runtime = detail?.runtime ?? capstanMeta?.meta.runtime;
   const genres = detail?.genres ?? meta.genres ?? cinemetaFull?.genres ?? [];
-  const tmdbRecommendations = detail?.recommendations ?? NO_METAS;
   const similar = detail?.similar ?? NO_METAS;
-  const relatedSeedId = detail?.imdbId ?? (meta.id.startsWith("tt") ? meta.id : null);
-  const wantsRelatedFallback =
-    !isAnime && !detectingAnime && !addonNative && !loading && tmdbRecommendations.length === 0;
-  const relatedFallback = useTraktRelated(
-    wantsRelatedFallback ? relatedSeedId : null,
-    meta.type === "series" ? "show" : "movie",
+  const recommendations = useMoreLikeThis(
+    meta,
+    detail,
+    !isAnime && !detectingAnime && !addonNative,
   );
-  const recommendations = useMemo(() => {
-    if (tmdbRecommendations.length > 0) return tmdbRecommendations;
-    if (relatedFallback.length === 0) return NO_METAS;
-    const taken = new Set(similar.map((m) => m.id));
-    taken.add(meta.id);
-    const rest = relatedFallback.filter((m) => !taken.has(m.id));
-    return rest.length > 0 ? rest : NO_METAS;
-  }, [tmdbRecommendations, relatedFallback, similar, meta.id]);
   const shownRecommendations = useHideAnimeMetas(recommendations);
   const shownSimilar = useHideAnimeMetas(similar);
   const { crew: sharedCrewFilms, reasons: graphReasons } = useGraphReasons(
@@ -2030,6 +2022,11 @@ function DetailContent({
     if (!cid) return;
     let cancelled = false;
     void (async () => {
+      const { watched: localWatched, unwatched: localUnwatched } = manualEpisodeKeys(meta.id);
+      if (localWatched.size === 0 && localUnwatched.size === 0) {
+        prevSeriesWatchedVerRef.current = seriesWatchedVer;
+        return;
+      }
       let videos = cinemetaFull?.videos;
       const aligned = imdb ? (videos?.[0]?.id?.startsWith(imdb) ?? false) : true;
       if (imdb && !aligned) {
@@ -2044,7 +2041,6 @@ function DetailContent({
         }
       }
       if (cancelled || !videos || videos.length === 0) return;
-      const { watched: localWatched, unwatched: localUnwatched } = manualEpisodeKeys(meta.id);
       const ok = await setEpisodesWatchedStremio(
         authKey,
         playMeta,
@@ -2275,11 +2271,15 @@ function DetailContent({
 
   const episodeName = useCallback(
     (season: number, episode: number): string | undefined => {
-      const videos = playMeta.videos ?? cinemetaFull?.videos;
-      const match = videos?.find(
-        (v) => (v.season ?? 1) === season && (v.episode ?? v.number) === episode,
-      );
-      return match?.name || match?.title || undefined;
+      for (const videos of [playMeta.videos, cinemetaFull?.videos]) {
+        const match = videos?.find(
+          (v) => (v.season ?? 1) === season && (v.episode ?? v.number) === episode,
+        );
+        const name =
+          specificEpisodeTitle(match?.name, episode) ?? specificEpisodeTitle(match?.title, episode);
+        if (name) return name;
+      }
+      return undefined;
     },
     [playMeta.videos, cinemetaFull?.videos],
   );
@@ -2289,6 +2289,26 @@ function DetailContent({
       if (inSession) claimHost(true);
       const opts = { autoPlay: !forcePicker && settings.instantPlay, resume: !forcePicker };
       const launch = async (episode: PlayEpisode | undefined) => {
+        if (
+          isSeries &&
+          !isAnime &&
+          episode &&
+          !specificEpisodeTitle(episode.name, episode.episode)
+        ) {
+          const selected = episode;
+          const known = episodeName(selected.season, selected.episode);
+          const tmdbId = detail?.kind === "tv" ? Number(detail.id) : NaN;
+          const fetched =
+            !known && settings.tmdbKey && Number.isFinite(tmdbId)
+              ? await tmdbSeasonEpisodes(settings.tmdbKey, tmdbId, selected.season).catch(() => [])
+              : [];
+          const matched = fetched.find((item) => item.episodeNumber === selected.episode);
+          episode = {
+            ...selected,
+            name: known ?? specificEpisodeTitle(matched?.name, selected.episode),
+            overview: selected.overview ?? matched?.overview,
+          };
+        }
         const stream = () => openPicker(playMeta, episode, opts);
         if (forcePicker) {
           stream();
@@ -2480,6 +2500,9 @@ function DetailContent({
       meta.id,
       detail?.imdbId,
       episodeName,
+      settings.tmdbKey,
+      detail?.kind,
+      detail?.id,
     ],
   );
   const animeResumeTarget =
@@ -3189,9 +3212,7 @@ function DetailContent({
                 meta.type === "tv" ||
                 meta.type === "other"))) &&
           episodeVideos &&
-          (addonNative
-            ? episodeVideos.length > 0
-            : episodeVideos.some((v) => v.season != null && v.season > 0 && v.episode != null)) && (
+          (addonNative ? episodeVideos.length > 0 : hasNumberedEpisodes(episodeVideos)) && (
             <FadeInUp>
               <CinemetaEpisodes
                 meta={playMeta}

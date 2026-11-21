@@ -10,13 +10,7 @@ import {
 import { MOVIE_GENRES } from "@/lib/feed/tags";
 import { metaLooksAnime } from "@/lib/anime-detect";
 import { useParental } from "@/lib/parental";
-import {
-  searchAll,
-  searchAnime,
-  searchCinemeta,
-  searchLiveTvChannels,
-  type SearchResults,
-} from "@/lib/search";
+import { searchAll, searchAnime, searchCinemeta, type SearchResults } from "@/lib/search";
 import {
   createAddonSearchCatalogReader,
   searchAddonCatalogs,
@@ -38,16 +32,11 @@ import {
 } from "@/lib/search-top-match";
 import { searchManga } from "@/lib/manga/api";
 import type { MangaSummary } from "@/lib/manga/model";
-import { searchEBooks, type EBook } from "@/lib/ebook/api";
-import { searchTyped } from "@/lib/music/catalog";
-import { toMusicHits } from "@/lib/search-music-hits";
-import type { MusicSearchHit } from "@/lib/search";
 import { searchSportsEvents, type SportsEventHit } from "@/lib/sports/search-events";
 import { anilistCharacterSearch, type CharacterHit } from "@/lib/anilist/character";
 import { gatherCatalogAddons, type Addon } from "@/lib/addons";
 import { useAuth } from "@/lib/auth";
 import { useSettings } from "@/lib/settings";
-import { usePlaylists } from "@/lib/iptv/playlists-store";
 import { isMagnetInput, isDirectVideoUrl } from "@/lib/torrent/magnet";
 import { useView, type Frame } from "@/lib/view";
 
@@ -70,7 +59,7 @@ type SearchValue = SearchState & SearchActions;
 export type { SearchData } from "./search-context-state";
 const RECENT_KEY = "harbor.search.recent";
 const MAX_RECENT = 8;
-const SOURCE_TIMEOUT_MS = 8000;
+const SOURCE_TIMEOUT_MS = 60_000;
 const TMDB_CACHE_TTL_MS = 60_000;
 const SECONDARY_CACHE_TTL_MS = 60_000;
 const MAX_CACHE_ENTRIES = 16;
@@ -189,7 +178,6 @@ function saveRecent(items: string[]): void {
 
 export function SearchProvider({ children }: { children: ReactNode }) {
   const { settings } = useSettings();
-  const playlists = usePlaylists();
   const { authKey } = useAuth();
   const { hiddenTabs } = useParental();
   const [open, setOpen] = useState(false);
@@ -248,13 +236,11 @@ export function SearchProvider({ children }: { children: ReactNode }) {
     const animeAllowed = !hiddenTabs.anime && !settings.hideContent.anime;
     const mangaAllowed = settings.mangaEnabled;
     const franchiseAllowed = animeAllowed || mangaAllowed;
-    const liveTvAllowed = !hiddenTabs.liveTv && playlists.length > 0;
     const controller = new AbortController();
     const { signal } = controller;
     const debounce = window.setTimeout(() => {
       if (signal.aborted) return;
       setStatus("loading");
-      const liveTv = liveTvAllowed ? searchLiveTvChannels(trimmed, playlists) : [];
       const guard = <T,>(p: Promise<T>, fallback: T): Promise<T> =>
         settleSearchSource(p, fallback, SOURCE_TIMEOUT_MS, signal);
       const normalizedQuery = normalizeSearchQuery(trimmed);
@@ -318,11 +304,6 @@ export function SearchProvider({ children }: { children: ReactNode }) {
       const mangaPromise: Promise<MangaSummary[]> = mangaAllowed
         ? guard(searchManga(trimmed), [])
         : Promise.resolve([]);
-      const musicPromise: Promise<MusicSearchHit[]> = guard(
-        searchTyped(trimmed, 10).then(toMusicHits),
-        [],
-      );
-      const ebookPromise: Promise<EBook[]> = guard(searchEBooks(trimmed), []);
       const sportsPromise: Promise<SportsEventHit[]> = guard(
         searchSportsEvents(trimmed, signal),
         [],
@@ -382,8 +363,6 @@ export function SearchProvider({ children }: { children: ReactNode }) {
       const acc = {
         anime: [] as Awaited<typeof animePromise>,
         manga: [] as MangaSummary[],
-        music: [] as MusicSearchHit[],
-        ebooks: [] as EBook[],
         sports: [] as SportsEventHit[],
         characters: [] as CharacterHit[],
         addon: { movies: [], series: [] } as Awaited<typeof addonPromise>,
@@ -482,11 +461,11 @@ export function SearchProvider({ children }: { children: ReactNode }) {
               : topMatch,
           movies: mergedMovies,
           series: mergedSeries,
-          liveTv,
+          liveTv: [],
           anime: acc.anime,
           manga: acc.manga,
-          music: acc.music,
-          ebooks: acc.ebooks,
+          music: [],
+          ebooks: [],
           sports: acc.sports,
           characters: acc.characters,
           addonGroups: dedupedGroups,
@@ -503,14 +482,6 @@ export function SearchProvider({ children }: { children: ReactNode }) {
       });
       void mangaPromise.then((m) => {
         acc.manga = m;
-        publish();
-      });
-      void musicPromise.then((m) => {
-        acc.music = m;
-        publish();
-      });
-      void ebookPromise.then((b) => {
-        acc.ebooks = b;
         publish();
       });
       void sportsPromise.then((s) => {
@@ -572,11 +543,9 @@ export function SearchProvider({ children }: { children: ReactNode }) {
     settings.metadataSources,
     settings.tmdbLanguage,
     settings.translateTitles,
-    playlists,
     excludeGenres,
     hiddenTabs.anime,
     settings.hideContent.anime,
-    hiddenTabs.liveTv,
     settings.mangaEnabled,
     authKey,
   ]);

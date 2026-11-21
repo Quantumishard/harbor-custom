@@ -1,3 +1,5 @@
+import { franchiseDedupKey } from "@/lib/providers/jikan";
+import { franchiseRootSync } from "@/lib/providers/anime-franchise-root";
 import { libraryGroupHomeRows } from "@/lib/library-groups";
 import {
   startTransition,
@@ -44,11 +46,7 @@ import { isAnimeRow } from "@/views/anime";
 import { buildArabicHomeRows } from "@/lib/arabic/home-rows";
 import { buildRussianHomeRows } from "@/lib/russian/home-rows";
 import { resolveAddonOrigin } from "@/lib/nuvio/nuvio-addon-registry";
-import {
-  deleteWatchProgressFromNuvio,
-  isNuvioProviderActive,
-  resolveNuvioProfileIndex,
-} from "@/lib/nuvio/nuvio-sync";
+import { isNuvioProviderActive, resolveNuvioProfileIndex } from "@/lib/nuvio/nuvio-sync";
 import { isNuvioSignedIn } from "@/lib/nuvio/nuvio-client";
 import { useAuth } from "@/lib/auth";
 import { anyProfileSharesStremioWith, useProfiles } from "@/lib/profiles";
@@ -61,6 +59,7 @@ import { trackEvent } from "@/lib/discover";
 import { publishResumeStates } from "@/lib/hover-preview/store";
 import { clearResume, readResumeEntry, saveResumeBatch } from "@/lib/resume";
 import { dismissCw, isCwDismissed, useCwDismissVersion } from "@/lib/cw-dismiss";
+import { cwDismissGroup } from "@/lib/cw-dismiss-group";
 import {
   clearLocalCw,
   listLocalCwMerged,
@@ -1089,38 +1088,30 @@ export function Home({
   const onDismissCw = useCallback(
     (item: LibraryItem) => {
       if (item.cwMembers?.length) return dismissCw(item, authKey);
-      if (item.manualWatched) {
-        dismissManualWatched(item._id, { acknowledged: true });
-        return;
+      const copies = cwDismissGroup(
+        item,
+        [...items, ...externalCw, ...localCwItems, ...resurfaceLibrary],
+        franchiseDedupKey,
+        franchiseRootSync,
+      );
+      for (const copy of copies) {
+        if (copy.manualWatched) dismissManualWatched(copy._id);
+        if (copy.external === "nuvio" || isNuvioProvider) {
+          const slot = resolveNuvioProfileIndex();
+          removeExternalCwItem(copy);
+          clearLocalCw(copy._id, `nuvio-${slot}`);
+          clearResume(copy._id, undefined, undefined, `nuvio-${slot}`);
+        }
+        if (copy.local) clearLocalCw(copy._id);
+        dismissCw(copy, copy.local || copy.external || copy.manualWatched ? null : authKey);
       }
-      if (
-        isNuvioProvider ||
-        item.external === "nuvio" ||
-        (isNuvioSignedIn() && isNuvioProviderActive())
-      ) {
-        const slot = resolveNuvioProfileIndex();
-        removeExternalCwItem(item);
-        clearLocalCw(item._id, `nuvio-${slot}`);
-        clearLocalCw(item._id);
-        const se = episodeFromVideoId(item.state?.video_id);
-        const season = item.state?.season ?? se?.season;
-        const episode = item.state?.episode ?? se?.episode;
-        clearResume(item._id, undefined, undefined, `nuvio-${slot}`);
-        clearResume(item._id);
-        dismissCw(item, authKey);
-        void deleteWatchProgressFromNuvio(slot, item._id, undefined, season, episode);
-        return;
-      }
-      if (item.local) {
-        clearLocalCw(item._id);
-        dismissCw(item, authKey);
-        return;
-      }
-      clearLocalCw(item._id, { acknowledged: true });
-      dismissCw(item, authKey, { acknowledged: true });
     },
-    [authKey, isNuvioProvider],
+    [authKey, items, externalCw, localCwItems, resurfaceLibrary, isNuvioProvider],
   );
+
+  const onDismissAllCw = useCallback(() => {
+    for (const item of cwItems) onDismissCw(item);
+  }, [cwItems, onDismissCw]);
 
   const { items: favItems } = useMediaFavorites();
   const { items: localItems } = useLocalWatchlist();
@@ -1635,6 +1626,7 @@ export function Home({
               watchedSet={traktWatched}
               onDismiss={onDismissCw}
               onCopyCw={copyCurrentCw}
+              onDismissAll={onDismissAllCw}
               loading={nuvioProfileSwitching}
             />
           </Profiled>

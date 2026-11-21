@@ -2,9 +2,12 @@
 import assert from "node:assert/strict";
 // @ts-expect-error Node test types are outside browser config.
 import test from "node:test";
-import { contentActions } from "../src/components/context-menu/content-actions.tsx";
+import { contentActions as buildContentActions } from "../src/components/context-menu/content-actions.tsx";
 
-test("a linked poster keeps its independent page link without any image commands", () => {
+const contentActions = (content: Parameters<typeof buildContentActions>[0]) =>
+  buildContentActions(content, () => {}, true);
+
+test("a linked poster keeps its independent page link alongside image commands", () => {
   const actions = contentActions({
     image: {
       src: "https://images.example.org/poster.png",
@@ -14,11 +17,11 @@ test("a linked poster keeps its independent page link without any image commands
   });
   assert.deepEqual(
     actions.map((action) => action.id),
-    ["link:open", "link:copy"],
+    ["link:open", "link:copy", "image:view", "image:save", "image:copy-link", "image:open-link"],
   );
 });
 
-test("an image alone or a link to that same image has no contextual commands", () => {
+test("image tools remain available without duplicating a link to the same image", () => {
   for (const image of [
     { src: "https://images.example.org/poster.png" },
     {
@@ -32,20 +35,29 @@ test("an image alone or a link to that same image has no contextual commands", (
     { src: "blob:https://example.org/fixture" },
     { src: "data:image/png;base64,iVBORw0KGgo=" },
   ]) {
-    assert.deepEqual(contentActions({ image }), []);
-    assert.deepEqual(contentActions({ image, link: image.src }), []);
-    if (image.originalSrc) assert.deepEqual(contentActions({ image, link: image.originalSrc }), []);
+    const ids = contentActions({ image }).map((a) => a.id);
+    assert.ok(ids.includes("image:view"));
+    assert.ok(ids.includes("image:save"));
+    assert.deepEqual(
+      contentActions({ image, link: image.src }).map((a) => a.id),
+      ids,
+    );
+    if (image.originalSrc)
+      assert.deepEqual(
+        contentActions({ image, link: image.originalSrc }).map((a) => a.id),
+        ids,
+      );
   }
 });
 
-test("selected text keeps its own command even when an image has no commands", () => {
+test("selected text keeps its own command alongside image tools", () => {
   const actions = contentActions({
     selection: "selected words",
     image: { src: "blob:https://example.org/fixture" },
   });
   assert.deepEqual(
     actions.map((action) => action.id),
-    ["selection:copy"],
+    ["selection:copy", "image:view", "image:save"],
   );
 });
 

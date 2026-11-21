@@ -1,3 +1,6 @@
+import { LiveTvRow } from "./live-tv-row";
+import { MusicRow } from "./music-row";
+import { EBookRow } from "./ebook-row";
 import { X, Loader2, CornerDownLeft, CalendarRange, Tag } from "lucide-react";
 import { Search } from "@/components/icons/search-icon";
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -14,13 +17,10 @@ import { MOVIE_GENRES, TV_GENRES } from "@/lib/feed/tags";
 import { warmAnimeResolution } from "@/lib/anime-detect";
 import { AnimeRow } from "./anime-row";
 import { MangaRow } from "./manga-row";
-import { MusicRow } from "./music-row";
-import { EBookRow } from "./ebook-row";
 import { SportsRow } from "./sports-row";
 import { CharacterGroup } from "./character-group";
 import { EmptyState } from "./empty-state";
 import { GuideModal } from "./guide-modal";
-import { LiveTvRow } from "./live-tv-row";
 import { TopMatch } from "./top-match";
 import { CollectionHitsRow } from "./collection-pane";
 import { ExplorePane, type ExploreFrame } from "./explore-pane";
@@ -369,7 +369,7 @@ export function SearchOverlay() {
         className="relative mx-auto flex h-full w-full max-w-[1200px] flex-col px-6 py-6 sm:px-10 sm:py-10"
       >
         <div
-          className={`modal-panel relative flex max-h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-transparent bg-elevated/70 shadow-[0_24px_80px_-30px_rgba(0,0,0,0.7)] ${
+          className={`modal-panel relative flex max-h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-transparent bg-elevated shadow-[0_24px_80px_-30px_rgba(0,0,0,0.7)] ${
             closing ? "harbor-search-panel-out" : "harbor-search-panel-in"
           }`}
         >
@@ -451,7 +451,7 @@ export function SearchOverlay() {
               )}
             </div>
             {status === "loading" && storeQuery === null && (
-              <Loader2 size={18} className="shrink-0 animate-spin text-ink-subtle" />
+              <Loader2 size={18} className="shrink-0 harbor-functional-spin text-ink-subtle" />
             )}
             <Hint />
             {storeQuery === null && (settings.aiSearchKey.trim() || settings.aiGroqKey.trim()) && (

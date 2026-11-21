@@ -20,11 +20,8 @@ const ORDER: { key: SearchFilterKey; label: string }[] = [
   { key: "movies", label: "Movies" },
   { key: "shows", label: "Series" },
   { key: "people", label: "People" },
-  { key: "live", label: "Live TV" },
   { key: "anime", label: "Anime" },
   { key: "manga", label: "Manga" },
-  { key: "music", label: "Music" },
-  { key: "ebooks", label: "eBooks" },
   { key: "sports", label: "Sports" },
 ];
 

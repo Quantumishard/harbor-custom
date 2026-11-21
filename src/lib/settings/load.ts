@@ -562,6 +562,8 @@ export function parseStoredSettings(raw: string | null): {
       preferredAudioLangs: (parsed.preferredAudioLangs ?? DEFAULT.preferredAudioLangs).map((lang) =>
         lang === ORIGINAL_AUDIO_LANG ? lang : languageName(lang),
       ),
+      preferOriginalAudioLanguage:
+        parsed.preferOriginalAudioLanguage ?? DEFAULT.preferOriginalAudioLanguage,
       castAlwaysTranscode: parsed.castAlwaysTranscode ?? DEFAULT.castAlwaysTranscode,
       mangaUpscaleQuality: parsed.mangaUpscaleQuality === "best" ? "best" : "fast",
       mangaUpscaleAutoDownload: parsed.mangaUpscaleAutoDownload !== false,

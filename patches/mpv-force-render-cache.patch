@@ -1,0 +1,63 @@
+--- a/video/out/vo_gpu_next.c
++++ b/video/out/vo_gpu_next.c
+@@ -195,6 +195,7 @@
+     float background_blur_radius;
+     float corner_rounding;
+     bool inter_preserve;
++    bool force_render_cache;
+     struct user_lut lut;
+     struct user_lut image_lut;
+     struct user_lut target_lut;
+@@ -239,6 +240,7 @@
+         {"background-blur-radius", OPT_FLOAT(background_blur_radius)},
+         {"corner-rounding", OPT_FLOAT(corner_rounding), M_RANGE(0, 1)},
+         {"interpolation-preserve", OPT_BOOL(inter_preserve)},
++        {"force-render-cache", OPT_BOOL(force_render_cache)},
+         {"lut", OPT_STRING(lut.opt), .flags = M_OPT_FILE},
+         {"lut-type", OPT_CHOICE_C(lut.type, lut_types)},
+         {"image-lut", OPT_STRING(image_lut.opt), .flags = M_OPT_FILE},
+@@ -1366,7 +1368,8 @@
+     struct pl_render_params params = pars->params;
+     const struct gl_video_opts *opts = p->opts_cache->opts;
+     bool will_redraw = frame->display_synced && frame->num_vsyncs > 1;
+-    bool cache_frame = will_redraw || frame->still || p->paused;
++    bool cache_frame = will_redraw || frame->still || p->paused ||
++                       p->next_opts->force_render_cache;
+     bool can_interpolate = opts->interpolation && frame->display_synced &&
+                            !frame->still && frame->num_frames > 1 && !p->paused;
+     double pts_offset = can_interpolate ? frame->ideal_frame_vsync : 0;
+@@ -2860,6 +2863,23 @@
+     }
+ }
+ 
++// Make the cached path available even when all user hooks run at OUTPUT.
++// No shader, texture, sampler or pixel is changed by this hook.
++static struct pl_hook_res frame_cache_hint(void *priv,
++                                           const struct pl_hook_params *params)
++{
++    (void) priv;
++    (void) params;
++    return (struct pl_hook_res) { .output = PL_HOOK_SIG_NONE };
++}
++
++static const struct pl_hook frame_cache_hook = {
++    .stages = PL_HOOK_NATIVE,
++    .input = PL_HOOK_SIG_NONE,
++    .hook = frame_cache_hint,
++    .signature = UINT64_C(0x484152424f524643),
++};
++
+ static void update_render_options(struct vo *vo)
+ {
+     struct priv *p = vo->priv;
+@@ -3002,6 +3022,10 @@
+             MP_TARRAY_APPEND(p, p->hooks, pars->params.num_hooks, hook);
+             update_hook_opts(p, opts->user_shader_opts, opts->user_shaders[i], hook);
+         }
++    }
++
++    if (p->next_opts->force_render_cache) {
++        MP_TARRAY_APPEND(p, p->hooks, pars->params.num_hooks, &frame_cache_hook);
+     }
+ 
+     pars->params.hooks = p->hooks;

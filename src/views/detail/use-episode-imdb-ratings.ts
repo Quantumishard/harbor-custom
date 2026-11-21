@@ -4,7 +4,7 @@ import {
   harborImdbEpisodesCached,
   subscribeHarborImdbEpisodes,
 } from "@/lib/providers/harbor-imdb";
-import { omdbSeasonRatings } from "@/lib/providers/omdb";
+import { omdbSeasonRatings, omdbSeasonRatingsCached } from "@/lib/providers/omdb";
 import { createOmdbSeasonQueue } from "@/lib/omdb-season-queue";
 import { searchCinemeta } from "@/lib/search";
 
@@ -94,6 +94,18 @@ export function useEpisodeImdbRatings(
 ) {
   const requestedSeasons = [...new Set(typeof seasons === "number" ? [seasons] : seasons)];
   const seasonsKey = JSON.stringify(requestedSeasons);
+  const cached = useMemo(() => {
+    const ratings = new Map<string, number>();
+    if (!imdbId || !/^tt\d+$/.test(imdbId)) return ratings;
+    for (const season of requestedSeasons) {
+      for (const [episode, rating] of omdbSeasonRatingsCached(imdbId, season) ?? [])
+        if (Number.isFinite(rating) && rating > 0 && rating <= 10)
+          ratings.set(`${season}:${episode}`, rating);
+    }
+    for (const [coordinate, rating] of harborImdbEpisodesCached(imdbId) ?? [])
+      if (Number.isFinite(rating) && rating > 0 && rating <= 10) ratings.set(coordinate, rating);
+    return ratings;
+  }, [imdbId, seasonsKey, omdbKey]);
   // Keep already loaded seasons visible as a user scrolls through an all-episode order.
   const key = JSON.stringify([imdbId, omdbKey]);
   const [result, setResult] = useState({
@@ -163,7 +175,7 @@ export function useEpisodeImdbRatings(
     if (queueRef.current?.key === key) queueRef.current.enqueue(requestedSeasons);
   }, [key, seasonsKey]);
   return useMemo(() => {
-    if (result.key !== key) return new Map<string, number>();
-    return new Map([...result.omdb, ...result.harbor]);
-  }, [result, key]);
+    if (result.key !== key) return cached;
+    return new Map([...cached, ...result.omdb, ...result.harbor]);
+  }, [result, key, cached]);
 }

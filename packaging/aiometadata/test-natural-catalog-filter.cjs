@@ -1,0 +1,20 @@
+const assert=require('node:assert/strict');
+const Module=require('node:module');const original=Module._load;
+Module._load=function(name,...args){if(/gemini|openrouter|aiSearch/i.test(name))throw Error('AI dependency forbidden');return original.call(this,name,...args)};
+const {planNaturalFilter,matchMeta,enrichTmdbCatalogMeta,naturalFilterPage}=require('/app/dist/server/lib/naturalCatalogFilter');
+const row=(id,title,year)=>({id,type:'series',name:title,_nlTmdb:{titles:[title],year}});
+const finish=async args=>{for(let i=0;i<1000;i++){const r=naturalFilterPage(args);if(['complete','partial','error'].includes(r.naturalFilter.status))return r;await new Promise(r=>setTimeout(r,2))}throw Error('Timeout')};
+(async()=>{
+for(const [q,min,max,title] of [['2023',2023,2023,undefined],['2023-',2023,undefined,undefined],['2020-2024',2020,2024,undefined],['Bear 2023',2023,2023,'Bear'],['The Bear (2023)',2023,2023,'The Bear'],['Bear since 2023',2023,undefined,'Bear'],['after 2023',2024,undefined,undefined],['before 2023',undefined,2022,undefined],['between 2020 and 2023',2020,2023,undefined],['"1917"',undefined,undefined,'1917'],['title:1984',undefined,undefined,'1984']]){const p=await planNaturalFilter(q,{});assert.equal(p.minYear,min,q);assert.equal(p.maxYear,max,q);assert.equal(p.title,title,q)}
+const p=await planNaturalFilter('bear 2023-');assert.equal(matchMeta(row('1','The Bear',2024),p),true);assert.equal(matchMeta(row('1','The Bear',2022),p),false);assert.equal(matchMeta(row('1','Another Title',2024),p),false);assert.equal(matchMeta({name:'The Bear',releaseInfo:'2024'},p),null);
+assert.equal(matchMeta({_nlTmdb:{titles:['Amélie'],year:2001}},await planNaturalFilter('amelie')),true);
+await assert.rejects(()=>planNaturalFilter('2024-2020'));await assert.rejects(()=>planNaturalFilter(''));
+let calls=0;const enriched=await enrichTmdbCatalogMeta({id:'tt123',type:'movie',name:'Wrong catalog title'}, {}, {find:async()=>({movie_results:[{id:10}]}),movieInfo:async()=>{calls++;return{id:10,title:'TMDB Title',original_title:'Original Title',release_date:'2023-02-01'}}});assert.equal(enriched.id,'tt123');assert.equal(enriched.name,'TMDB Title');assert.equal(matchMeta(enriched,await planNaturalFilter('original 2023')),true);assert.equal(calls,1);
+assert.equal((await enrichTmdbCatalogMeta({id:'unsupported',type:'movie'}, {}, {}))._nlTmdb,null);
+assert.equal((await enrichTmdbCatalogMeta({id:'tmdb:10',type:'movie'}, {}, {movieInfo:async()=>({id:11,title:'Wrong mapping'})}))._nlTmdb,null);
+const tv=await enrichTmdbCatalogMeta({id:'tmdb:20',type:'series'}, {}, {tvInfo:async()=>({id:20,name:'Series',original_name:'Original',first_air_date:'2019-01-01',last_air_date:'2024-01-01'})});assert.equal(tv._nlTmdb.year,2019);
+const args={identity:'tmdb-only',query:'Show 2023- sort:newest',skip:0,plan:()=>planNaturalFilter('Show 2023- sort:newest'),load:async page=>page<=60?Array.from({length:20},(_,i)=>row(page+'-'+i,'Show '+i,2022+page%3)):[],enrich:async x=>x};
+const result=await finish(args);assert.equal(result.naturalFilter.status,'complete');assert.equal(result.naturalFilter.scanned,1200);assert.equal(result.naturalFilter.total,800);assert.equal(result.metas.length,100);assert.equal(result.metas[0]._nlTmdb.year,2024);assert.equal(naturalFilterPage({...args,skip:100}).metas.length,100);assert.deepEqual(naturalFilterPage(args),result);
+let release,loads=0;const partial={...args,identity:'tmdb-stop',load:async page=>{loads++;return page===1?[row('1','Show',2024)]:new Promise(r=>release=r)}};naturalFilterPage(partial);for(let i=0;i<200&&loads<2;i++)await new Promise(r=>setTimeout(r,2));const stopped=naturalFilterPage({...partial,action:'stop'});assert.equal(stopped.naturalFilter.status,'partial');assert.equal(stopped.metas.length,1);release([]);await new Promise(r=>setTimeout(r,2));assert.deepEqual(naturalFilterPage(partial),stopped);
+console.log('PASS: no AI dependencies, title/year parser, TMDB-only evidence, original titles, first premiere dates, unavailable/mismatched IDs, full 1200-title scan, global sorting/pagination/cache and frozen Stop snapshots');
+})().catch(e=>{console.error(e);process.exit(1)});

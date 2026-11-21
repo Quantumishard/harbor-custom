@@ -41,6 +41,7 @@ import {
 import { useAnimeAnilistDetails } from "@/views/detail/use-anime-anilist-details";
 import { useAnimeCharacters } from "@/views/detail/use-anime-characters";
 import { useMalRating } from "@/lib/mal-rating";
+import { useMoreLikeThis } from "@/lib/use-more-like-this";
 
 export function MobileDetail({ meta, onClose }: { meta: Meta; onClose: () => void }) {
   const [reduced] = useState(prefersReducedMotion);
@@ -179,15 +180,16 @@ function DetailBody({
   const first = useMemo(() => firstEpisode(full, seasons), [full, seasons]);
   const trailerId = detail?.trailerCandidates?.[0] ?? meta.trailerStreams?.[0]?.ytId ?? null;
 
+  const recommendations = useMoreLikeThis(meta, detail, !isAnime);
   const { recItems, simItems } = useMemo(() => {
+    if (!isAnime) return { recItems: recommendations, simItems: detail?.similar ?? [] };
     if (!detail) return { recItems: [] as Meta[], simItems: [] as Meta[] };
-    if (!isAnime) return { recItems: detail.recommendations, simItems: detail.similar };
     const seenIds = new Set<string>([meta.id]);
     const seenNames = new Set<string>([meta.name.trim().toLowerCase()]);
     const recItems = dedupeMeta(detail.recommendations, seenIds, seenNames);
     const simItems = dedupeMeta(detail.similar, seenIds, seenNames);
     return { recItems, simItems };
-  }, [detail, isAnime, meta.id, meta.name]);
+  }, [detail, isAnime, meta.id, meta.name, recommendations]);
 
   const shownRecItems = useHideAnimeMetas(recItems);
   const shownSimItems = useHideAnimeMetas(simItems);

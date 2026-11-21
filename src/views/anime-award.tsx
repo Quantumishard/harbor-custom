@@ -10,7 +10,7 @@ import {
 } from "@/lib/anime-awards";
 import { resolveAwardIcon, useAwardPacks } from "@/lib/award-icons";
 import { useSettings } from "@/lib/settings";
-import { useView } from "@/lib/view";
+import { useScrollMemory, useView } from "@/lib/view";
 import { useT } from "@/lib/i18n";
 
 const SOURCE_TINTS: Record<AwardSourceId, string> = {
@@ -21,12 +21,19 @@ const SOURCE_TINTS: Record<AwardSourceId, string> = {
   animation_kobe: "#8a6a3b",
 };
 
-export function AnimeAwardView({ sourceId }: { sourceId: AwardSourceId }) {
+export function AnimeAwardView({
+  sourceId,
+  active = true,
+}: {
+  sourceId: AwardSourceId;
+  active?: boolean;
+}) {
   const t = useT();
   const data = useMemo(() => readAnimeAwardSource(sourceId), [sourceId]);
   const scrollRef = useRef<HTMLElement>(null);
   const [year, setYear] = useState<number | null>(null);
   const [query, setQuery] = useState("");
+  useScrollMemory(`anime-award:${sourceId}`, scrollRef, active);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: 0, behavior: "auto" });

@@ -15,6 +15,8 @@ import {
   subscribeExtensionCatalogues,
 } from "./streams/plugins";
 
+import { orderLocalCatalogs, subscribeLocalCatalogs } from "./local-catalogs";
+
 const NON_CONTENT = new Set(["addon_catalog"]);
 
 const CATALOG_TYPE_LABEL_KEYS: Readonly<Record<string, string>> = {
@@ -37,6 +39,7 @@ export type BrowseCatalog = {
   type: string;
   id: string;
   name: string;
+  naturalFilterSupported?: boolean;
   genreExtra: string | null;
   genres: string[];
 };
@@ -77,7 +80,12 @@ function extensionCatalogs(includePlugins: boolean): BrowseCatalog[] {
 }
 
 export function subscribeBrowseCatalogs(cb: () => void): () => void {
-  return subscribeExtensionCatalogues(cb);
+  const extensions = subscribeExtensionCatalogues(cb);
+  const local = subscribeLocalCatalogs(cb);
+  return () => {
+    extensions();
+    local();
+  };
 }
 
 /** A caller says whether a plugin's rows belong in its list. The Plugins page is where they belong
@@ -99,6 +107,7 @@ export async function listBrowseCatalogs(
       out.push({
         key: `${addon.manifest.id}-${cat.type}-${cat.id}`,
         addonName: addon.manifest.name,
+        naturalFilterSupported: ["aio-metadata", "com.aio.metadata"].includes(addon.manifest.id),
         addonLogo: addon.manifest.logo,
         base,
         type: cat.type,
@@ -109,7 +118,7 @@ export async function listBrowseCatalogs(
       });
     }
   }
-  return out;
+  return orderLocalCatalogs(out);
 }
 
 export function browseFetcher(

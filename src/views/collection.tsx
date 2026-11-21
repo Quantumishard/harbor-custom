@@ -6,13 +6,19 @@ import { useSettings } from "@/lib/settings";
 import { useScrollMemory } from "@/lib/view";
 import { useT } from "@/lib/i18n";
 
-export function CollectionView({ collectionId }: { collectionId: number }) {
+export function CollectionView({
+  collectionId,
+  active = true,
+}: {
+  collectionId: number;
+  active?: boolean;
+}) {
   const t = useT();
   const { settings } = useSettings();
   const [data, setData] = useState<TmdbCollection | null>(null);
   const [loading, setLoading] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
-  useScrollMemory(`collection-${collectionId}`, scrollRef);
+  useScrollMemory(`collection-${collectionId}`, scrollRef, active);
 
   useEffect(() => {
     if (!settings.tmdbKey) {

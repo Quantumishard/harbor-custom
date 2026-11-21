@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ClipboardCopy, LogIn } from "lucide-react";
+import { ClipboardCopy, LogIn, Trash2 } from "lucide-react";
 import stremioWordmark from "@/assets/stremio-wordmark.png";
 import nuvioLogo from "@/assets/nuvio.png";
 import { AuthModal } from "@/components/auth-modal";
@@ -25,6 +25,7 @@ type Props = {
   onDismiss: ContinueDismiss;
   onCopyCw?: () => Promise<boolean>;
   loading?: boolean;
+  onDismissAll: () => void;
 };
 
 export function CWSection({
@@ -34,6 +35,7 @@ export function CWSection({
   watchedSet,
   onDismiss,
   onCopyCw,
+  onDismissAll,
   loading,
 }: Props) {
   const { settings } = useSettings();
@@ -109,6 +111,20 @@ export function CWSection({
     </button>
   );
 
+  const headerActions = (
+    <div className="flex items-center gap-2">
+      {signInButton}
+      <button
+        type="button"
+        onClick={onDismissAll}
+        className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-edge-soft px-3 py-1 text-[12.5px] font-medium text-ink-subtle transition-colors hover:bg-raised hover:text-ink"
+      >
+        <Trash2 size={13} strokeWidth={2.2} />
+        {t("Clear all")}
+      </button>
+    </div>
+  );
+
   const authModal = showAuth ? (
     isNuvio ? (
       <NuvioAuthModal onClose={() => setShowAuth(false)} onSuccess={activateNuvioAccountProvider} />
@@ -146,7 +162,7 @@ export function CWSection({
           shape="landscape"
           scrollKey="home:cw"
           scrollAnchorKey={headKey}
-          headerRight={signInButton}
+          headerRight={headerActions}
           className={showQueueCard ? "home-cw-with-queue" : undefined}
         >
           {[

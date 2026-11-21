@@ -23,6 +23,7 @@ import {
 } from "./transport/control-renderer-stremio";
 import { usePlayerNavigation } from "@/lib/view";
 import { useCastModalPlay } from "./use-cast-modal-play";
+import { ChapterMenu } from "./transport/chapter-menu";
 import { useReportPlayerControlsInset } from "@/lib/player/controls-inset";
 
 export type TransportStremioProps = {
@@ -348,6 +349,14 @@ export function TransportStremio(p: TransportStremioProps) {
           {renderSlot("bottom-left")}
           {renderSlot("bottom-center")}
           <div className="flex-1" />
+          {snap.chapters.length > 0 && (
+            <ChapterMenu
+              chapters={snap.chapters}
+              positionSec={snap.positionSec}
+              onSeek={onSeek}
+              onOpenChange={setChapterMenuOpen}
+            />
+          )}
           {renderSlot("bottom-right")}
         </div>
       </div>

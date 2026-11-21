@@ -1,0 +1,58 @@
+name: Build HDR player runtime
+on:
+  push:
+    branches: [build/hdr-render-cache-20261107]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-player:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-meson
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-ffmpeg
+            mingw-w64-ucrt-x86_64-libass
+            mingw-w64-ucrt-x86_64-libplacebo
+            mingw-w64-ucrt-x86_64-luajit
+            mingw-w64-ucrt-x86_64-mujs
+            mingw-w64-ucrt-x86_64-libarchive
+            mingw-w64-ucrt-x86_64-lcms2
+            mingw-w64-ucrt-x86_64-libjpeg-turbo
+            mingw-w64-ucrt-x86_64-uchardet
+            mingw-w64-ucrt-x86_64-rubberband
+            mingw-w64-ucrt-x86_64-vapoursynth
+            mingw-w64-ucrt-x86_64-libbluray
+            mingw-w64-ucrt-x86_64-openal
+            mingw-w64-ucrt-x86_64-zimg
+      - name: Build pinned mpv with pixel-preserving frame cache control
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          git clone -c core.autocrlf=false --filter=blob:none https://github.com/mpv-player/mpv.git mpv-src
+          cd mpv-src
+          git checkout 902818753849d9ad8f0096fad6ca5aeaa37113b9
+          sed -i 's/\r$//' ../patches/mpv-force-render-cache.patch
+          git apply --check ../patches/mpv-force-render-cache.patch
+          git apply ../patches/mpv-force-render-cache.patch
+          meson setup build --buildtype=release -Dcplayer=false -Dlibmpv=true -Dlua=enabled -Djavascript=enabled -Dvapoursynth=enabled -Dtests=false
+          meson compile -C build -j 4
+          python ../scripts/collect-hdr-player-runtime.py build ../mpv-runtime
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hdr-player-windows-x64
+          path: mpv-runtime/
+          retention-days: 14
+          if-no-files-found: error

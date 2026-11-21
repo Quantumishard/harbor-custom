@@ -1,9 +1,16 @@
 {
   "bundle": {
     "resources": {
-      "libmpv/libmpv-2.dll": "libmpv-2.dll",
       "binaries/mpv-x86_64-pc-windows-msvc.exe": "mpv.exe",
-      "fonts/*": "fonts/"
+      "fonts/*": "fonts/",
+      "libmpv/*.dll": "",
+      "libmpv/licenses/": "player-runtime-notices/licenses/",
+      "libmpv/LICENSE*": "player-runtime-notices",
+      "libmpv/Copyright": "player-runtime-notices/Copyright",
+      "libmpv/SOURCE.txt": "player-runtime-notices/SOURCE.txt",
+      "libmpv/packages.txt": "player-runtime-notices/packages.txt",
+      "libmpv/mpv-force-render-cache.patch": "player-runtime-notices/mpv-force-render-cache.patch",
+      "libmpv/SHA256-MANIFEST.json": "player-runtime-notices/SHA256-MANIFEST.json"
     }
   }
 }

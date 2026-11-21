@@ -6,6 +6,19 @@ import { safeFetch } from "@/lib/safe-fetch";
 import { fetchCsmAdvisory } from "@/lib/providers/csm";
 
 const BASE = `${HARBOR_API_BASE}/api/imdb`;
+const SELF_HOSTED_RATINGS_BASE = "https://ratings.stormpulse.win/api/imdb";
+
+function ratingsRequest(path: string): [string, RequestInit] {
+  let apiKey: string | undefined;
+  try {
+    apiKey = globalThis.localStorage?.getItem("harbor.imdb.ratings.apiKey")?.trim();
+  } catch {
+    // Sandboxed profiles may disable local storage.
+  }
+  return apiKey
+    ? [`${SELF_HOSTED_RATINGS_BASE}/${path}`, { redirect: "error", headers: { "X-API-Key": apiKey } }]
+    : [`${BASE}/${path}`, {}];
+}
 
 export type ParentalCategory = { category: string; severity: string };
 
@@ -50,7 +63,9 @@ export async function harborImdbEpisodes(seriesTt: string): Promise<Map<string, 
   const p = (async () => {
     const map = new Map<string, number>();
     try {
-      const res = await safeFetch(`${BASE}/episodes/${seriesTt}`, {
+      const [url, options] = ratingsRequest(`episodes/${encodeURIComponent(seriesTt)}`);
+      const res = await safeFetch(url, {
+        ...options,
         signal: AbortSignal.timeout(5000),
       });
       if (res.ok) {
@@ -104,7 +119,8 @@ export async function harborImdbTitle(tt: string): Promise<number | null> {
 
 async function fetchTitleRating(tt: string): Promise<number | null> {
   try {
-    const res = await fetch(`${BASE}/title/${tt}`);
+    const [url, options] = ratingsRequest(`title/${encodeURIComponent(tt)}`);
+    const res = await safeFetch(url, options);
     if (!res.ok) {
       titleCache.set(tt, null);
       return null;

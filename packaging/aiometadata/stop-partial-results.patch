@@ -1,0 +1,98 @@
+--- a/addon/index.ts
++++ b/addon/index.ts
+@@ -5233,11 +5233,13 @@
+       const { getImdbRating } = require('./lib/imdbRatings');
+       const sourceArgs = { ...extraArgs };
+       delete sourceArgs.nlFilter;
++      delete sourceArgs.nlAction;
+       delete sourceArgs.skip;
+       const routePrefix = req.originalUrl.split('/catalog/')[0];
+       const payload = naturalFilterPage({
+         identity: [userUUID, storedConfig, type, id, sourceArgs],
+         query: String(extraArgs.nlFilter),
++        action: extraArgs.nlAction === 'stop' ? 'stop' : undefined,
+         skip: Math.max(0, Number.parseInt(extraArgs.skip || '0', 10) || 0),
+         plan: () => planNaturalFilter(String(extraArgs.nlFilter), config),
+         load: async (page) => {
+--- a/addon/lib/naturalCatalogFilter.ts
++++ b/addon/lib/naturalCatalogFilter.ts
+@@ -8,7 +8,7 @@
+   terms?: string[][]; excludeTerms?: string[];
+   sort?: 'catalog' | 'votes' | 'rating' | 'newest' | 'oldest';
+ }
+-type Job = { touched: number; status: 'planning' | 'scanning' | 'complete' | 'error';
++type Job = { touched: number; status: 'planning' | 'scanning' | 'complete' | 'partial' | 'error';
+   scanned: number; unknown: number; matches: any[]; plan?: FilterPlan; error?: string };
+ const jobs = new Map<string, Job>();
+ const TTL = 30 * 60 * 1000;
+@@ -95,7 +95,7 @@
+ }
+ 
+ export function naturalFilterPage(args: {
+-  identity: unknown; query: string; skip: number;
++  identity: unknown; query: string; skip: number; action?: 'stop';
+   plan: () => Promise<FilterPlan>;
+   load: (page: number) => Promise<any[]>;
+   enrich: (meta: any, plan: FilterPlan) => Promise<any>;
+@@ -104,6 +104,14 @@
+   for (const [key, job] of jobs) if (now - job.touched > TTL && job.status !== 'scanning' && job.status !== 'planning') jobs.delete(key);
+   const key = createHash('sha256').update(JSON.stringify([args.identity,args.query])).digest('hex');
+   let job = jobs.get(key);
++  if (args.action === 'stop') {
++    if (!job) throw Error('The filter expired. Apply it again before stopping.');
++    if (job.status === 'planning' || job.status === 'scanning') {
++      job.matches = job.matches.slice();
++      if (job.plan) sortMatches(job.matches, job.plan);
++      job.status = 'partial';
++    }
++  }
+   if (!job) {
+     if (jobs.size >= 12) throw Error('Filter capacity reached. Try again after cached filters expire.');
+     if (args.query.length > 1000 || !args.query.trim()) throw Error('Enter a filter of 1–1000 characters.');
+@@ -112,13 +120,18 @@
+     const target = job;
+     void (async () => {
+       try {
+-        target.plan = await args.plan();
++        const stopped = () => target.status === 'partial';
++        const plan = await args.plan();
++        if (stopped()) return;
++        target.plan = plan;
+         target.status = 'scanning';
+         const seen = new Set<string>();
+         const started = Date.now();
+         for (let page = 1; ; page++) {
+           if (page > 5000 || seen.size >= 100000 || Date.now() - started > 30 * 60 * 1000) throw Error('Catalog exceeds this scan limit; narrow the catalog or genre and retry. No partial results were returned.');
++          if (stopped()) return;
+           const batch = await args.load(page);
++          if (stopped()) return;
+           if (!batch.length) break;
+           const fresh = batch.filter(m => {
+             if (!m?.id) return false;
+@@ -129,7 +142,9 @@
+           if (!fresh.length) throw Error('Catalog repeated a page. Cannot confirm full catalog coverage.');
+           // Bound provider concurrency; ordinary catalog and metadata caches are reused.
+           for (let offset = 0; offset < fresh.length; offset += 4) {
++            if (stopped()) return;
+             const rows = await Promise.all(fresh.slice(offset, offset + 4).map(m => args.enrich(m, target.plan!)));
++            if (stopped()) return;
+             for (const row of rows) {
+               target.scanned++;
+               const match = matchMeta(row, target.plan!);
+@@ -141,6 +156,7 @@
+         sortMatches(target.matches, target.plan);
+         target.status = 'complete';
+       } catch (e: any) {
++        if (target.status === 'partial') return;
+         target.status = 'error';
+         // Provider exceptions can contain private URLs: do not expose them.
+         target.error = e?.safeMessage || 'Filtering could not finish. Check the filter wording or try again later.';
+@@ -150,7 +166,7 @@
+     })();
+   }
+   job.touched = now;
+-  return { metas: job.status === 'complete' ? job.matches.slice(args.skip, args.skip + 100) : [],
++  return { metas: job.status === 'complete' || job.status === 'partial' ? job.matches.slice(args.skip, args.skip + 100) : [],
+     naturalFilter: { status: job.status, scanned: job.scanned, unknown: job.unknown,
+       total: job.matches.length, summary: job.plan?.summary, rules: job.plan, error: job.error } };
+ }

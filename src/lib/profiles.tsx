@@ -1,3 +1,4 @@
+import { purgeLocalCatalogs } from "./local-catalogs";
 import { isNuvioProviderActive } from "@/lib/active-profile-id";
 import { persistCritical } from "./storage-recovery";
 import { purgeGameNotes } from "./games/game-notes";
@@ -149,6 +150,11 @@ function purgeProfileStorage(id: string): void {
     purgeGameNotes(id);
   } catch {
     /* Keep the existing profile cleanup best-effort. */
+  }
+  try {
+    purgeLocalCatalogs(id);
+  } catch {
+    /* Continue deleting the rest of the profile. */
   }
   try {
     for (const prefix of PROFILE_KEY_PREFIXES) localStorage.removeItem(`${prefix}${id}`);

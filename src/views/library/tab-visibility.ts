@@ -7,6 +7,7 @@ const HIDEABLE: Record<Exclude<Tab, "library">, true> = {
   local: true,
   "media-servers": true,
   torbox: true,
+  aiostreams: true,
   lists: true,
   groups: true,
   favorites: true,

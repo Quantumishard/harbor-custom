@@ -1,0 +1,83 @@
+# Harbor Custom
+
+An unofficial personal fork synchronized with Harbor v1.0.2-beta on November 6, 2026, retaining custom playback, subtitle, watchlist, dismissal, HDR, responsiveness, and AIOMetadata search changes. This is not an official Harbor release and carries no promise of continued upstream support.
+
+## Source synchronized with v1.0.2-beta (2026-11-06)
+
+The source includes the exact [upstream v1.0.2-beta release](https://github.com/Harborofficial/Harbor/releases/tag/v1.0.2-beta), commit `359dc317`, together with the personal customizations. Trakt-first recommendations, HDR Toys handling, AIOStreams and Easynews integration, episode-rating recovery, local catalog selection, persistent thumbnails, and catalog title search are retained. See [merge and verification notes](docs/release-notes/custom-1.0.2-beta-20261106.md).
+
+## Windows download
+
+Download the complete Windows x64 portable ZIP and `SHA256SUMS.txt` from [the 1.0.2 beta custom release](https://github.com/Quantumishard/harbor-custom/releases/tag/custom-1.0.2-beta-20261106). Fully quit Harbor, extract the **entire ZIP into a new folder**, and run `harbor.exe`. Keep the accompanying runtime files together. Windows WebView2 is required; existing Harbor settings and HDR Toys configuration remain in AppData.
+
+This update reuses verified runtime components from the official release and the existing compiler cache. The changed app core and interface are compiled for 1.0.2; incompatible old executables are not relabeled as the new release. Earlier custom releases remain available as fallbacks.
+
+Easynews NZB playback continues to use the existing authenticated AIOStreams library connection, including ElfHosted browser sign-in. See [setup and behavior](docs/custom-easynews-nzb.md).
+
+AIOMetadata catalogs with manifest IDs `aio-metadata` or `com.aio.metadata` can supply up to 100 results per catalog to main search. Movie and series rows containing those results retain up to 100 items through both merge passes. The addon must supply those results; this does not add pagination. Other addon limits remain as before.
+
+## Continue Watching frames and TorBox date order (2026-10-22)
+
+Captured video frames now recover space from disposable caches, survive title-ID changes, and save even when a native screenshot finishes just after the exit timeout. The TorBox cloud page has a Date added selector that orders torrents, Usenet and web downloads together, newest or oldest first. See [release notes](docs/release-notes/cw-thumbnails-torbox-date-20261022.md).
+
+## HDR Toys film switching (2026-10-19)
+
+Leaving playback now recreates native player sessions that used shaders, preventing HDR output settings from making subtitles grey on the next SDR film. See [release notes](docs/release-notes/hdr-toys-sdr-handoff-20261019.md).
+
+## HDR Toys subtitle-white correction (2026-10-19)
+
+HDR Toys remains enabled for PQ HDR and now preserves white text subtitles. The PQ shader chain is bypassed for SDR/HLG sources, and its temporary output/subtitle properties are restored when inactive. PGS placement and subtitle style settings are unchanged. See [release notes](docs/release-notes/hdr-toys-subtitle-white-20261019.md).
+
+## Catalog filters: TMDB title and year (2026-10-18)
+
+Catalog filters on the AIOMetadata backend now use **TMDB metadata only, with no AI interpretation, semantic review, grounding, or token spending**. The main search bar is unchanged. Ordinary filter text is a literal title substring, matched against TMDB's localized and original titles with case/accent/punctuation normalization. A year constrains the original movie release or first series premiere.
+
+Examples: `The Bear`, `The Bear 2023`, `2023`, `2023-`, `2020-2024`, `Bear since 2023`, `before 2020`, or `between 2020 and 2024`. Quote numeric titles (`"1917"`) or use `title:1917` to distinguish them from years. Append `sort:newest` or `sort:oldest` for global year ordering; default order follows the catalog. These are explicit title/year filters, not general natural-language thematic searches.
+
+The backend scans only members of the selected catalog, uses cached TMDB details, and excludes unverified mappings from matches. Missing TMDB title/year evidence is counted as unknown. Stop returns a frozen sorted partial snapshot; results remain cached for 30 minutes after last use. Catalog-page and metadata failures still report errors without invoking AI fallback.
+
+No Harbor download is required. The user's backend is updated. Existing installations at the October 18 11:44 version can apply `packaging/aiometadata/tmdb-title-year-filters.patch`, rebuild and restart AIOMetadata; new installations use `packaging/aiometadata/natural-catalog-filter.patch`. Older incremental patches in this directory are historical and should not be applied on top of this version. Tests reject AI module imports and cover parsing, metadata mapping, a 1,200-title scan, sorting, pagination, cache and Stop. No paid AI tests were run.
+
+The earlier subtitle color/brightness overrides remain reverted after the PGS placement regression; this backend change does not alter playback or subtitle behavior.
+
+## Community backend (source update, 2026-10-19)
+
+Harbor API requests now use `https://harborcommunity.site`, matching the official community source. The episode-rating response format remains compatible; live checks returned all 20 Making a Murderer ratings and all 44 Ozark ratings. Existing custom features and the OMDb fallback are retained. The Windows package includes this backend update and the preceding HDR Toys fixes.
+
+## Episode-rating recovery (source update, 2026-10-17)
+
+Episode IMDb ratings are now saved locally, shown immediately when returning to a season, and retained if a provider fails. Empty responses can recover after a short backoff; requests have timeouts and missing badges retry automatically. The configured OMDb key remains private, and the existing API-limit handling is preserved. This repair is included in the October 17 packaged build.
+
+TVDB ordering and story arcs now request IMDb ratings for the seasons actually displayed, independently of the main season selector. Cards and rows use matching season/episode coordinates, and multi-season lists fetch at most four seasons concurrently.
+
+Badges still depend on provider coverage. OMDb may omit individual episode ratings even with a premium key; Harbor preserves available IMDb scores and does not invent missing ones or label TMDB scores as IMDb.
+
+## Episode ratings and season return
+
+Cinemeta episode cards and rows now use the configured OMDb key for episode IMDb ratings independently of the retired Harbor service. Desktop episode lists restore the last selected valid season when returning from episode selection, including after the detail view is recreated.
+
+## Remembered search position
+
+Search returns to the same scroll position when reopened or when using Back from a title. A different query, profile, mode, or filter starts at the top. Position memory lasts for the current Harbor session.
+
+## Local catalogs and detail IMDb ratings
+
+Catalogs and Discover now offer **Account + device**, **Stremio account**, and **Local / no login** sources. While signed in, choose **Save account catalogs locally** before signing out. Local mode combines the remembered collection with device addons; use **Catalogs → Customize** to move or hide catalogs. The remembered addon definitions, genre filters, source choice, and local order are preserved per Harbor profile and included in addon backups. Catalog requests still depend on the addon provider. Successful empty account collections replace stale snapshots; network failures preserve the last usable snapshot.
+
+The title detail IMDb badge now recognizes Cinemeta ratings as IMDb, uses matching full metadata, and can fetch a Cinemeta score independently of the title/description provider toggle. A TMDB score is never relabeled as IMDb. Existing rating visibility preferences are retained.
+
+## Source and build information
+
+This repository began as a fresh snapshot of the customized working tree, including its source changes and local source tests. The October 21 and November 6 updates merge the upstream v1.0.1-beta and v1.0.2-beta histories, keeping a shared release ancestor for future updates. It is based on local commit `45f30a4e016ba0f161b1c45aa40107cf64a5d7fb` from October 7, 2026. Historical Git metadata, private app data, login sessions, provider keys, dependency caches, and build outputs are not part of this repository.
+
+See [the preserved upstream README](README-UPSTREAM.md) for architecture and setup details, and [AGENTS.md](AGENTS.md) for contributor instructions. The upstream instructions may refer to services or downloads that are no longer available. The custom Windows builds are rebuilt and packaged with the preserved runtime files. An entirely offline rebuild is not yet verified.
+
+Upstream GitHub workflows are preserved under `docs/upstream-workflows` as inactive reference files. Review and adapt them before enabling automation for this repository.
+
+## Service availability
+
+The desktop application still depends on external services for online features. Harbor-hosted sync, account/community features, relays, authentication proxies, update feeds, and downloaded assets can fail if their hosts disappear. Stremio login, catalog addons, metadata providers, and playback providers also have independent availability. A saved session or cached offline catalog does not establish that a fresh login or fresh catalog will work after shutdown.
+
+## Licensing
+
+Harbor source is distributed under the [MIT License](LICENSE), retaining the original copyright and permission notice. Bundled libraries, binaries, and assets retain their own licenses; see `src-tauri/THIRD-PARTY-NOTICES.txt` and the notices shipped with the Windows package. This repository supplies a player, not a media library or account access.

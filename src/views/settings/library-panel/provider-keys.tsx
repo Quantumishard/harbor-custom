@@ -9,7 +9,6 @@ import tmdbLogo from "@/assets/addon-logos/tmdb.png";
 import tvdbLogo from "@/assets/addon-logos/tvdb.svg";
 import { HoverTooltip } from "@/components/hover-tooltip";
 import { useSettings } from "@/lib/settings";
-import { tvFocus } from "@/lib/keyboard-navigation";
 import { isBackKey } from "@/lib/keyboard-navigation/geometry";
 import { useT } from "@/lib/i18n";
 import { ExtLink, KeyField } from "../shared";
@@ -77,8 +76,15 @@ export function useProviderKeys({
 
   useEffect(() => {
     if (!keyModal) return;
-    const field = keyFieldRef.current?.querySelector<HTMLInputElement>("input");
-    if (field) tvFocus(field);
+    const id = window.requestAnimationFrame(() => {
+      const field = keyFieldRef.current?.querySelector<HTMLInputElement>("input");
+      if (!field) return;
+      field.readOnly = false;
+      field.focus({ preventScroll: true });
+      const end = field.value.length;
+      field.setSelectionRange(end, end);
+    });
+    return () => window.cancelAnimationFrame(id);
   }, [keyModal]);
 
   useEffect(() => {

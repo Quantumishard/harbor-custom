@@ -56,6 +56,8 @@ import { WatchlistTab } from "./library/watchlist-tab";
 import { LetterboxdTab } from "./library/letterboxd-tab";
 import { MediaServersTab } from "./library/media-servers-tab";
 import { TorboxTab } from "./library/torbox-tab";
+import { AiostreamsTab } from "./library/aiostreams-tab";
+import aiostreamsLogo from "@/assets/addon-logos/aiostreams.png";
 import torboxLogo from "@/assets/addon-logos/torbox.png";
 import { pushActivityHint } from "@/lib/discord/activity-hint";
 import { HeroCarousel } from "@/components/hero-carousel";
@@ -82,6 +84,7 @@ function readSavedTab(): Tab {
       v === "local" ||
       v === "media-servers" ||
       v === "torbox" ||
+      v === "aiostreams" ||
       v === "lists" ||
       v === "groups" ||
       v === "favorites" ||
@@ -204,6 +207,7 @@ export function LibraryView({ active }: { active: boolean }) {
           {tab === "local" && <LocalTab scrollRef={scrollRef} />}
           {tab === "media-servers" && <MediaServersTab scrollRef={scrollRef} />}
           {tab === "torbox" && <TorboxTab />}
+          {tab === "aiostreams" && <AiostreamsTab />}
           {tab === "lists" && <MyListsTab />}
           {tab === "groups" && <MyGroupsTab />}
           {tab === "favorites" && <FavoritesTab />}
@@ -324,6 +328,11 @@ function Header({
       id: "torbox",
       label: "TorBox",
       icon: <img src={torboxLogo} alt="" className="h-3.5 w-3.5 object-contain" />,
+    },
+    {
+      id: "aiostreams",
+      label: "AIOStreams",
+      icon: <img src={aiostreamsLogo} alt="" className="h-3.5 w-3.5 object-contain" />,
     },
     { id: "lists", label: t("My Lists"), icon: <UiIcon name="list" className="h-3.5 w-3.5" /> },
     { id: "groups", label: t("My Groups"), icon: <UiIcon name="list" className="h-3.5 w-3.5" /> },

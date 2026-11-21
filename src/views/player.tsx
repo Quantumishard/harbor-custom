@@ -956,6 +956,7 @@ function NativePlayerView({ src }: { src: PlayerSrc }) {
     snap.videoWidth,
     snap.videoSourceWidth,
     bridgeReady,
+    snap.hdrGamma,
   );
   const holdSpeed = useHoldSpeed({
     enabled: !drawMode && !pipMode && !screenLocked,

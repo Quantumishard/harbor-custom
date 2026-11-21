@@ -1,4 +1,5 @@
 import { streamKey } from "./identity";
+import { withEasynewsNzbOptions } from "./easynews-nzb-options";
 import type { Addon } from "@/lib/addons";
 import { dlog, dwarn } from "@/lib/debug";
 import type { DebridStore } from "@/lib/debrid/types";
@@ -248,7 +249,9 @@ export async function runPipeline(
     );
     const fin = finalizeWithRescue(picker, rejected, input.trust ?? {}, input.score);
     return {
-      picker: applyStreamPriority(fin.picker, priorityActive, input.score.activeDebrids),
+      picker: withEasynewsNzbOptions(
+        applyStreamPriority(fin.picker, priorityActive, input.score.activeDebrids),
+      ),
       rejected: [...fin.rejected, ...extraRejected],
       raw: { addon: addonStreams, library },
       debridErrors: debridErrors.length > 0 ? debridErrors : undefined,
@@ -427,7 +430,9 @@ export async function runPipeline(
     const fin = finalizeWithRescue(core.picker, core.rejected, input.trust ?? {}, input.score);
     restoreCacheVerification(fin.picker);
     return {
-      picker: applyStreamPriority(fin.picker, priorityActive, input.score.activeDebrids),
+      picker: withEasynewsNzbOptions(
+        applyStreamPriority(fin.picker, priorityActive, input.score.activeDebrids),
+      ),
       rejected: [...fin.rejected, ...animeRejected],
       raw: { addon: addonStreams, library },
       debridErrors: debridErrors.length > 0 ? debridErrors : undefined,
@@ -460,7 +465,9 @@ export async function runPipeline(
   const fin = finalizeWithRescue(picker, rejected, input.trust ?? {}, input.score);
   restoreCacheVerification(fin.picker);
   return {
-    picker: applyStreamPriority(fin.picker, priorityActive, input.score.activeDebrids),
+    picker: withEasynewsNzbOptions(
+      applyStreamPriority(fin.picker, priorityActive, input.score.activeDebrids),
+    ),
     rejected: [...fin.rejected, ...animeRejected],
     raw: { addon: addonStreams, library },
     debridErrors: debridErrors.length > 0 ? debridErrors : undefined,

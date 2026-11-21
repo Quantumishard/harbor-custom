@@ -1,4 +1,5 @@
 import type { Settings } from "@/lib/settings";
+import { isWindowsDesktop } from "@/lib/platform";
 import { SHADER_CATALOG, STAGE_ORDER, type ShaderCatalogEntry } from "./shader-catalog";
 
 function selectedFiles(entry: ShaderCatalogEntry, variant?: string): string[] {
@@ -20,12 +21,17 @@ function conflictBlocked(entry: ShaderCatalogEntry, settings: Settings): boolean
   });
 }
 
-function selectedStages(settings: Settings): Array<{ order: number; paths: string[] }> {
+function selectedStages(
+  settings: Settings,
+  sourceGamma?: string,
+): Array<{ order: number; paths: string[] }> {
   const stages: Array<{ order: number; paths: string[] }> = [];
   for (const entry of SHADER_CATALOG) {
     const st = settings.playerShaders?.[entry.id];
     if (!st?.enabled || !st.dir) continue;
     if (conflictBlocked(entry, settings)) continue;
+    // This pack uses pq_inv; do not send SDR/HLG or unprobed sources through PQ.
+    if (entry.id === "hdr-toys" && sourceGamma !== "pq" && sourceGamma !== "smpte2084") continue;
     const dir = normDir(st.dir);
     const paths = selectedFiles(entry, st.variant).map((f) => `${dir}/${f}`);
     stages.push({ order: STAGE_ORDER[entry.stage], paths });
@@ -34,8 +40,8 @@ function selectedStages(settings: Settings): Array<{ order: number; paths: strin
   return stages;
 }
 
-export function generalShaderChain(settings: Settings): string[] {
-  return selectedStages(settings).flatMap((s) => s.paths);
+export function generalShaderChain(settings: Settings, sourceGamma?: string): string[] {
+  return selectedStages(settings, sourceGamma).flatMap((s) => s.paths);
 }
 
 /**
@@ -43,26 +49,39 @@ export function generalShaderChain(settings: Settings): string[] {
  * the chain. Anime4K restores and upscales itself, so anything that feeds an
  * upscale has to run before it and anything that finishes the picture after.
  */
-export function splitShaderChainAroundUpscaler(settings: Settings): {
+export function splitShaderChainAroundUpscaler(
+  settings: Settings,
+  sourceGamma?: string,
+): {
   before: string[];
   after: string[];
 } {
   const before: string[] = [];
   const after: string[] = [];
-  for (const stage of selectedStages(settings)) {
+  for (const stage of selectedStages(settings, sourceGamma)) {
     if (stage.order <= STAGE_ORDER.chroma) before.push(...stage.paths);
     else after.push(...stage.paths);
   }
   return { before, after };
 }
 
-export function shaderCompanionProps(settings: Settings): Record<string, string> {
+export function shaderCompanionProps(
+  settings: Settings,
+  sourceGamma?: string,
+): Record<string, string> {
   const out: Record<string, string> = {};
   for (const entry of SHADER_CATALOG) {
     const st = settings.playerShaders?.[entry.id];
     if (!st?.enabled || !st.dir || !entry.companionProps) continue;
     if (conflictBlocked(entry, settings)) continue;
+    // This pack uses pq_inv; do not send SDR/HLG or unprobed sources through PQ.
+    if (entry.id === "hdr-toys" && sourceGamma !== "pq" && sourceGamma !== "smpte2084") continue;
     Object.assign(out, entry.companionProps);
+    if (entry.id === "hdr-toys" && isWindowsDesktop()) {
+      // The bundled player keeps source subtitles before OUTPUT hooks in both
+      // play and pause, without changing video timing, interpolation or samplers.
+      Object.assign(out, { "blend-subtitles": "yes", "force-render-cache": "yes" });
+    }
   }
   return out;
 }

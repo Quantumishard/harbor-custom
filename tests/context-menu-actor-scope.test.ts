@@ -101,6 +101,10 @@ async function fixture({
     "@/components/drop-show-confirm-modal": { DropShowConfirmModal: empty },
     "@/components/lists/list-toast": { emitListToast: empty },
     "@/lib/deep-link": { shareDeepLink: empty },
+    "@/components/context-image-viewer": { ContextImageViewer: () => null },
+    "@/components/drop-show-confirm-modal": { DropShowConfirmModal: () => null },
+    "@/lib/anime-cw-ids": { getAnimeCanonicalId: () => null, getAnimeCwId: () => null },
+    "@/lib/drop-show-eligibility": { useCanDropShow: () => false },
     "@/lib/settings": {
       useSettings: () => ({ settings: { navCustomization: {} }, update: empty }),
     },
@@ -304,6 +308,10 @@ async function fixture({
         useProfiles: () => ({ activeProfile: { id: "same-profile" } }),
         useActiveKid: empty,
       },
+      "@/components/context-image-viewer": { ContextImageViewer: () => null },
+      "@/components/drop-show-confirm-modal": { DropShowConfirmModal: () => null },
+      "@/lib/anime-cw-ids": { getAnimeCanonicalId: () => null, getAnimeCwId: () => null },
+      "@/lib/drop-show-eligibility": { useCanDropShow: () => false },
       "@/lib/settings": {
         useSettings: () => ({
           settings: {
@@ -487,7 +495,7 @@ test("changing the Stremio account invalidates a still-open menu in the same loc
   }
 });
 
-test("only the background root places last playback and global navigation above its footer", async () => {
+test("expanded title and item menus retain last playback and navigation above the footer", async () => {
   const h = await fixture({ presentation: true });
   try {
     const pageTarget: menu.ContextMenuTarget = {
@@ -520,7 +528,7 @@ test("only the background root places last playback and global navigation above 
     for (const target of targets) {
       await h.openTarget(target);
       const last = document.querySelectorAll('[data-context-action="playback:last:a"]');
-      const background = target === pageTarget;
+      const background = true;
       assert.equal(last.length, background ? 1 : 0);
       if (background) {
         assert.equal(last[0].textContent, "Resume last watched");
@@ -542,7 +550,7 @@ test("only the background root places last playback and global navigation above 
   }
 });
 
-test("player menu excludes browsing navigation and global last playback while retaining its tools", async () => {
+test("player menu retains Settings and tools without unrelated browsing navigation", async () => {
   const h = await fixture({ presentation: true });
   try {
     const target: menu.ContextMenuTarget = { kind: "meta", player: true, meta: h.player.src.meta };
@@ -554,15 +562,14 @@ test("player menu excludes browsing navigation and global last playback while re
         "page:go-to",
         "page:refresh",
         "page:back",
-        "player:settings",
         "playback:last:a",
       ])
         assert.equal(!!document.querySelector(`[data-context-action='${id}']`), false, id);
       const quick = [...document.querySelectorAll("[data-test-quick] [data-context-action]")].map(
         (node) => node.getAttribute("data-context-action"),
       );
-      assert.deepEqual(quick, []);
-      assert.equal(document.querySelector("[data-test-quick]"), null);
+      assert.deepEqual(quick, ["player:settings"]);
+      assert.ok(document.querySelector("[data-test-quick]"));
       const magnetRow = document.querySelector('[data-context-action="player:copy-magnet"]');
       assert.equal(!!magnetRow, !!magnet);
       if (magnetRow) assert.ok(magnetRow.closest("[data-test-rows]"));
@@ -597,8 +604,11 @@ test("non-film entity sharing remains separate from the exclusive background men
         1,
         `${target.kind} retains its own sharing command`,
       );
-      assert.equal(document.querySelector("[data-test-quick]"), null);
-      assert.equal(document.querySelector('[data-context-action="page:go-to"]'), null);
+      assert.equal(!!document.querySelector("[data-test-quick]"), target.kind === "meta");
+      assert.equal(
+        !!document.querySelector('[data-context-action="page:go-to"]'),
+        target.kind === "meta",
+      );
     }
   } finally {
     await h.close();
@@ -631,7 +641,7 @@ test("person background stays exclusive while editing, registered cards and clic
     assert.ok(document.querySelector('[data-context-action="page:refresh"]'));
     for (const [selector, kind] of [
       ["#card span", "actions"],
-      ["#image", null],
+      ["#image", "content"],
       ["#link", "content"],
     ] as const) {
       const event = await summon(main.querySelector(selector)!);
@@ -643,9 +653,15 @@ test("person background stays exclusive while editing, registered cards and clic
         assert.ok(document.querySelector('[data-context-action="link:copy"]'));
       }
       assert.equal(document.querySelector('[data-context-action="page:share:person:12"]'), null);
-      assert.equal(document.querySelector('[data-context-action="page:go-to"]'), null);
-      assert.equal(document.querySelector('[data-context-action="page:refresh"]'), null);
-      assert.equal(document.querySelector("[data-test-quick]"), null);
+      assert.equal(
+        !!document.querySelector('[data-context-action="page:go-to"]'),
+        kind === "actions",
+      );
+      assert.equal(
+        !!document.querySelector('[data-context-action="page:refresh"]'),
+        kind === "actions",
+      );
+      assert.equal(!!document.querySelector("[data-test-quick]"), kind === "actions");
     }
     const fieldEvent = await summon(main.querySelector("#field")!);
     assert.equal(fieldEvent.defaultPrevented, false, "editing keeps its native context menu");
@@ -687,7 +703,7 @@ test("the explicit eBook background stays exclusive without changing reader or d
     assert.ok(document.querySelector('[data-context-action="page:refresh"]'));
     for (const [selector, kind] of [
       ["#card span", "actions"],
-      ["#image", null],
+      ["#image", "content"],
       ["#link", "content"],
     ] as const) {
       const event = await summon(main.querySelector(selector)!);
@@ -699,8 +715,14 @@ test("the explicit eBook background stays exclusive without changing reader or d
         assert.ok(document.querySelector('[data-context-action="link:copy"]'));
       }
       assert.equal(document.querySelector(shareSelector), null);
-      assert.equal(document.querySelector('[data-context-action="page:go-to"]'), null);
-      assert.equal(document.querySelector('[data-context-action="page:refresh"]'), null);
+      assert.equal(
+        !!document.querySelector('[data-context-action="page:go-to"]'),
+        kind === "actions",
+      );
+      assert.equal(
+        !!document.querySelector('[data-context-action="page:refresh"]'),
+        kind === "actions",
+      );
     }
     const fieldEvent = await summon(main.querySelector("#field")!);
     assert.equal(fieldEvent.defaultPrevented, false);

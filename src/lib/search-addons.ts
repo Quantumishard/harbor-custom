@@ -176,12 +176,12 @@ export type AddonQuery = {
 
 const CAP_PER_GROUP = 14;
 const GROUP_CONCURRENCY = 8;
-const GROUP_TIMEOUT_MS = 20_000;
+const GROUP_TIMEOUT_MS = 60_000;
 // mapLimit drains sequentially, so a per-catalog deadline alone bounds the whole
 // fan-out at ceil(addons / concurrency) x GROUP_TIMEOUT_MS. Seventeen installed
 // addons behind a dead network held the screen on "Searching" for a minute. This
 // is the only wall clock over the entire set.
-const ALL_GROUPS_BUDGET_MS = 30_000;
+const ALL_GROUPS_BUDGET_MS = 60_000;
 
 function withDeadline<T>(p: Promise<T>, ms: number): Promise<T | null> {
   return new Promise((resolve) => {

@@ -24,11 +24,10 @@ const partition = partitionContextActions as (
   ...args: any[]
 ) => ReturnType<typeof partitionContextActions>;
 
-test("only explicit unoccupied background gets Back and Settings; copy stays a row", () => {
+test("isolated contexts stay free of navigation and copying remains available", () => {
   const copy = { id: "collection:copy", label: "Copy share link" };
   for (const target of [
     undefined,
-    { kind: "actions" },
     { kind: "meta", player: true },
     { ...background, image: { src: "fixture.png" } },
     { ...background, link: "https://fixture.invalid" },
@@ -61,7 +60,7 @@ test("empty items never inherit global navigation and selected text remains a ro
   const result = partition([], [selected], nav, { kind: "content", selection: "fixture" });
   assert.deepEqual(result.quick, []);
   assert.deepEqual(result.content, [selected]);
-  assert.deepEqual(partition([], [], nav, { kind: "actions" }), {
+  assert.deepEqual(partition([], [], nav, { kind: "actions", navigation: false }), {
     quick: [],
     entity: [],
     content: [],
@@ -85,4 +84,17 @@ test("extracting background Settings preserves its inherited disabled/PIN capabi
   );
   assert.equal(result.quick[0].disabled, true);
   assert.equal(result.quick[0].reason, "PIN required");
+});
+
+test("expanded title menus retain navigation without leaking it into player or artwork contexts", () => {
+  const result = partition([], [], nav, {
+    kind: "meta",
+    meta: { id: "movie", type: "movie", name: "Movie" },
+  });
+  assert.deepEqual(result.quick, [back, settings]);
+  assert.deepEqual(
+    contextNavigationFooter(nav, result.quick).map((a) => a.id),
+    ["page:my-profile", "page:go-to", "page:refresh"],
+  );
+  assert.deepEqual(partition([], [], nav, { kind: "actions", navigation: false }).quick, []);
 });

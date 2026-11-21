@@ -130,9 +130,6 @@ export function useAddons(
       const userStreamCount = merged.filter(declaresStream).length;
       setUserHasStreamAddons(userStreamCount > 0);
       const list = withDebridKeys(merged, debridKeys);
-      console.info(
-        `[picker] authKey=${authKey ? "yes" : "no"} tbKey=${settings.tbKey ? `set(${settings.tbKey.slice(0, 8)}…)` : "EMPTY"} stremioAddons=${stremioAddons.length} installed=${installed.length} merged=${merged.length} userStreamCount=${userStreamCount}`,
-      );
       // The store is read even while the switch keeps the extensions back: an item that names the
       // plugin that listed it is still that plugin's to answer, and answering needs the installed
       // set. Reading it starts no runtime; only querying one does.

@@ -140,8 +140,8 @@ export function AutoPlayTransition({
         <LogoOrText
           logo={meta.logo ?? null}
           fallbackText={meta.name}
-          imgClass="max-h-44 w-auto max-w-[72%] animate-loader-pulse object-contain drop-shadow-[0_24px_60px_rgba(0,0,0,0.65)]"
-          textClass="animate-loader-pulse font-display text-[64px] font-medium leading-[0.96] tracking-tight text-white drop-shadow-[0_18px_45px_rgba(0,0,0,0.7)]"
+          imgClass="harbor-functional-pulse max-h-44 w-auto max-w-[72%] object-contain drop-shadow-[0_24px_60px_rgba(0,0,0,0.65)]"
+          textClass="harbor-functional-pulse font-display text-[64px] font-medium leading-[0.96] tracking-tight text-white drop-shadow-[0_18px_45px_rgba(0,0,0,0.7)]"
         />
         {episode && epLabel && (
           <p className="text-[12.5px] font-semibold uppercase tracking-[0.32em] text-white/70">

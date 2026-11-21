@@ -13,6 +13,7 @@ test("a TMDB outage fallback keeps the season's IMDb ratings on its rows", () =>
     react: { useMemo: (fn) => fn() },
     "@/lib/i18n": { useT: () => (value) => value },
     "../cinemeta-episodes": { CinemetaEpisodeRow },
+    "../episode-groups": { groupEpisodes, episodeNumber, episodeSeason },
   });
   const tree = CinemetaFallback({
     meta: { id: "tt5071412" },
@@ -43,7 +44,7 @@ function load(path, mocks) {
   return exports;
 }
 
-function ratingsHarness() {
+function ratingsHarness(cached = new Map()) {
   const slots = [],
     dependencies = [],
     effects = [];
@@ -79,8 +80,13 @@ function ratingsHarness() {
   const { useEpisodeImdbRatings } = load("src/views/detail/use-episode-imdb-ratings.ts", {
     react,
     "@/lib/omdb-season-queue": { createOmdbSeasonQueue },
-    "@/lib/providers/harbor-imdb": { harborImdbEpisodes: () => new Promise(() => {}) },
+    "@/lib/providers/harbor-imdb": {
+      harborImdbEpisodes: () => new Promise(() => {}),
+      harborImdbEpisodesCached: () => undefined,
+    },
     "@/lib/providers/omdb": {
+      omdbSeasonRatingsCached: (id, season) =>
+        id === "tt5071412" && season === 3 ? cached : undefined,
       omdbSeasonRatings: (key, id, season) =>
         new Promise((resolve) => requests.push({ id, season, resolve })),
     },
@@ -212,4 +218,21 @@ test("Cinemeta episode grids receive genuine episode IMDb badges", () => {
   assert.equal(cards[0].season, 3);
   assert.equal(cards[0].rating, 8.3);
   assert.equal(cards[0].ratingIsImdb, true);
+});
+
+test("cached episode badges survive an outage and never leak to another title", () => {
+  const h = ratingsHarness(
+    new Map([
+      [1, 8.3],
+      [2, 8.5],
+    ]),
+  );
+  assert.deepEqual(
+    [...h.render("tt5071412", 3)],
+    [
+      ["3:1", 8.3],
+      ["3:2", 8.5],
+    ],
+  );
+  assert.deepEqual([...h.render("tt0000001", 3)], []);
 });

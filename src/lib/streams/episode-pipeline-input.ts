@@ -54,6 +54,12 @@ function embeddedStreams(
         addonId: meta.addonOrigin?.id ?? "embedded",
         addonName: meta.addonOrigin?.name ?? "Addon",
         addonUrl: addonBase,
+        behaviorHints: {
+          ...(s as unknown as Stream).behaviorHints,
+          easynewsSig: pick?.id?.startsWith("easynews-plus:")
+            ? pick.id.slice("easynews-plus:".length)
+            : undefined,
+        },
       }) as unknown as Stream,
   );
 }

@@ -32,6 +32,8 @@ import { emitListToast } from "@/components/lists/list-toast";
 import { t } from "@/lib/i18n";
 import { getMpvSubtitleFpsGeneration, writeMpvSubtitleFps } from "@/lib/player/mpv-properties";
 import { initialDelayForSelectedTrack } from "@/lib/player/subtitle-delay-scope";
+import { originalLanguageSubtitlePolicy } from "@/lib/player/original-language-subtitles";
+import { audioLanguageOrder } from "@/lib/player/original-audio-language";
 import { ORIGINAL_AUDIO_LANG } from "@/lib/player/audio-language";
 import { resolveOriginalLanguage } from "@/lib/providers/original-language";
 import { tmdbImdbId } from "@/lib/providers/tmdb";
@@ -156,7 +158,10 @@ export function useTrackAutoload(params: {
 
   // "Original" needs the title's language, which Cinemeta omits. Resolve it from
   // IMDb's keyless spoken-language list once, then let the track effect re-run.
-  const wantsOriginalAudio = (settings.preferredAudioLangs ?? []).includes(ORIGINAL_AUDIO_LANG);
+  const wantsOriginalAudio =
+    settings.preferOriginalAudioLanguage ||
+    settings.englishSubsForForeignOriginal ||
+    (settings.preferredAudioLangs ?? []).includes(ORIGINAL_AUDIO_LANG);
   const [resolvedOriginal, setResolvedOriginal] = useState<string | null>(null);
   useEffect(() => {
     setResolvedOriginal(null);
@@ -186,6 +191,12 @@ export function useTrackAutoload(params: {
         ? { ...src, meta: { ...src.meta, originalLanguage: resolvedOriginal } }
         : src,
     [src, resolvedOriginal],
+  );
+
+  const originalAudioLanguage = playbackSrc.meta.originalLanguage ?? null;
+  const subtitlePolicy = originalLanguageSubtitlePolicy(
+    settings.englishSubsForForeignOriginal,
+    originalAudioLanguage,
   );
 
   const [userAddonsState, setUserAddonsState] = useState<{
@@ -651,6 +662,7 @@ export function useTrackAutoload(params: {
     if (!isPlaybackActorCurrent(playbackActor)) return;
     if (src.continuation && !isPlaybackActorCurrent(src.continuation.actor)) return;
     if (src.subtitlePreselect && !rememberedSession?.subtitle) return;
+    if (settings.englishSubsForForeignOriginal) return;
     const mediaKey = subtitleMediaKey(src.meta.id, src.episode?.season, src.episode?.episode);
     const memory = readRememberedSub(mediaKey);
     const remembered = rememberedSession?.subtitle
@@ -929,6 +941,9 @@ export function useTrackAutoload(params: {
       settings.forcedSubsWhenNativeAudio,
       settings.subtitlesOffByDefault,
       settings.trackBlockWords,
+      settings.preferOriginalAudioLanguage,
+      settings.englishSubsForForeignOriginal,
+      subtitlePolicy,
     ]);
     const key = `${src.url}|${audioIdSig}|${subIdSig}|${preferenceSig}|${playbackSrc.meta.originalLanguage ?? ""}|${snap.firstFrameReady ? 1 : 0}`;
     if (autoTrackKeyRef.current === key) return;
@@ -938,7 +953,14 @@ export function useTrackAutoload(params: {
     bridgeRef.current?.setAudioProfile?.(settings.audioProfile);
 
     const prefs = readPlayerPrefs(src.meta.id);
-    const { audioLangs, subLangs, allow } = trackPreferences(playbackSrc, settings, prefs);
+    const base = trackPreferences(playbackSrc, settings, prefs);
+    const audioLangs = audioLanguageOrder(
+      base.audioLangs,
+      settings.preferOriginalAudioLanguage ? originalAudioLanguage : null,
+      prefs?.audioLang,
+    );
+    const subLangs = subtitlePolicy === "english" ? ["en"] : base.subLangs;
+    const allow = base.allow;
 
     let effAudio: (typeof snap.audioTracks)[number] | null = null;
     if (snap.audioTracks.length > 0) {
@@ -962,8 +984,10 @@ export function useTrackAutoload(params: {
     }
     const subsOff = rememberedSession?.subtitle
       ? rememberedSession.subtitle.off === true
-      : subsOffFor(prefs, settings);
-    if (subsOff) {
+      : subtitlePolicy === "normal"
+        ? subsOffFor(prefs, settings)
+        : subtitlePolicy === "off";
+    if (subsOff && bridgeRef.current?.canAutoSelectSubtitle?.() !== false) {
       if (snap.subtitleTracks.some((t) => t.selected))
         bridgeRef.current?.setSubtitleTrack(null, "automatic");
     } else if (
@@ -971,10 +995,13 @@ export function useTrackAutoload(params: {
       // choices and fallback selection off the first-frame critical path.
       snap.firstFrameReady &&
       bridgeRef.current?.canAutoSelectSubtitle?.() !== false &&
-      !rememberedSubAppliesToStream(
-        readRememberedSub(subtitleMediaKey(src.meta.id, src.episode?.season, src.episode?.episode)),
-        src.streamRef,
-      ) &&
+      (settings.englishSubsForForeignOriginal ||
+        !rememberedSubAppliesToStream(
+          readRememberedSub(
+            subtitleMediaKey(src.meta.id, src.episode?.season, src.episode?.episode),
+          ),
+          src.streamRef,
+        )) &&
       !src.subtitlePreselect &&
       !rememberedSession?.subtitle &&
       snap.subtitleTracks.length > 0 &&
@@ -990,12 +1017,17 @@ export function useTrackAutoload(params: {
           snap.subtitleTracks,
           effAudio,
           subLangs,
-          settings,
+          subtitlePolicy === "english"
+            ? { ...settings, forcedSubsWhenNativeAudio: false, preferEmbeddedSubs: true }
+            : settings,
           allow,
         );
         if (want) {
           if (want.id !== current?.id) bridgeRef.current?.setSubtitleTrack(want.id, "automatic");
           autoSubIdRef.current = want.id;
+        } else if (subtitlePolicy === "english" && current) {
+          bridgeRef.current?.setSubtitleTrack(null, "automatic");
+          autoSubIdRef.current = null;
         }
       }
     }
@@ -1020,6 +1052,7 @@ export function useTrackAutoload(params: {
     rememberedAudio,
     rememberedSession,
     playbackSrc.meta.originalLanguage,
+    subtitlePolicy,
   ]);
 
   const audioRestoreWarningRef = useRef<string | null>(null);
@@ -1147,6 +1180,7 @@ export function useTrackAutoload(params: {
   ]);
 
   useEffect(() => {
+    if (settings.englishSubsForForeignOriginal) return;
     if (
       !(rememberedSession?.subtitle
         ? rememberedSession.subtitle.off === true

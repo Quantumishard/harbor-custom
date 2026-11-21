@@ -14,7 +14,11 @@ const EXIT_GRAB_MS = 700;
 const GRAB_FULL_MS = 3500;
 const END_RATIO = 0.92;
 
-type Cached = { img: string; id: string };
+type Cached = { img: string; id: string; aliases: string[] };
+
+function mediaKey(src: PlayerSrc): string {
+  return JSON.stringify([src.meta.id, src.url, src.episode?.season, src.episode?.episode]);
+}
 
 function snapshotId(src: PlayerSrc, resolved: string | null, verified: boolean): string | null {
   const id = src.meta.id ?? "";
@@ -24,7 +28,7 @@ function snapshotId(src: PlayerSrc, resolved: string | null, verified: boolean):
 
 function persist(cached: Cached | null): void {
   if (!cached) return;
-  saveSnapshot(cached.id, cached.img);
+  saveSnapshot(cached.id, cached.img, cached.aliases);
 }
 
 function nearEnd(cur: number, dur: number, ended: boolean): boolean {
@@ -54,6 +58,7 @@ export function useExitSnapshot(params: {
   const { settings } = useSettings();
   const fullQuality = settings.cwSnapshotFullQuality;
   const snapshotsOff = settings.cwSnapshotRetentionDays === 0;
+  const sourceKey = mediaKey(src);
   const latest = useRef({
     src,
     engine,
@@ -63,6 +68,7 @@ export function useExitSnapshot(params: {
     seekPreviewEnabled,
     fullQuality,
     snapshotsOff,
+    sourceKey,
   });
   latest.current = {
     src,
@@ -73,10 +79,18 @@ export function useExitSnapshot(params: {
     seekPreviewEnabled,
     fullQuality,
     snapshotsOff,
+    sourceKey,
   };
   const lastGoodRef = useRef<Cached | null>(null);
   const lastGrabAtRef = useRef(0);
   const capturedKeyRef = useRef<string | null>(null);
+  const previousSource = useRef(sourceKey);
+  if (previousSource.current !== sourceKey) {
+    previousSource.current = sourceKey;
+    lastGoodRef.current = null;
+    lastGrabAtRef.current = 0;
+    capturedKeyRef.current = null;
+  }
 
   const grabFrame = useCallback(
     async (allowTrick: boolean): Promise<string | null> => {
@@ -122,14 +136,24 @@ export function useExitSnapshot(params: {
       return;
     }
     const budget = lastGoodRef.current ? EXIT_GRAB_MS : GRAB_FULL_MS;
+    // Keep a slow native capture alive after the exit budget expires. Otherwise
+    // successful HDR screenshots can arrive after close and never be saved.
+    const pending = grabFrame(true)
+      .then((fresh) => {
+        if (fresh && latest.current.sourceKey === mediaKey(s) && !latest.current.snapshotsOff) {
+          const cached = { img: fresh, id, aliases: [s.meta.id] };
+          lastGoodRef.current = cached;
+          persist(cached);
+        }
+        return fresh;
+      })
+      .catch(() => null);
     const fresh = await Promise.race([
-      grabFrame(true),
+      pending,
       new Promise<null>((r) => setTimeout(() => r(null), budget)),
     ]);
-    if (fresh && latest.current.src.meta.id === s.meta.id) {
-      lastGoodRef.current = { img: fresh, id };
-    }
-    persist(lastGoodRef.current);
+    if (!fresh) capturedKeyRef.current = null;
+    if (!fresh && latest.current.sourceKey === mediaKey(s)) persist(lastGoodRef.current);
   }, [grabFrame]);
 
   useEffect(() => {
@@ -150,8 +174,8 @@ export function useExitSnapshot(params: {
       const img = await grabFrame(true);
       if (!img) return;
       lastGrabAtRef.current = Date.now();
-      if (latest.current.src.meta.id !== s.meta.id) return;
-      const cached = { img, id };
+      if (latest.current.sourceKey !== mediaKey(s) || latest.current.snapshotsOff) return;
+      const cached = { img, id, aliases: [s.meta.id] };
       lastGoodRef.current = cached;
       persist(cached);
     };
@@ -161,7 +185,7 @@ export function useExitSnapshot(params: {
       window.clearTimeout(warm);
       window.clearInterval(id);
     };
-  }, [status, snapshotsOff, grabFrame]);
+  }, [status, snapshotsOff, grabFrame, sourceKey]);
 
   useEffect(() => {
     const flush = () => persist(lastGoodRef.current);

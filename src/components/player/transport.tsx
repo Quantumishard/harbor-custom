@@ -30,6 +30,7 @@ import {
 import { renderControl, type ControlContext } from "./transport/control-renderer";
 import { SongIdToast } from "@/components/song-id-toast";
 import { useCastModalPlay } from "./use-cast-modal-play";
+import { ChapterMenu } from "./transport/chapter-menu";
 import { useHeroLogos } from "@/components/anime-hero/use-hero-logos";
 import { useReportPlayerControlsInset } from "@/lib/player/controls-inset";
 
@@ -523,6 +524,16 @@ export function Transport({
                   chapters={snap.chapters}
                 />
               </div>
+              {snap.chapters.length > 0 && (
+                <div className={fadeClassName}>
+                  <ChapterMenu
+                    chapters={snap.chapters}
+                    positionSec={snap.positionSec}
+                    onSeek={onSeek}
+                    onOpenChange={setChapterMenuOpen}
+                  />
+                </div>
+              )}
               {controlsInSlot(chromeConfig, "seek-trailing").map((c) => (
                 <Fragment key={c.id}>{renderFadedControl(c.id)}</Fragment>
               ))}

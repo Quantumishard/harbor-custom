@@ -334,7 +334,7 @@ export function usePlayerMedia(params: {
     bridgeRef,
     snap,
     sourceUrl: src.url,
-    lang: settings.secondarySubLang,
+    lang: settings.englishSubsForForeignOriginal ? "" : settings.secondarySubLang,
     nativeReady: engine === "mpv" && bridgeReady && mpvMediaReadyForStyle,
     nativeRender: hdrNativeSurface && !captionsPopout,
     bridgeKey,

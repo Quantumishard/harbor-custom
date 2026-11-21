@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { extensionsModuleProblems } from "../../scripts/build-extensions-module.mjs";
 import { listOrtRuntimeFiles } from "../../scripts/ort-runtime-files.mjs";
 import { execFileSync } from "node:child_process";
@@ -57,6 +58,34 @@ if (experimentalCore) {
   const runtimeFiles = listOrtRuntimeFiles(coreReleaseDir);
   for (const name of runtimeFiles) FILES.push([join(coreReleaseDir, name), name]);
 }
+
+// The custom player is dynamically linked; its verified dependency closure must
+// travel with the main DLL in every managed Windows installation.
+const PLAYER_RUNTIME = join(APP, "libmpv");
+const PLAYER_MANIFEST = join(PLAYER_RUNTIME, "SHA256-MANIFEST.json");
+if (!existsSync(PLAYER_MANIFEST)) {
+  throw new Error("Run pnpm setup:libmpv to stage the complete custom player runtime");
+}
+const playerManifest = JSON.parse(readFileSync(PLAYER_MANIFEST, "utf8"));
+for (const [name, sha] of Object.entries(playerManifest)) {
+  const source = resolve(PLAYER_RUNTIME, name);
+  if (
+    !source.startsWith(resolve(PLAYER_RUNTIME) + "/") &&
+    !source.startsWith(resolve(PLAYER_RUNTIME) + "\\")
+  ) {
+    throw new Error("Player runtime entry escaped its directory");
+  }
+  if (
+    !existsSync(source) ||
+    createHash("sha256").update(readFileSync(source)).digest("hex") !== sha
+  ) {
+    throw new Error(`Player runtime file failed verification: ${name}`);
+  }
+  if (name !== "libmpv-2.dll") {
+    FILES.push([source, name.endsWith(".dll") ? name : `player-runtime-notices/${name}`]);
+  }
+}
+FILES.push([PLAYER_MANIFEST, "player-runtime-notices/SHA256-MANIFEST.json"]);
 
 // The NSIS bundle gets this from tauri.conf.json bundle.resources. This installer builds its own
 // payload, so it has to be named here or extensions are dead in every managed install.

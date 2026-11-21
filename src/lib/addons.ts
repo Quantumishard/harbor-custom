@@ -9,6 +9,9 @@ import { isNuvioProviderActive } from "@/lib/active-profile-id";
 import { resolveEffectiveStremioAuthKey } from "@/lib/auth";
 import { readSettingsMirror } from "@/lib/metadata-policy";
 
+import { activeProfileId } from "./active-profile-id";
+import { catalogAccountAddons, catalogSource, rememberCatalogAddons } from "./local-catalogs";
+
 const STREMIO_API = "https://api.strem.io/api";
 const MAX_ROWS = 24;
 const CATALOG_LANES = 6;
@@ -158,11 +161,19 @@ async function call<T>(path: string, body: object): Promise<T | null> {
 }
 
 export async function userAddons(authKey: string): Promise<Addon[]> {
+  const profile = activeProfileId();
   const result = await call<{ addons: Addon[] }>("addonCollectionGet", {
     authKey,
     type: "user",
     update: false,
   });
+  if (Array.isArray(result?.addons)) {
+    try {
+      rememberCatalogAddons(result.addons, profile);
+    } catch {
+      /* Account reads still work if storage is full. */
+    }
+  }
   return result?.addons ?? [];
 }
 
@@ -255,12 +266,18 @@ export async function setUserAddons(authKey: string, addons: Addon[]): Promise<b
 }
 
 export async function getUserAddonsRaw(authKey: string): Promise<Addon[] | null> {
+  const profile = activeProfileId();
   const result = await call<{ addons: Addon[] }>("addonCollectionGet", {
     authKey,
     type: "user",
     update: false,
   });
   if (!result || !Array.isArray(result.addons)) return null;
+  try {
+    rememberCatalogAddons(result.addons, profile);
+  } catch {
+    /* Keep account reads available. */
+  }
   return result.addons;
 }
 
@@ -457,6 +474,7 @@ async function cachedManifest(transportUrl: string): Promise<Addon["manifest"]> 
 }
 
 export async function gatherCatalogAddons(authKey: string | null): Promise<Addon[]> {
+  const source = catalogSource();
   const isNuvio = isNuvioProviderActive();
   let nuvioAddonMode = "separate";
   try {
@@ -469,7 +487,7 @@ export async function gatherCatalogAddons(authKey: string | null): Promise<Addon
 
   const shouldStremio = !isNuvio || nuvioAddonMode === "combined";
   const loadNuvio = async (): Promise<Addon[]> => {
-    if (!isNuvio && nuvioAddonMode !== "combined") return [];
+    if (source === "local" || (!isNuvio && nuvioAddonMode !== "combined")) return [];
     try {
       const { isNuvioSignedIn: checkSignedIn } = await import("@/lib/nuvio/nuvio-client");
       const { fetchNuvioAddons: getNuvioAddons } = await import("@/lib/nuvio/nuvio-sync");
@@ -482,12 +500,13 @@ export async function gatherCatalogAddons(authKey: string | null): Promise<Addon
   // The two account lists are independent, so neither waits for the other.
   const [nuvioRaw, stremioRaw] = await Promise.all([
     loadNuvio(),
-    shouldStremio && effectiveAuthKey
-      ? cachedUserAddons(effectiveAuthKey).catch(() => [] as Addon[])
+    source === "local" || (shouldStremio && effectiveAuthKey)
+      ? catalogAccountAddons(effectiveAuthKey, getUserAddonsRaw)
       : Promise.resolve([] as Addon[]),
   ]);
   const stremio = filterEnabled(stremioRaw);
   const nuvio = filterEnabled(nuvioRaw);
+  if (source === "stremio") return [...stremio, ...nuvio];
   const seen = new Set([...stremio, ...nuvio].map((a) => a.transportUrl));
   const localOnly = filterEnabled(loadInstalled()).filter((l) => !seen.has(l.transportUrl));
   const localFull = await Promise.all(
@@ -642,18 +661,24 @@ export async function fetchAddonCatalogPage(
   id: string,
   skip: number,
   extras?: Array<{ name: string; value: string }>,
+  options: { timeoutMs?: number; throwOnNetworkError?: boolean } = {},
 ): Promise<Meta[]> {
   const parts: string[] = [];
   for (const e of extras ?? [])
     parts.push(`${encodeURIComponent(e.name)}=${encodeURIComponent(e.value)}`);
   if (skip > 0) parts.push(`skip=${skip}`);
   const seg = parts.length ? `/${parts.join("&")}` : "";
-  const res = await fetchWithTimeout(addonResourceUrl(base, `catalog/${type}/${id}${seg}.json`));
-  if (!res || !res.ok) return [];
+  const res = await fetchWithTimeout(addonResourceUrl(base, `catalog/${type}/${id}${seg}.json`), options.timeoutMs);
+  if (!res) {
+    if (options.throwOnNetworkError) throw new Error("Catalog request timed out");
+    return [];
+  }
+  if (!res.ok) return [];
   try {
     const json = await res.json();
     return (json.metas ?? []) as Meta[];
-  } catch {
+  } catch (error) {
+    if (options.throwOnNetworkError) throw error;
     return [];
   }
 }
@@ -674,6 +699,10 @@ export function createAddonCatalogFetcher(
       cursor.id,
       skip,
       cursor.extras,
+      {
+        timeoutMs: 20_000,
+        throwOnNetworkError: true,
+      },
     );
     if (metas.length > 0 && pageSize == null) pageSize = metas.length;
     return opts.mapMeta ? metas.map(opts.mapMeta) : metas;

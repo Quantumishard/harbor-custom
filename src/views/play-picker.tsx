@@ -1452,6 +1452,7 @@ export function PlayPicker({
             )}
           </>
         )}
+
       </div>
       {(settings.pickerLayout === "stremio" || isDownload) &&
         filteredPicker &&
@@ -1548,7 +1549,7 @@ function SeasonPackEmptyState({
               className="inline-flex h-10 items-center gap-2 rounded-full bg-ink px-5 text-[13px] font-semibold text-canvas transition-transform hover:scale-[1.02] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-55 motion-reduce:transition-none motion-reduce:hover:scale-100"
             >
               {queueing ? (
-                <Loader2 size={14} className="animate-spin" aria-hidden />
+                <Loader2 size={14} className="harbor-functional-spin" aria-hidden />
               ) : (
                 <ArrowDownToLine size={14} strokeWidth={2.2} aria-hidden />
               )}
@@ -1561,7 +1562,11 @@ function SeasonPackEmptyState({
             disabled={refreshing}
             className="inline-flex h-10 items-center gap-2 rounded-full border border-edge-soft bg-elevated px-5 text-[13px] font-semibold text-ink-muted transition-colors hover:border-edge hover:text-ink disabled:cursor-not-allowed disabled:opacity-55"
           >
-            <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} aria-hidden />
+            <RefreshCw
+              size={14}
+              className={refreshing ? "harbor-functional-spin" : ""}
+              aria-hidden
+            />
             {t("Refresh sources")}
           </button>
           <button
@@ -1668,7 +1673,11 @@ function PickerScrollTop({
               aria-label={t("Refresh sources")}
               className={`${circle} disabled:cursor-not-allowed disabled:opacity-60`}
             >
-              <RefreshCw size={22} strokeWidth={2.4} className={refreshing ? "animate-spin" : ""} />
+              <RefreshCw
+                size={22}
+                strokeWidth={2.4}
+                className={refreshing ? "harbor-functional-spin" : ""}
+              />
             </button>
           </HoverTooltip>
         )}

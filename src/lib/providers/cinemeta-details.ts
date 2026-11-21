@@ -308,27 +308,23 @@ export async function cinemetaDetails(meta: Meta): Promise<TmdbDetail | null> {
   const typePath = kind === "tv" ? "series" : "movie";
   try {
     const res = await fetch(`${CINEMETA}/meta/${typePath}/${imdbId}.json`);
-    if (!res.ok) {
-      detailCache.set(cacheKey, { v: null, t: Date.now() });
-      return null;
-    }
+    if (!res.ok) return null;
     const json = (await res.json()) as { meta?: CinemetaMeta };
     const m = json.meta;
-    if (!m) {
-      detailCache.set(cacheKey, { v: null, t: Date.now() });
-      return null;
-    }
+    if (!m) return null;
     const primaryGenre = (m.genre ?? m.genres ?? [])[0];
     const relatedFetcher = kind === "movie" ? topMovies : topSeries;
     const related = primaryGenre
-      ? await relatedFetcher(primaryGenre).catch(() => [] as Meta[])
+      ? await Promise.race([
+          relatedFetcher(primaryGenre).catch(() => [] as Meta[]),
+          new Promise<Meta[]>((resolve) => setTimeout(() => resolve([]), 1500)),
+        ])
       : [];
     const filtered = related.filter((r) => r.id !== imdbId).slice(0, 30);
     const out = toDetail(m, kind, filtered);
     detailCache.set(cacheKey, { v: out, t: Date.now() });
     return out;
   } catch {
-    detailCache.set(cacheKey, { v: null, t: Date.now() });
     return null;
   }
 }

@@ -16,6 +16,7 @@ export type Tab =
   | "local"
   | "media-servers"
   | "torbox"
+  | "aiostreams"
   | "lists"
   | "groups"
   | "favorites"

@@ -578,6 +578,7 @@ fn apply_pre_init(
         .map(split_extra_option_pairs)
         .unwrap_or_default();
     let joined_init_only = join_init_only_pairs(&init_only_pairs);
+    set("config", "yes");
     set("title", "Harbor");
     set("audio-client-name", audio_client_name());
     set("terminal", "no");
@@ -736,15 +737,12 @@ fn apply_pre_init(
     } else {
         #[cfg(windows)]
         {
-            opt("target-colorspace-hint", "yes");
+            // Respect mpv.conf shader output when Harbor tonemapping is disabled.
             if embed_hwnd.is_some() || rtx_vsr {
                 opt("gpu-api", "d3d11");
             }
         }
-        #[cfg(target_os = "macos")]
-        {
-            opt("target-colorspace-hint", "yes");
-        }
+
     }
 
     if let Some(shaders) = &args.anime4k_shaders {

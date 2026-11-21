@@ -1,3 +1,4 @@
+import { saveArtwork } from "@/lib/music/artwork-save";
 import {
   useEffect,
   useRef,
@@ -10,6 +11,7 @@ import {
   Copy,
   Disc3,
   Heart,
+  ImageDown,
   ListMusic,
   ListPlus,
   ListStart,
@@ -183,6 +185,16 @@ export function useMusicTrackMenuItems(
         }
         const seed = getMusicState().current;
         if (seed) requestMusicExplore({ kind: "similar", track: seed });
+      },
+    });
+  }
+  if (track.artwork) {
+    items.push({
+      id: "artwork",
+      label: t("music.artwork.save"),
+      icon: <ImageDown size={14} />,
+      run: async () => {
+        await saveArtwork(track.artwork, track.album || track.title, track.artist);
       },
     });
   }

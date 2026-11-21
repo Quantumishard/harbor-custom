@@ -33,7 +33,13 @@ function readMode(): AwardMode {
   }
 }
 
-export function AwardView({ awardType }: { awardType: AwardType }) {
+export function AwardView({
+  awardType,
+  active = true,
+}: {
+  awardType: AwardType;
+  active?: boolean;
+}) {
   const t = useT();
   const meta = AWARD_CATALOG[awardType];
   const { settings } = useSettings();
@@ -49,7 +55,7 @@ export function AwardView({ awardType }: { awardType: AwardType }) {
   const [loadingPeople, setLoadingPeople] = useState(true);
   const targetRef = useRef(PREVIEW);
 
-  useScrollMemory(`award:${awardType}`, scrollRef);
+  useScrollMemory(`award:${awardType}`, scrollRef, active);
 
   const selectMode = useCallback((m: AwardMode) => {
     setMode(m);

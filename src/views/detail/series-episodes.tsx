@@ -202,6 +202,7 @@ export function SeriesEpisodes({
     seasons,
   ]);
   const cache = useRef<Map<string, Episode[]>>(new Map());
+  const [cacheVersion, setCacheVersion] = useState(0);
 
   const traktKey = imdbId ?? meta.id;
 
@@ -417,6 +418,7 @@ export function SeriesEpisodes({
         const m = cache.current;
         m.delete(seasonCacheKey(season));
         m.set(seasonCacheKey(season), eps);
+        setCacheVersion((value) => value + 1);
         while (m.size > 2) {
           const oldest = m.keys().next().value;
           if (oldest === undefined) break;
@@ -520,6 +522,8 @@ export function SeriesEpisodes({
         ) ?? ep.overview;
       let next = {
         ...ep,
+        stillPath: tmdbEp?.stillPath ?? ep.stillPath,
+        stillUrl: ep.stillUrl ?? tmdbEp?.stillUrl,
         name,
         overview,
         nameLanguage:
@@ -549,6 +553,7 @@ export function SeriesEpisodes({
     });
   }, [
     orderedEpsRaw,
+    cacheVersion,
     imdbRatings,
     orderedImdbRatings,
     orderActive,

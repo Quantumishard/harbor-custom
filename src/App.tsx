@@ -437,8 +437,7 @@ function useViewPreloader(tmdbKey: string) {
 }
 
 const KEEP_ALIVE_MS = 1500;
-// Allow a short return from a child page before unmounting its parent view.
-const IDLE_EVICT_MS = 10 * 1000;
+const IDLE_EVICT_MS = 30 * 60 * 1000;
 const PRESSURE_EVICT_MS = 1500;
 const UI_SCALE_MIN = 0.8;
 const UI_SCALE_MAX = 1.6;
@@ -464,6 +463,13 @@ function useKeepAlive(active: boolean, requested: boolean, pin = false): boolean
     return () => clearTimeout(t);
   }, [active, requested, pin]);
   return requested && (mounted || active || pin);
+}
+
+/** Keep the last nested route payload available while another sidebar section is active. */
+function useRetainedValue<T>(value: T | null): T | null {
+  const retained = useRef<T | null>(value);
+  if (value !== null) retained.current = value;
+  return retained.current;
 }
 
 /**
@@ -1016,6 +1022,7 @@ function Shell({ onReady }: { onReady?: () => void }) {
     picker,
     player,
     setView,
+    viewResetVersions,
     openSettings,
     canGoBack,
     goBack,
@@ -1588,11 +1595,6 @@ function Shell({ onReady }: { onReady?: () => void }) {
   const addonCollectionTop = topKind === "addon-collection";
   const episodeDetailTop = topKind === "episode-detail";
   const collectionsIndexTop = topKind === "collections";
-  const collectionsIndexAlive = useKeepAlive(
-    collectionsIndexTop,
-    true,
-    stackKinds.includes("collections"),
-  );
   const detailTop = topKind === "meta";
   const filterTop = topKind === "filter";
   const brandsTop = topKind === "brands";
@@ -1660,6 +1662,15 @@ function Shell({ onReady }: { onReady?: () => void }) {
   const mangaTop = topKind === "manga" && installFeatures.manga;
   const ebookTop = topKind === "ebook" && installFeatures.ebook;
   const peopleTop = topKind === "people";
+  const retainedFilter = useRetainedValue(filter);
+  const retainedBrands = useRetainedValue(brands);
+  const retainedGrid = useRetainedValue(grid);
+  const retainedCollectionId = useRetainedValue(collectionId);
+  const retainedAwardType = useRetainedValue(awardType);
+  const retainedAnimeAwardSource = useRetainedValue(animeAwardSource);
+  const retainedCuratedListId = useRetainedValue(curatedListId);
+  const collectionsIndexVisited = useRetainedValue(collectionsIndexTop ? true : null) === true;
+  const queueVisited = useRetainedValue(queueTop ? true : null) === true;
 
   const [immersive, setImmersive] = useState(false);
   useEffect(() => {
@@ -1744,7 +1755,7 @@ function Shell({ onReady }: { onReady?: () => void }) {
     stackKinds.includes("calendar") && stackKinds.includes("games"),
   );
   const wrappedAlive = useIdleEvict(wrappedTop);
-  const queueAlive = useKeepAlive(queueTop, queueTop);
+  const queueAlive = useKeepAlive(queueTop, queueVisited, true);
   const serviceAlive = useKeepAlive(serviceTop, serviceTop && !!service);
   // Keep detail state while a child playback or episode-detail screen is on top.
   // Otherwise the keep-alive timer drops the page during playback and Back starts it over.
@@ -1765,11 +1776,7 @@ function Shell({ onReady }: { onReady?: () => void }) {
     !!addonCollectionMeta,
     stackKinds.includes("addon-collection"),
   );
-  const collectionAlive = useKeepAlive(
-    collectionTop,
-    collectionId !== null,
-    stackKinds.includes("collection"),
-  );
+  const collectionAlive = useKeepAlive(collectionTop, retainedCollectionId !== null, true);
   const episodeDetailAlive = useKeepAlive(
     episodeDetailTop,
     !!episodeDetail,
@@ -1777,13 +1784,14 @@ function Shell({ onReady }: { onReady?: () => void }) {
   );
   const { matchDetailGame, matchDetailEventGames } = useView();
   const matchDetailAlive = useKeepAlive(matchDetailTop, !!matchDetailGame);
-  const filterAlive = useKeepAlive(filterTop, !!filter);
-  const brandsAlive = useKeepAlive(brandsTop, !!brands);
-  const gridAlive = useKeepAlive(gridTop, !!grid, stackKinds.includes("grid"));
+  const filterAlive = useKeepAlive(filterTop, retainedFilter !== null, true);
+  const collectionsIndexAlive = useKeepAlive(collectionsIndexTop, collectionsIndexVisited, true);
+  const brandsAlive = useKeepAlive(brandsTop, retainedBrands !== null, true);
+  const gridAlive = useKeepAlive(gridTop, retainedGrid !== null, true);
+  const awardAlive = useKeepAlive(awardTop, retainedAwardType !== null, true);
+  const animeAwardAlive = useKeepAlive(animeAwardTop, retainedAnimeAwardSource !== null, true);
+  const curatedListAlive = useKeepAlive(curatedListTop, retainedCuratedListId !== null, true);
   const folderHubAlive = useKeepAlive(folderHubTop, !!folderHub, stackKinds.includes("folder-hub"));
-  const awardAlive = useKeepAlive(awardTop, awardTop);
-  const animeAwardAlive = useKeepAlive(animeAwardTop, animeAwardTop && !!animeAwardSource);
-  const curatedListAlive = useKeepAlive(curatedListTop, curatedListTop && !!curatedListId);
   const pickerAlive = useKeepAlive(pickerTop, !!picker);
   const moviesAlive = useIdleEvict(moviesTop, false, stackKinds.includes("movies"));
   const kidsAlive = useIdleEvict(kidsTop);
@@ -1931,10 +1939,8 @@ function Shell({ onReady }: { onReady?: () => void }) {
             className={`relative flex min-h-0 min-w-0 flex-1 flex-col ${playerActive ? "invisible" : ""}`}
           >
             {homeAlive && (
-              <div {...parkLayerProps(homeTop)}>
-                <Profiled id="view.home">
-                  <MemoSpooktoberHome active={homeTop} onReady={onReady} />
-                </Profiled>
+              <div key={"home-" + (viewResetVersions["home"] ?? 0)} {...parkLayerProps(homeTop)}>
+                <MemoSpooktoberHome active={homeTop} onReady={onReady} />
               </div>
             )}
             {settingsAlive && (
@@ -1945,46 +1951,54 @@ function Shell({ onReady }: { onReady?: () => void }) {
               </div>
             )}
             {animeAlive && (
-              <div {...layerProps(animeTop)}>
+              <div key={"anime-" + (viewResetVersions["anime"] ?? 0)} {...layerProps(animeTop)}>
                 <Suspense fallback={null}>
                   <AnimeView active={animeTop} />
                 </Suspense>
               </div>
             )}
             {discoverAlive && (
-              <div {...parkLayerProps(discoverTop)}>
+              <div
+                key={"discover-" + (viewResetVersions["discover"] ?? 0)}
+                {...parkLayerProps(discoverTop)}
+              >
                 <Suspense fallback={null}>
-                  <Profiled id="view.discover">
-                    <Discover active={discoverTop} />
-                  </Profiled>
+                  <Discover active={discoverTop} />
                 </Suspense>
               </div>
             )}
             {catalogsAlive && (
-              <div {...layerProps(catalogsTop)}>
+              <div
+                key={"catalogs-" + (viewResetVersions["catalogs"] ?? 0)}
+                {...layerProps(catalogsTop)}
+              >
                 <Suspense fallback={null}>
-                  <Profiled id="view.catalogs">
-                    <Catalogs active={catalogsTop} />
-                  </Profiled>
+                  <Catalogs active={catalogsTop} />
                 </Suspense>
               </div>
             )}
             {pluginsAlive && (
-              <div {...layerProps(pluginsTop)}>
+              <div
+                key={"plugins-" + (viewResetVersions["plugins"] ?? 0)}
+                {...layerProps(pluginsTop)}
+              >
                 <Suspense fallback={null}>
                   <PluginsView active={pluginsTop} />
                 </Suspense>
               </div>
             )}
             {addonsAlive && (
-              <div {...layerProps(addonsTop)}>
+              <div key={"addons-" + (viewResetVersions["addons"] ?? 0)} {...layerProps(addonsTop)}>
                 <Suspense fallback={null}>
                   <AddonsView active={addonsTop} />
                 </Suspense>
               </div>
             )}
             {calendarAlive && (
-              <div {...layerProps(calendarTop)}>
+              <div
+                key={"calendar-" + (viewResetVersions["calendar"] ?? 0)}
+                {...layerProps(calendarTop)}
+              >
                 <Suspense fallback={null}>
                   <CalendarView
                     active={calendarTop}
@@ -1994,37 +2008,38 @@ function Shell({ onReady }: { onReady?: () => void }) {
               </div>
             )}
             {wrappedAlive && (
-              <div {...layerProps(wrappedTop)}>
+              <div
+                key={"wrapped-" + (viewResetVersions["wrapped"] ?? 0)}
+                {...layerProps(wrappedTop)}
+              >
                 <Suspense fallback={null}>
                   <WrappedView active={wrappedTop} />
                 </Suspense>
               </div>
             )}
             {moviesAlive && (
-              <div {...layerProps(moviesTop)}>
+              <div key={"movies-" + (viewResetVersions["movies"] ?? 0)} {...layerProps(moviesTop)}>
                 <Suspense fallback={null}>
-                  <Profiled id="view.movies">
-                    <Movies active={moviesTop} />
-                  </Profiled>
+                  <Movies active={moviesTop} />
                 </Suspense>
               </div>
             )}
             {kidsAlive && (
-              <div {...layerProps(kidsTop)}>
+              <div key={"kids-" + (viewResetVersions["kids"] ?? 0)} {...layerProps(kidsTop)}>
                 <Suspense fallback={null}>
                   <Kids active={kidsTop} />
                 </Suspense>
               </div>
             )}
             {showsAlive && (
-              <div {...layerProps(showsTop)}>
+              <div key={"shows-" + (viewResetVersions["shows"] ?? 0)} {...layerProps(showsTop)}>
                 <Suspense fallback={null}>
                   <Shows active={showsTop} />
                 </Suspense>
               </div>
             )}
             {musicAlive && (
-              <div className={layer(musicTop)}>
+              <div key={"music-" + (viewResetVersions["music"] ?? 0)} className={layer(musicTop)}>
                 <Suspense fallback={null}>
                   <MusicView
                     active={musicTop}
@@ -2039,7 +2054,7 @@ function Shell({ onReady }: { onReady?: () => void }) {
               </div>
             )}
             {gamesAlive && (
-              <div {...layerProps(gamesTop)}>
+              <div key={"games-" + (viewResetVersions["games"] ?? 0)} {...layerProps(gamesTop)}>
                 <Suspense fallback={<GameRouteLoading />}>
                   <GameDockWelcome
                     eligible={gamesTop && quickLibraryVisible && !gamesNavigationOpen}
@@ -2089,56 +2104,68 @@ function Shell({ onReady }: { onReady?: () => void }) {
               </div>
             )}
             {libraryAlive && (
-              <div {...layerProps(libraryTop)}>
+              <div
+                key={"library-" + (viewResetVersions["library"] ?? 0)}
+                {...layerProps(libraryTop)}
+              >
                 <Suspense fallback={null}>
                   <LibraryView active={libraryTop} />
                 </Suspense>
               </div>
             )}
             {collectionsHubAlive && (
-              <div {...layerProps(collectionsHubTop)}>
+              <div
+                key={"collections-hub-" + (viewResetVersions["collections-hub"] ?? 0)}
+                {...layerProps(collectionsHubTop)}
+              >
                 <Suspense fallback={null}>
                   <CommunityCollectionsView active={collectionsHubTop} />
                 </Suspense>
               </div>
             )}
             {liveAlive && (
-              <div {...layerProps(liveTop)}>
+              <div key={"live-" + (viewResetVersions["live"] ?? 0)} {...layerProps(liveTop)}>
                 <Suspense fallback={null}>
                   <LiveView active={liveTop} />
                 </Suspense>
               </div>
             )}
             {vodAlive && (
-              <div {...layerProps(vodTop)}>
+              <div key={"vod-" + (viewResetVersions["vod"] ?? 0)} {...layerProps(vodTop)}>
                 <Suspense fallback={null}>
                   <PlaylistVodView active={vodTop} />
                 </Suspense>
               </div>
             )}
             {sportsAlive && (
-              <div className={parkLayer(sportsTop)}>
+              <div
+                key={"sports-" + (viewResetVersions["sports"] ?? 0)}
+                className={parkLayer(sportsTop)}
+              >
                 <Suspense fallback={null}>
                   <SportsView active={sportsTop} />
                 </Suspense>
               </div>
             )}
             {downloadsAlive && (
-              <div {...layerProps(downloadsTop)}>
+              <div
+                key={"downloads-" + (viewResetVersions["downloads"] ?? 0)}
+                {...layerProps(downloadsTop)}
+              >
                 <Suspense fallback={null}>
                   <DownloadsView active={downloadsTop} />
                 </Suspense>
               </div>
             )}
             {mangaAlive && (
-              <div {...layerProps(mangaTop)}>
+              <div key={"manga-" + (viewResetVersions["manga"] ?? 0)} {...layerProps(mangaTop)}>
                 <Suspense fallback={null}>
                   <MangaView />
                 </Suspense>
               </div>
             )}
             {ebookAlive && (
-              <div {...layerProps(ebookTop)}>
+              <div key={"ebook-" + (viewResetVersions["ebook"] ?? 0)} {...layerProps(ebookTop)}>
                 <Suspense fallback={null}>
                   <EBookView />
                 </Suspense>
@@ -2248,16 +2275,25 @@ function Shell({ onReady }: { onReady?: () => void }) {
                         openManga(id);
                         return;
                       }
-                      openMeta(profileMediaMeta(id, kind, hint));
+                      const animeIsh = /^(kitsu|mal|anilist|anidb):/i.test(id);
+                      const t: MetaType =
+                        kind === "series" || kind === "tv" || kind === "anime" || animeIsh
+                          ? "series"
+                          : "movie";
+                      openMeta({ id, type: t, name: hint?.name ?? "", poster: hint?.poster });
                     }}
                   />
                 </Suspense>
               </div>
             )}
-            {collectionAlive && collectionId !== null && (
+            {collectionAlive && retainedCollectionId !== null && (
               <div {...layerProps(collectionTop)}>
                 <Suspense fallback={null}>
-                  <CollectionView key={`collection-${collectionId}`} collectionId={collectionId} />
+                  <CollectionView
+                    key={`collection-${retainedCollectionId}`}
+                    collectionId={retainedCollectionId}
+                    active={collectionTop}
+                  />
                 </Suspense>
               </div>
             )}
@@ -2285,17 +2321,25 @@ function Shell({ onReady }: { onReady?: () => void }) {
                 </Suspense>
               </div>
             )}
-            {filterAlive && filter && (
+            {filterAlive && retainedFilter && (
               <div {...layerProps(filterTop)}>
                 <Suspense fallback={null}>
-                  <FilterView key={filterReactKey(filter)} filter={filter} />
+                  <FilterView
+                    key={filterReactKey(retainedFilter)}
+                    filter={retainedFilter}
+                    active={filterTop}
+                  />
                 </Suspense>
               </div>
             )}
-            {brandsAlive && brands && (
+            {brandsAlive && retainedBrands && (
               <div className={layer(brandsTop)}>
                 <Suspense fallback={null}>
-                  <BrandsView key={`brands-${brands}`} brand={brands} />
+                  <BrandsView
+                    key={`brands-${retainedBrands}`}
+                    brand={retainedBrands}
+                    active={brandsTop}
+                  />
                 </Suspense>
               </div>
             )}
@@ -2329,10 +2373,14 @@ function Shell({ onReady }: { onReady?: () => void }) {
                 </Suspense>
               </div>
             )}
-            {gridAlive && grid && (
+            {gridAlive && retainedGrid && (
               <div {...layerProps(gridTop)}>
                 <Suspense fallback={null}>
-                  <GridView key={`grid-${grid.title}`} grid={grid} />
+                  <GridView
+                    key={`grid-${retainedGrid.title}-${viewResetVersions["discover"] ?? 0}-${viewResetVersions["catalogs"] ?? 0}`}
+                    grid={retainedGrid}
+                    active={gridTop}
+                  />
                 </Suspense>
               </div>
             )}
@@ -2351,23 +2399,28 @@ function Shell({ onReady }: { onReady?: () => void }) {
             {collectionsIndexAlive && (
               <div {...layerProps(collectionsIndexTop)}>
                 <Suspense fallback={null}>
-                  <CollectionsView />
+                  <CollectionsView active={collectionsIndexTop} />
                 </Suspense>
               </div>
             )}
-            {awardAlive && awardType && (
+            {awardAlive && retainedAwardType && (
               <div {...layerProps(awardTop)}>
                 <Suspense fallback={null}>
-                  <AwardView key={`award-${awardType}`} awardType={awardType} />
+                  <AwardView
+                    key={`award-${retainedAwardType}`}
+                    awardType={retainedAwardType}
+                    active={awardTop}
+                  />
                 </Suspense>
               </div>
             )}
-            {animeAwardAlive && animeAwardSource && (
+            {animeAwardAlive && retainedAnimeAwardSource && (
               <div {...layerProps(animeAwardTop)}>
                 <Suspense fallback={null}>
                   <AnimeAwardView
-                    key={`anime-award-${animeAwardSource}`}
-                    sourceId={animeAwardSource}
+                    key={`anime-award-${retainedAnimeAwardSource}`}
+                    sourceId={retainedAnimeAwardSource}
+                    active={animeAwardTop}
                   />
                 </Suspense>
               </div>

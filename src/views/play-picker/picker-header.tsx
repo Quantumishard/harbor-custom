@@ -41,7 +41,11 @@ export function PickerNav({
             className="group/refresh flex w-fit shrink-0 items-center gap-3 rounded-full py-1.5 pe-6 ps-1.5 text-[17px] font-semibold text-ink-muted transition-colors hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
           >
             <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-elevated/70 ring-1 ring-edge-soft transition-colors group-hover/refresh:bg-elevated">
-              <RefreshCw size={20} strokeWidth={2.4} className={refreshing ? "animate-spin" : ""} />
+              <RefreshCw
+                size={20}
+                strokeWidth={2.4}
+                className={refreshing ? "harbor-functional-spin" : ""}
+              />
             </span>
             {t("Refresh")}
           </button>

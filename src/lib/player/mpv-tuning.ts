@@ -31,7 +31,9 @@ export function compileMpvOptions(
   s: Settings,
   opts?: { anime4k?: boolean; totalPhysBytes?: number },
 ): string {
-  const lines: string[] = [...(QUALITY_LINES[s.mpvQuality] ?? [])];
+  const lines: string[] = (QUALITY_LINES[s.mpvQuality] ?? []).filter(
+    (line) => s.playerHdrToSdr || !line.startsWith("hdr-compute-peak="),
+  );
   if (opts?.anime4k) {
     // mpv runs `scale` after the user shaders, so a bilinear kernel here would
     // undo the upscale Anime4K just performed. Only the bilinear kernels are

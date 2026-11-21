@@ -1,4 +1,13 @@
 import { useSyncExternalStore } from "react";
+import { setItemWithRecovery } from "./storage-recovery";
+import {
+  hydrateSavedFrames,
+  savedFrame,
+  savedFrameIds,
+  storeSavedFrame,
+  pruneSavedFrames,
+  clearSavedFrames,
+} from "./snapshot-store";
 
 let snapVersion = 0;
 const snapListeners = new Set<() => void>();
@@ -27,7 +36,7 @@ const MAX_TOTAL_BYTES = 2.5 * 1024 * 1024;
 const DEFAULT_RETENTION_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-type IndexEntry = { id: string; t: number };
+type IndexEntry = { id: string; t: number; aliases?: string[] };
 
 function readIndex(): IndexEntry[] {
   try {
@@ -109,18 +118,44 @@ function enforceByteBudget(index: IndexEntry[]): IndexEntry[] {
   return index;
 }
 
+let loadedSavedFrames = false;
+function loadSavedFrames(): void {
+  if (loadedSavedFrames || snapshotsDisabled()) return;
+  loadedSavedFrames = true;
+  hydrateSavedFrames(() => {
+    if (snapshotsDisabled()) clearSavedFrames();
+    else pruneSavedFrames(Date.now() - retentionMs());
+    bumpSnapVersion();
+  });
+  // Migrate existing captures before shared-cache eviction can remove them.
+  for (const entry of readIndex()) {
+    if (Date.now() - entry.t > retentionMs()) continue;
+    try {
+      const image = localStorage.getItem(PREFIX + entry.id);
+      if (image) storeSavedFrame({ ...entry, image });
+    } catch {
+      /* The durable store remains available when localStorage is blocked. */
+    }
+  }
+}
+
 export function readSnapshot(id: string): string | null {
   if (snapshotsDisabled()) return null;
+  loadSavedFrames();
+  const durable = savedFrame(id);
+  if (durable && Date.now() - durable.t <= retentionMs()) return durable.image;
   const index = readIndex();
-  const entry = index.find((e) => e.id === id);
+  const entry = [...index].reverse().find((e) => e.id === id || e.aliases?.includes(id));
   if (!entry) return tryReadOrphan(id);
   if (Date.now() - entry.t > retentionMs()) {
-    dropEntry(id);
-    writeIndex(index.filter((e) => e.id !== id));
+    dropEntry(entry.id);
+    writeIndex(index.filter((e) => e.id !== entry.id));
     return null;
   }
   try {
-    return localStorage.getItem(PREFIX + id);
+    const image = localStorage.getItem(PREFIX + entry.id);
+    if (image) storeSavedFrame({ ...entry, image });
+    return image;
   } catch {
     return null;
   }
@@ -141,34 +176,43 @@ function tryReadOrphan(id: string): string | null {
   }
 }
 
-export function saveSnapshot(id: string, dataUrl: string): void {
-  if (snapshotsDisabled()) return;
+export function saveSnapshot(
+  id: string,
+  dataUrl: string,
+  aliases: readonly string[] = [],
+): boolean {
+  if (snapshotsDisabled() || !id || !dataUrl) return false;
+  loadSavedFrames();
+  const distinctAliases = [...new Set(aliases.filter((alias) => alias && alias !== id))];
+  const durableAvailable = typeof indexedDB !== "undefined";
+  // Keep durable frames outside the shared, evictable WebView localStorage quota.
+  if (durableAvailable) {
+    storeSavedFrame({ id, image: dataUrl, t: Date.now(), aliases: distinctAliases });
+    pruneSavedFrames(Date.now() - retentionMs());
+    bumpSnapVersion();
+  }
+  // Large HD frames can hit the shared WebView storage quota even with no old
+  // snapshots to evict. Recover disposable caches instead of silently losing it.
+  try {
+    if (!setItemWithRecovery(PREFIX + id, dataUrl)) return durableAvailable;
+  } catch {
+    return durableAvailable;
+  }
   let index = readIndex().filter((e) => e.id !== id);
-  index = pruneExpired(index);
-  index.push({ id, t: Date.now() });
+  index = pruneExpired(index).filter((e) => frameBytes(e.id) > 0);
+  index.push({
+    id,
+    t: Date.now(),
+    ...(distinctAliases.length ? { aliases: distinctAliases } : {}),
+  });
   while (index.length > MAX_ENTRIES) {
     const evicted = index.shift();
     if (evicted) dropEntry(evicted.id);
   }
-  let saved = false;
-  for (let attempts = 0; attempts < 50; attempts++) {
-    try {
-      localStorage.setItem(PREFIX + id, dataUrl);
-      saved = true;
-      break;
-    } catch {
-      const evicted = index.shift();
-      if (!evicted || index.every((e) => e.id === id)) break;
-      dropEntry(evicted.id);
-    }
-  }
-  if (saved) {
-    index = enforceByteBudget(index);
-  } else {
-    index = index.filter((e) => e.id !== id);
-  }
+  index = enforceByteBudget(index);
   writeIndex(index);
-  if (saved) bumpSnapVersion();
+  bumpSnapVersion();
+  return true;
 }
 
 export function setSnapshotRetentionDays(days: number): void {
@@ -189,11 +233,15 @@ export function setSnapshotRetentionDays(days: number): void {
 }
 
 export function pruneExpiredSnapshots(): void {
+  pruneSavedFrames(Date.now() - retentionMs());
   const pruned = pruneExpired(readIndex());
   writeIndex(pruned);
 }
 
 export function clearAllSnapshots(): number {
+  const durableIds = savedFrameIds();
+  clearSavedFrames();
+  bumpSnapVersion();
   const index = readIndex();
   for (const e of index) dropEntry(e.id);
   writeIndex([]);
@@ -210,14 +258,19 @@ export function clearAllSnapshots(): number {
         /* noop */
       }
     }
-    return index.length + orphans.length;
+    return new Set([
+      ...durableIds,
+      ...index.map((entry) => entry.id),
+      ...orphans.map((key) => key.slice(PREFIX.length)),
+    ]).size;
   } catch {
     return index.length;
   }
 }
 
 export function snapshotCount(): number {
-  return readIndex().length;
+  loadSavedFrames();
+  return new Set([...savedFrameIds(), ...readIndex().map((entry) => entry.id)]).size;
 }
 
 export function getSnapshotRetentionDays(): number {

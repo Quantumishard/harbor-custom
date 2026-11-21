@@ -1,3 +1,4 @@
+import { useEpisodeImdbRatings } from "../use-episode-imdb-ratings";
 import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type { Meta } from "@/lib/cinemeta";
 import { getEpisodeProgress } from "@/lib/episode-progress";
@@ -40,6 +41,25 @@ export function OrderedEpisodes({
 }) {
   const { settings } = useSettings();
   const mwVersion = useSyncExternalStore(subscribeManualWatched, manualWatchedVersion);
+  const ratingSeasons = useMemo(
+    () => [...new Set(episodes.map((ep) => ep.seasonNumber))].filter((season) => season >= 1),
+    [episodes],
+  );
+  const ratings = useEpisodeImdbRatings(
+    !onSeasonVisible && settings.showEpisodeRating
+      ? (seriesImdbId ?? (/^tt\d+$/.test(meta.id) ? meta.id : null))
+      : null,
+    ratingSeasons,
+    settings.omdbKey,
+  );
+  const ratedEpisodes = useMemo(
+    () =>
+      episodes.map((ep) => {
+        const rating = ratings.get(`${ep.seasonNumber}:${ep.episodeNumber}`);
+        return ep.imdbRating == null && rating != null ? { ...ep, imdbRating: rating } : ep;
+      }),
+    [episodes, ratings],
+  );
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -131,7 +151,7 @@ export function OrderedEpisodes({
       <div ref={rootRef}>
         <EpisodeStrip
           meta={meta}
-          episodes={episodes}
+          episodes={ratedEpisodes}
           layout={settings.episodeLayout === "grid" ? "grid" : "strip"}
           progressFor={(ep) => progressByKey.get(`${ep.seasonNumber}:${ep.episodeNumber}`)!}
           thumbnailFor={(ep) =>
@@ -158,7 +178,7 @@ export function OrderedEpisodes({
 
   return (
     <div ref={rootRef} className="flex flex-col gap-1">
-      {episodes.map((ep) => {
+      {ratedEpisodes.map((ep) => {
         const key = `${ep.seasonNumber}:${ep.episodeNumber}`;
         const progress = progressByKey.get(key)!;
         return (

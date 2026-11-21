@@ -1,5 +1,7 @@
+import { CatalogTitleSearch } from "@/components/catalog-title-search";
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, ListFilter } from "lucide-react";
+import { Dropdown } from "@/components/dropdown";
 import { BackToTop } from "@/components/back-to-top";
 import { PickCard } from "@/components/pick-card";
 import { TV_CARD_MIN } from "@/components/row";
@@ -11,37 +13,83 @@ import { useScrollMemory, useView, type GridSpec } from "@/lib/view";
 
 const PAGE_CAP = 40;
 
-export function GridView({ grid }: { grid: GridSpec }) {
+export function GridView({ grid, active = true }: { grid: GridSpec; active?: boolean }) {
   const { goBack } = useView();
   const { settings } = useSettings();
   const t = useT();
   const scrollRef = useRef<HTMLElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const [metas, setMetas] = useState<Meta[]>(grid.initial ?? []);
-  const initialPage = grid.initialPage ?? (grid.initial?.length ? 1 : 0);
+  const [filterValue, setFilterValue] = useState(grid.filter?.initialValue ?? "");
+
+  const filterOption = grid.filter?.options.find((option) => option.value === filterValue);
+  const [naturalFetcher, setNaturalFetcher] = useState<GridSpec["fetcher"] | null>(null);
+  const fetcher = naturalFetcher ?? filterOption?.fetcher ?? grid.fetcher;
+
+  const initialPage =
+    filterOption?.initialPage ??
+    grid.initialPage ??
+    ((filterOption?.initial ?? grid.initial)?.length ? 1 : 0);
+
   const [page, setPage] = useState(initialPage);
-  const [done, setDone] = useState(initialPage >= PAGE_CAP);
+  const [done, setDone] = useState(initialPage >= (naturalFetcher ? 1000 : PAGE_CAP));
+
   // Preview seeds are not complete pages. Provider offsets count raw results,
   // including duplicates, rather than the number of visible cards.
-  const loadedRef = useRef(initialPage === 0 ? 0 : (grid.initial?.length ?? 0));
+  const loadedRef = useRef(
+    initialPage === 0 ? 0 : ((filterOption?.initial ?? grid.initial)?.length ?? 0),
+  );
   const loadingRef = useRef(false);
-  useScrollMemory(`grid:${grid.title}`, scrollRef);
+  const [loadError, setLoadError] = useState(false);
+  const [retryVersion, setRetryVersion] = useState(0);
+
+  const changeFilter = (value: string) => {
+    const option = grid.filter?.options.find((candidate) => candidate.value === value);
+    const initial = option?.initial ?? [];
+    const nextInitialPage = option?.initialPage ?? (initial.length > 0 ? 1 : 0);
+
+    loadingRef.current = false;
+    loadedRef.current = nextInitialPage === 0 ? 0 : initial.length;
+
+    setNaturalFetcher(null);
+    setFilterValue(value);
+    setMetas(initial);
+    setPage(nextInitialPage);
+    setDone(nextInitialPage >= PAGE_CAP);
+    setLoadError(false);
+
+    scrollRef.current?.scrollTo({ top: 0 });
+  };
+  useScrollMemory(`grid:${grid.title}`, scrollRef, active);
 
   useEffect(() => {
-    if (done) return;
+    if (done || loadError || !active) return;
+    loadingRef.current = false;
     const el = sentinelRef.current;
     if (!el) return;
+    let cancelled = false;
     const io = new IntersectionObserver(
       (entries) => {
         if (!entries[0]?.isIntersecting || loadingRef.current) return;
         loadingRef.current = true;
         const next = page + 1;
-        grid
-          .fetcher(next, loadedRef.current)
+        const loadPage = async () => {
+          for (let attempt = 0; ; attempt++) {
+            try {
+              return await fetcher(next, loadedRef.current);
+            } catch (error) {
+              if (cancelled || attempt >= 2) throw error;
+              await new Promise((resolve) => window.setTimeout(resolve, 500 * (attempt + 1)));
+              if (cancelled) throw error;
+            }
+          }
+        };
+        loadPage()
           .then((batch) => {
+            if (cancelled) return;
             setPage(next);
             loadedRef.current += batch.length;
-            if (batch.length === 0 || next >= PAGE_CAP) setDone(true);
+            if (batch.length === 0 || next >= (naturalFetcher ? 1000 : PAGE_CAP)) setDone(true);
             const seen = new Set(metas.map((m) => m.id));
             const fresh = batch.filter((m) => {
               if (seen.has(m.id)) return false;
@@ -50,16 +98,21 @@ export function GridView({ grid }: { grid: GridSpec }) {
             });
             if (fresh.length > 0) setMetas((prev) => [...prev, ...fresh]);
           })
-          .catch(() => setDone(true))
+          .catch(() => {
+            if (!cancelled) setLoadError(true);
+          })
           .finally(() => {
-            loadingRef.current = false;
+            if (!cancelled) loadingRef.current = false;
           });
       },
       { rootMargin: "900px 0px" },
     );
     io.observe(el);
-    return () => io.disconnect();
-  }, [grid, page, done, metas]);
+    return () => {
+      cancelled = true;
+      io.disconnect();
+    };
+  }, [fetcher, page, done, metas, loadError, retryVersion, active]);
 
   const hero = grid.kidsHero;
   const bgArt = metas.find((m) => m.background)?.background?.replace("/t/p/w780/", "/t/p/w1280/");
@@ -79,6 +132,18 @@ export function GridView({ grid }: { grid: GridSpec }) {
         ))}
       </div>
       {!done && <div ref={sentinelRef} className="h-24" />}
+      {loadError && (
+        <button
+          type="button"
+          onClick={() => {
+            setLoadError(false);
+            setRetryVersion((n) => n + 1);
+          }}
+          className="self-center rounded-full bg-elevated px-5 py-2 text-ink"
+        >
+          {t("Retry")}
+        </button>
+      )}
       {done &&
         metas.length === 0 &&
         (hero ? (
@@ -154,7 +219,38 @@ export function GridView({ grid }: { grid: GridSpec }) {
             <span className="text-[14px] text-ink-subtle">
               {metas.length} {metas.length === 1 ? t("title") : t("titles")}
             </span>
+            {grid.filter && grid.filter.options.length > 1 && (
+              <Dropdown
+                value={filterValue}
+                options={grid.filter.options.map((option) => ({
+                  value: option.value,
+                  label: option.label,
+                  left: <ListFilter size={15} className="shrink-0 text-ink-subtle" />,
+                }))}
+                onChange={changeFilter}
+                ariaLabel={grid.filter.label}
+                size="sm"
+                className="ms-auto min-w-44 max-w-80 [&>button]:h-10 [&>button]:rounded-full [&>button]:border [&>button]:border-edge-soft [&>button]:bg-elevated/40 [&>button]:font-semibold [&>button:hover]:bg-elevated"
+                menuClassName="border border-edge-soft"
+              />
+            )}
           </div>
+          {grid.naturalCatalog && (
+            <CatalogTitleSearch
+              key={filterValue}
+              catalog={grid.naturalCatalog}
+              genre={filterValue || null}
+              onApply={(nextFetcher) => {
+                setNaturalFetcher(() => nextFetcher);
+                loadingRef.current = false;
+                loadedRef.current = 0;
+                setMetas([]);
+                setPage(0);
+                setDone(false);
+                setLoadError(false);
+              }}
+            />
+          )}
           {body}
         </div>
       )}

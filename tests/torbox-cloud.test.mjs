@@ -27,6 +27,37 @@ function harness(fetcher) {
 const response = (data) => ({ ok: true, json: async () => ({ success: true, data }) });
 const signal = () => new AbortController().signal;
 
+test("date ordering interleaves all download types by creation instant, keeping unknown dates last", async () => {
+  const dates = {
+    torrents: "2026-10-20T10:00:00Z",
+    usenet: "2026-10-22T09:00:00+02:00",
+    webdl: "2026-10-21T10:00:00Z",
+  };
+  const h = harness(async (url) =>
+    response([
+      { id: 1, download_finished: true, created_at: dates[url.pathname.split("/").at(-2)] },
+    ]),
+  );
+  const items = await h.api.listTorboxCloud("fixture", signal());
+  assert.ok(items.every((item) => item.createdAt));
+  const original = [...items];
+  const unknown = [
+    { kind: "webdl", id: 2 },
+    { kind: "usenet", id: 3, createdAt: "invalid" },
+  ];
+  assert.deepEqual(
+    h.api.sortTorboxCloud([...items, ...unknown], "newest").map((x) => x.kind),
+    ["usenet", "webdl", "torrents", "webdl", "usenet"],
+  );
+  assert.deepEqual(
+    h.api.sortTorboxCloud([...items, ...unknown], "oldest").map((x) => x.kind),
+    ["torrents", "webdl", "usenet", "webdl", "usenet"],
+  );
+  assert.deepEqual(items, original);
+  const ties = items.map((item) => ({ ...item, createdAt: "2026-10-21T00:00:00Z" }));
+  assert.deepEqual(h.api.sortTorboxCloud(ties, "newest"), ties);
+});
+
 test("cloud listing covers torrent, usenet and web downloads and excludes incomplete entries", async () => {
   const h = harness(async (url) =>
     response([

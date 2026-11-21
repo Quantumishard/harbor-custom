@@ -398,6 +398,7 @@ export type Settings = {
   mangaUpscaleAutoDownload: boolean;
   preferredSubLangs: string[];
   preferredAudioLangs: string[];
+  preferOriginalAudioLanguage: boolean;
   subFontSize: number;
   subFontColor: string;
   subBorderColor: string;
@@ -447,6 +448,7 @@ export type Settings = {
   communitySyncUrl: string;
   communitySyncOptOut: boolean;
   subtitlesOffByDefault: boolean;
+  englishSubsForForeignOriginal: boolean;
   preferEmbeddedSubs: boolean;
   subtitleAutoUpgrade: boolean;
   subtitlePreselect: boolean;

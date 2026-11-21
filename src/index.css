@@ -2490,6 +2490,39 @@ main[data-kids="on"]::-webkit-scrollbar-thumb:hover {
   animation: harbor-loader-pulse 2.4s var(--ease-in-out) infinite;
 }
 
+/* Functional progress feedback remains visible when decorative motion is reduced. */
+@keyframes harbor-functional-spin-motion {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes harbor-functional-pulse-motion {
+  0%,
+  100% {
+    opacity: 0.42;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+html body .harbor-functional-spin {
+  animation-name: harbor-functional-spin-motion !important;
+  animation-duration: 1s !important;
+  animation-timing-function: linear !important;
+  animation-iteration-count: infinite !important;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+html body .harbor-functional-pulse {
+  animation-name: harbor-functional-pulse-motion !important;
+  animation-duration: 2.4s !important;
+  animation-timing-function: ease-in-out !important;
+  animation-iteration-count: infinite !important;
+}
+
 @keyframes harbor-stroke-fade {
   0% {
     opacity: 1;

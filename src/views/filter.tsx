@@ -22,7 +22,7 @@ import {
   type SpotlightGate,
 } from "./filter/spotlight-gate";
 
-export function FilterView({ filter }: { filter: MetaFilter }) {
+export function FilterView({ filter, active = true }: { filter: MetaFilter; active?: boolean }) {
   const scrollRef = useRef<HTMLElement>(null);
   const seenRef = useRef(new Map<string, string>());
   const expectedSpotlights = useMemo(
@@ -41,7 +41,7 @@ export function FilterView({ filter }: { filter: MetaFilter }) {
   const markDone = useCallback(() => setDoneSpotlights((n) => n + 1), []);
   const ready = expectedSpotlights === 0 || doneSpotlights >= expectedSpotlights || timedOut;
   const gate = useMemo<SpotlightGate>(() => ({ ready, markDone }), [ready, markDone]);
-  useScrollMemory(filterKey(filter), scrollRef);
+  useScrollMemory(filterKey(filter), scrollRef, active);
   return (
     <SeenIdsProvider value={seenRef}>
       <SpotlightGateContext.Provider value={gate}>

@@ -3,7 +3,8 @@ import { noteNotify } from "./render-cause";
 import { clearResume, readResumeEntry } from "./resume";
 import { flattenCwSourceMembers } from "./cw-members";
 import { setItemWithRecovery } from "./storage-recovery";
-import { episodeFromVideoId, type LibraryItem } from "./stremio";
+import { episodeFromVideoId, libraryGetOneStrict, type LibraryItem } from "./stremio";
+import { withItemLock } from "./stremio-item-lock";
 import { cloudLibraryPut } from "./stremio-write-queue";
 import { privateCwProfileId } from "./cw-profile";
 import { isNuvioSignedIn } from "./nuvio/nuvio-client";
@@ -820,13 +821,31 @@ export function dismissCw(
   } catch {
     throw new Error("Removed from Continue Watching, but the saved position could not be cleared.");
   }
-  const write = cloudLibraryPut(
-    authKey,
-    { ...item, state: { ...item.state, timeOffset: 0 }, _mtime: now },
-    options,
-  );
+  const write = withItemLock(id, async () => {
+    let fresh: LibraryItem | null;
+    try {
+      fresh = await libraryGetOneStrict(authKey, id);
+    } catch {
+      throw new Error("The current bookmark state could not be read for synchronization.");
+    }
+    const current = fresh ?? { ...item, removed: true, temp: true };
+    return cloudLibraryPut(
+      authKey,
+      {
+        ...current,
+        state: {
+          ...item.state!,
+          ...current.state,
+          duration: current.state?.duration ?? item.state!.duration,
+          timeOffset: 0,
+        },
+        _mtime: now,
+      },
+      options,
+    );
+  });
   if (!options.acknowledged) {
-    void write;
+    void write.catch(() => {});
     if (providerWrite) void providerWrite;
     return;
   }

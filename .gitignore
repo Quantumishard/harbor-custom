@@ -141,3 +141,13 @@ src-tauri/resources/music-module/
 /launch-harbor-dev.bat
 /run_dev.ps1
 /run_harbor_debug.bat
+
+# Generated checksum-pinned Windows player runtime
+/src-tauri/libmpv/*.dll
+/src-tauri/libmpv/licenses/
+/src-tauri/libmpv/SHA256-MANIFEST.json
+/src-tauri/libmpv/SOURCE.txt
+/src-tauri/libmpv/packages.txt
+/src-tauri/libmpv/mpv-force-render-cache.patch
+/src-tauri/libmpv/Copyright
+/src-tauri/libmpv/LICENSE*

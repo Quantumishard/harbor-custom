@@ -4,6 +4,14 @@ import test from "node:test";
 import ts from "typescript";
 
 function harness() {
+  const cloud = {};
+  const cloudCode = ts.transpileModule(
+    readFileSync(new URL("../src/lib/debrid/torbox-cloud.ts", import.meta.url), "utf8"),
+    {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+    },
+  ).outputText;
+  new Function("require", "exports", cloudCode)(() => ({}), cloud);
   const slots = [],
     effects = [],
     lists = [],
@@ -50,6 +58,7 @@ function harness() {
       useView: () => ({ openPlayer: (value) => players.push(value), openSettings() {} }),
     },
     "@/lib/debrid/torbox-cloud": {
+      sortTorboxCloud: cloud.sortTorboxCloud,
       listTorboxCloud: (_key, signal) => pending(lists, signal),
       torboxCloudLink: (_key, _item, _file, signal) => pending(links, signal),
     },
@@ -74,18 +83,19 @@ function harness() {
     tree = api.TorboxTab();
     effects.splice(0).forEach((fn) => fn());
   };
-  const buttons = () => {
+  const nodes = (type) => {
     const result = [],
       visit = (node) => {
         if (Array.isArray(node)) node.forEach(visit);
         else if (node?.props) {
-          if (node.type === "button") result.push(node);
+          if (node.type === type) result.push(node);
           visit(node.props.children);
         }
       };
     visit(tree);
     return result;
   };
+  const buttons = () => nodes("button");
   render();
   return {
     settings,
@@ -94,6 +104,7 @@ function harness() {
     links,
     players,
     buttons,
+    nodes,
     unmount: () => {
       for (const item of slots) item?.cleanup?.();
     },
@@ -103,6 +114,26 @@ const item = { kind: "torrents", id: 1, name: "Fixture", files: [{ id: 2, name: 
 const settle = async () => {
   for (let i = 0; i < 10; i++) await Promise.resolve();
 };
+
+test("date control changes the combined list from newest to oldest", async () => {
+  const h = harness();
+  h.lists[0].resolve([
+    { ...item, name: "old torrent", createdAt: "2026-10-20T00:00:00Z" },
+    { ...item, kind: "usenet", name: "new usenet", createdAt: "2026-10-22T00:00:00Z" },
+    { ...item, kind: "webdl", name: "middle web", createdAt: "2026-10-21T00:00:00Z" },
+  ]);
+  await settle();
+  h.render();
+  const names = () =>
+    h
+      .nodes("span")
+      .map((node) => node.props.children)
+      .filter((value) => ["old torrent", "new usenet", "middle web"].includes(value));
+  assert.deepEqual(names(), ["new usenet", "middle web", "old torrent"]);
+  h.nodes("select")[0].props.onChange({ target: { value: "oldest" } });
+  h.render();
+  assert.deepEqual(names(), ["old torrent", "middle web", "new usenet"]);
+});
 
 test("TorBox playback uses a private cloud source and ignores late links after account changes", async () => {
   const h = harness();

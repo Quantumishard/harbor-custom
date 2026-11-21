@@ -1,3 +1,4 @@
+import { ShaderProperties } from "./shader-properties";
 import { invoke } from "@tauri-apps/api/core";
 import { SubtitlePreparationError, prepareSubtitle } from "@/lib/subtitles/prepare";
 import { subtitleTrackDownloadHeaders } from "@/lib/subtitles/provider-auth";
@@ -1140,6 +1141,12 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
     }
   };
 
+  const shaderProperties = new ShaderProperties(
+    (name) => invoke("mpv_get_property", { name }),
+    (name, value) => invoke("mpv_set_property", { name, value }),
+  );
+  let harborShadersActive = false;
+  let harborShadersTouched = false;
   // A translating addon accepts a subtitle URL before the finished file exists. The
   // queue re-checks that exact URL until the addon serves the finished subtitle; a
   // viewer pick or a media change drops anything still waiting.
@@ -1574,6 +1581,11 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
       invoke("mpv_set_property", { name, value }).catch(() => {});
     },
     setAnime4kShaders(shaders) {
+      // Preserve mpv.conf shaders until Harbor explicitly selects its own shaders.
+      const hasShaders = shaders.some(Boolean);
+      if (!hasShaders && !harborShadersActive) return;
+      harborShadersActive = hasShaders;
+      harborShadersTouched ||= hasShaders;
       const sep = isWindowsDesktop() ? ";" : ":";
       const value = shaders
         .filter(Boolean)
@@ -1584,11 +1596,7 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
       );
     },
     setShaderProps(props) {
-      for (const [name, value] of Object.entries(props)) {
-        invoke("mpv_set_property", { name, value }).catch((e) =>
-          console.warn("[shaders] companion prop failed", name, e),
-        );
-      }
+      void shaderProperties.apply(props);
     },
     async addSubtitle(url, lang, title, select, metadata, origin = "manual"): Promise<boolean> {
       return await addSubtitleInternal(url, lang, title, select, metadata, origin);
@@ -1617,6 +1625,8 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
       applyAudioFilters();
     },
     setHdrToSdr(on, oled) {
+      // An initial disabled setting must leave mpv.conf and its auto profiles in control.
+      if (!on && !hdrToSdr) return;
       hdrToSdr = on;
       const properties: Array<[string, string]> = on
         ? [
@@ -1641,7 +1651,11 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
             ["target-prim", "auto"],
             ["target-contrast", "auto"],
           ];
-      if (isWindowsDesktop() || isMacDesktop()) {
+      // When Harbor's tonemapper is off, preserve the value loaded from
+      // mpv.conf. Shader pipelines such as hdr-toys deliberately set this to
+      // "no"; forcing it back to "yes" advertises a PQ HDR swap chain even
+      // though their final shader output is SDR.
+      if (on && (isWindowsDesktop() || isMacDesktop())) {
         properties.push(["target-colorspace-hint", "yes"]);
       }
       for (const [name, value] of properties) {
@@ -1699,6 +1713,7 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
       };
     },
     destroy() {
+      shaderProperties.cancel();
       cancelSeedSubtitles();
       mediaLoadId += 1;
       clearAudioDeviceReload();
@@ -1711,7 +1726,14 @@ export function createMpvBridge(mpvOptions?: MpvOptions): PlayerBridge {
       finishPlaybackTrace(activeTraceId, "aborted");
       activeTraceId = null;
       const keepNativeSession =
-        mpvStarted && currentIsLive != null && isWindowsDesktop() && mpvOptions?.embed === true;
+        // Shader settings belong to this view, but the native player can outlive it.
+        // Recreate shader-used sessions so a new view cannot inherit PQ output
+        // without the old view's restoration state.
+        mpvStarted &&
+        currentIsLive != null &&
+        isWindowsDesktop() &&
+        mpvOptions?.embed === true &&
+        !harborShadersTouched;
       if (keepNativeSession) {
         invalidateMpvSubtitleFpsContext();
         const retained: RetainedMpv = {

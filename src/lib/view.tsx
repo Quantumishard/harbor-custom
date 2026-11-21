@@ -180,11 +180,23 @@ export type PickerOptions = {
 };
 
 export type GridSpec = {
+  naturalCatalog?: import("./catalog-browse").BrowseCatalog;
   title: string;
   fetcher: (page: number, loaded?: number) => Promise<Meta[]>;
   initial?: Meta[];
   /** Last complete page in initial; use 0 for a capped/filtered row preview. */
   initialPage?: number;
+  filter?: {
+    label: string;
+    initialValue?: string;
+    options: Array<{
+      value: string;
+      label: string;
+      fetcher: (page: number, loaded?: number) => Promise<Meta[]>;
+      initial?: Meta[];
+      initialPage?: number;
+    }>;
+  };
   kidsHero?: { grad: string; art: string; name: string };
 };
 
@@ -298,6 +310,7 @@ type ViewValue = {
   openMatchDetail: (game: SportsGame, eventGames?: SportsGame[]) => void;
   view: View;
   setView: (v: View) => void;
+  viewResetVersions: Partial<Record<View, number>>;
   openSettings: (section?: SettingsSection) => void;
   settingsSectionRequest: { section: SettingsSection | null; nonce: number };
   topKind: Frame["kind"];
@@ -600,6 +613,7 @@ export function ViewProvider({ children }: { children: ReactNode }) {
   const bigPictureActive = useBigPicture().active;
   const sectionBackActive = useSectionBackActive();
   const [homeResetTick, setHomeResetTick] = useState(0);
+  const [viewResetVersions, setViewResetVersions] = useState<Partial<Record<View, number>>>({});
   const scrollMem = useRef<Map<string, ScrollSnapshot>>(new Map());
   const rowScrollMem = useRef<Map<string, number>>(new Map());
   const scrollSavers = useRef(new Set<() => void>());
@@ -873,136 +887,42 @@ export function ViewProvider({ children }: { children: ReactNode }) {
     nonce: 0,
   });
 
+  const sectionStacks = useRef<Map<View, Frame[]>>(new Map());
   const setView = useCallback(
     (v: View) => {
-      if (typeof window !== "undefined") {
-        window.__harborProfiler?.recordNav(`view:${v}`);
+      window.__harborProfiler?.recordNav(`view:${v}`);
+      const current = withoutTrailingPlayers(stackRef.current);
+      if (v === "settings") {
+        if (current.at(-1)?.kind !== "settings")
+          setNavStack((s) => pushFrame(s, { kind: "settings" }));
+        return;
       }
-      if (v === "home") setHomeResetTick((n) => n + 1);
-      if (typeof window !== "undefined" && v !== "settings") {
+      const currentRoot = current[0]?.kind as View;
+      const freshRoot = (): Frame[] =>
+        [v === "people" ? { kind: "people", nonce: Date.now() } : { kind: v }] as Frame[];
+      let next: Frame[];
+      if (currentRoot === v && current.at(-1)?.kind !== "settings") {
+        sectionStacks.current.delete(v);
+        scrollMem.current.delete(v);
+        for (const key of rowScrollMem.current.keys())
+          if (key.startsWith(`${v}:`)) rowScrollMem.current.delete(key);
         window.dispatchEvent(
           new CustomEvent("harbor:reset-row-scrolls", { detail: { prefix: `${v}:` } }),
         );
-        const fireScrollTop = () =>
-          window.dispatchEvent(new CustomEvent("harbor:scroll-top", { detail: { view: v } }));
-        fireScrollTop();
-        window.requestAnimationFrame(fireScrollTop);
-        window.setTimeout(fireScrollTop, 60);
+        window.dispatchEvent(new CustomEvent("harbor:scroll-top", { detail: { view: v } }));
+        setViewResetVersions((previous) => ({ ...previous, [v]: (previous[v] ?? 0) + 1 }));
+        if (v === "home") setHomeResetTick((n) => n + 1);
+        next = freshRoot();
+      } else {
+        if (currentRoot)
+          sectionStacks.current.set(
+            currentRoot,
+            current.filter((frame) => frame.kind !== "settings"),
+          );
+        next = sectionStacks.current.get(v) ?? freshRoot();
       }
-      setNavStack((s) => {
-        const t = s[s.length - 1];
-        if (v === "home") {
-          scrollMem.current.clear();
-          rowScrollMem.current.clear();
-          return [{ kind: "home" }];
-        }
-        if (v === "anime") {
-          scrollMem.current.clear();
-          rowScrollMem.current.clear();
-          return [{ kind: "anime" }];
-        }
-        if (v === "discover") {
-          scrollMem.current.clear();
-          rowScrollMem.current.clear();
-          return [{ kind: "discover" }];
-        }
-        if (v === "catalogs") {
-          scrollMem.current.clear();
-          rowScrollMem.current.clear();
-          return [{ kind: "catalogs" }];
-        }
-        if (v === "plugins") {
-          scrollMem.current.clear();
-          rowScrollMem.current.clear();
-          return [{ kind: "plugins" }];
-        }
-        if (v === "addons") {
-          scrollMem.current.clear();
-          rowScrollMem.current.clear();
-          return [{ kind: "addons" }];
-        }
-        if (v === "calendar") {
-          scrollMem.current.clear();
-          rowScrollMem.current.clear();
-          return [{ kind: "calendar" }];
-        }
-        if (v === "wrapped") {
-          scrollMem.current.clear();
-          rowScrollMem.current.clear();
-          return [{ kind: "wrapped" }];
-        }
-        if (v === "downloads") {
-          if (t.kind === "downloads") return s;
-          return pushFrame(s, { kind: "downloads" });
-        }
-        if (v === "movies") {
-          scrollMem.current.clear();
-          rowScrollMem.current.clear();
-          return [{ kind: "movies" }];
-        }
-        if (v === "shows") {
-          scrollMem.current.clear();
-          rowScrollMem.current.clear();
-          return [{ kind: "shows" }];
-        }
-        if (v === "music") {
-          scrollMem.current.clear();
-          rowScrollMem.current.clear();
-          return [{ kind: "music" }];
-        }
-        if (v === "games") {
-          scrollMem.current.clear();
-          rowScrollMem.current.clear();
-          return [{ kind: "games" }];
-        }
-        if (v === "kids") {
-          scrollMem.current.clear();
-          rowScrollMem.current.clear();
-          return [{ kind: "kids" }];
-        }
-        if (v === "library") {
-          scrollMem.current.clear();
-          rowScrollMem.current.clear();
-          return [{ kind: "library" }];
-        }
-        if (v === "collections-hub") {
-          scrollMem.current.clear();
-          rowScrollMem.current.clear();
-          return [{ kind: "collections-hub" }];
-        }
-        if (v === "live") {
-          scrollMem.current.clear();
-          rowScrollMem.current.clear();
-          return [{ kind: "live" }];
-        }
-        if (v === "sports") {
-          scrollMem.current.clear();
-          rowScrollMem.current.clear();
-          return [{ kind: "sports" }];
-        }
-        if (v === "vod") {
-          scrollMem.current.clear();
-          rowScrollMem.current.clear();
-          return [{ kind: "vod" }];
-        }
-        if (v === "manga") {
-          scrollMem.current.clear();
-          rowScrollMem.current.clear();
-          return [{ kind: "manga" }];
-        }
-        if (v === "ebook") {
-          scrollMem.current.clear();
-          rowScrollMem.current.clear();
-          return [{ kind: "ebook" }];
-        }
-        if (v === "people") {
-          scrollMem.current.clear();
-          rowScrollMem.current.clear();
-          return [{ kind: "people", nonce: Date.now() }];
-        }
-        if (t.kind === "settings") return s;
-        return pushFrame(s, { kind: "settings" });
-      });
+      stackRef.current = next;
+      setNavStack(() => next);
     },
     [setNavStack],
   );
@@ -1571,6 +1491,7 @@ export function ViewProvider({ children }: { children: ReactNode }) {
     () => ({
       view,
       setView,
+      viewResetVersions,
       openSettings,
       settingsSectionRequest: sectionReq,
       topKind: top.kind,
@@ -1704,6 +1625,8 @@ export function ViewProvider({ children }: { children: ReactNode }) {
       openSportsEvent,
       stackKinds,
       awardType,
+      homeResetTick,
+      viewResetVersions,
       picker,
       player,
       canGoBack,
@@ -1940,7 +1863,7 @@ export function useScrollMemory(
         /* The layer is parked, or it has just been shown and has not been laid out yet. Giving up
          * here is what loses the position: the effect runs in the same commit that lifts the park,
          * so the element can still report no height, and the resize observer does not fire for a
-         * size that never changed — so nothing came back to try again and the view stayed at the
+         * size that never changed - so nothing came back to try again and the view stayed at the
          * top. Asking again is bounded, so a view that is genuinely empty stops asking. */
         if (retryId === null && retries < RESTORE_RETRIES) {
           retries += 1;

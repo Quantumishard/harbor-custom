@@ -19,7 +19,7 @@ type RawFile = {
   idx?: number;
 };
 
-const VIDEO_EXT = /\.(mkv|mp4|m4v|avi|mov|webm|ts|wmv|flv|mpg|mpeg|m2ts)$/i;
+import { isPlayableVideoPath } from "@/lib/media-file";
 
 export function trackersFromSources(sources?: string[]): string[] {
   if (!sources) return [];
@@ -71,7 +71,7 @@ export function isHostedTorrentServerUrl(url: string | null | undefined): boolea
 }
 
 export function isVideoFile(f: TorrentFile): boolean {
-  return VIDEO_EXT.test(f.name);
+  return isPlayableVideoPath(f.name);
 }
 
 export type CreatedTorrent = { files: TorrentFile[]; guessedFileIdx: number | null };

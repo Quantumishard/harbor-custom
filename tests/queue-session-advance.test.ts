@@ -21,6 +21,7 @@ function setup({
   const calls: unknown[] = [];
   let queue = [...initialQueue];
   const hook = hookHarness("src/views/player/hooks/use-queue-advance.ts", "useQueueAdvance", {
+    "@/lib/download/completed-episode-source": { completedEpisodeSource: async () => null },
     "@/lib/queue-session": { queueSessionIndex },
     "@/lib/player/playback-clock": { getPlaybackPosition: () => 600 },
     "@/lib/player/playback-end": { isNaturalEnd },

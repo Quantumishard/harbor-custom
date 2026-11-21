@@ -10,8 +10,8 @@ export function CinematicLoader({ meta }: { meta: Meta }) {
       <LogoOrText
         logo={meta.logo ?? null}
         fallbackText={meta.name}
-        imgClass="max-h-40 w-auto max-w-[70%] animate-loader-pulse object-contain drop-shadow-[0_24px_60px_rgba(0,0,0,0.65)]"
-        textClass="animate-loader-pulse font-display text-[72px] font-medium leading-[0.96] tracking-tight text-ink drop-shadow-[0_18px_45px_rgba(0,0,0,0.55)]"
+        imgClass="harbor-functional-pulse max-h-40 w-auto max-w-[70%] object-contain drop-shadow-[0_24px_60px_rgba(0,0,0,0.65)]"
+        textClass="harbor-functional-pulse font-display text-[72px] font-medium leading-[0.96] tracking-tight text-ink drop-shadow-[0_18px_45px_rgba(0,0,0,0.55)]"
       />
       <CustomArtwork role="loading" className="h-32 w-32" />
       <p className="text-[11px] font-semibold uppercase tracking-[0.42em] text-ink-subtle">

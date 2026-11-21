@@ -32,6 +32,39 @@ pub fn apply_transparency(app: &tauri::AppHandle, label: &str) {
     }
 }
 
+/// Enable WebView2's protected persistent profile for saved web credentials.
+#[cfg(windows)]
+pub fn enable_credential_persistence(app: &tauri::AppHandle, label: &str) {
+    use tauri::Manager;
+    let Some(window) = app.get_webview_window(label) else {
+        return;
+    };
+    let result = window.with_webview(|webview| unsafe {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            ICoreWebView2Profile6, ICoreWebView2_13,
+        };
+        use windows::core::Interface;
+        let credential_result = (|| -> Result<(), windows::core::Error> {
+            let core = webview.controller().CoreWebView2()?;
+            let core13 = core.cast::<ICoreWebView2_13>()?;
+            let profile6 = core13.Profile()?.cast::<ICoreWebView2Profile6>()?;
+            profile6.SetIsPasswordAutosaveEnabled(true)?;
+            profile6.SetIsGeneralAutofillEnabled(true)?;
+            Ok(())
+        })();
+        match credential_result {
+            Ok(()) => eprintln!("[harbor::webview] credential persistence enabled"),
+            Err(e) => eprintln!("[harbor::webview] credential persistence unavailable: {:?}", e),
+        }
+    });
+    if let Err(e) = result {
+        eprintln!("[harbor::webview] credential persistence setup failed: {:?}", e);
+    }
+}
+
+#[cfg(not(windows))]
+pub fn enable_credential_persistence(_app: &tauri::AppHandle, _label: &str) {}
+
 #[tauri::command]
 pub fn webview_reapply_transparency(_app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(windows)]

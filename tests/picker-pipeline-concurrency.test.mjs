@@ -79,6 +79,7 @@ function harness({ anime = false, deferredParse = false, preferredAddonId = null
     },
   };
   const library = load("src/lib/streams/library.ts", {
+    "@/lib/media-file": load("src/lib/media-file.ts"),
     "parse-torrent-title": { parse: (name) => ({ title: name }) },
   });
   const api = load(
@@ -93,6 +94,7 @@ function harness({ anime = false, deferredParse = false, preferredAddonId = null
           return addons.promise;
         },
       },
+      "./easynews-nzb-options": { withEasynewsNzbOptions: (picker) => picker },
       "./priority-partition": { applyStreamPriority: (picker) => picker },
       "./anitomy": {
         enhanceAnimeStreams: async () => {

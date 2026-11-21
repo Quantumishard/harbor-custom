@@ -86,8 +86,9 @@ export function fullShaderChain(
   src: PlayerSrc,
   choice: Anime4kChoice,
   dims?: Anime4kDims,
+  sourceGamma?: string,
 ): string[] {
-  const { before, after } = splitShaderChainAroundUpscaler(settings);
+  const { before, after } = splitShaderChainAroundUpscaler(settings, sourceGamma);
   return [...before, ...anime4kShadersFor(settings, src, choice, dims), ...after];
 }
 
@@ -98,6 +99,7 @@ export function useAnime4k(
   videoWidth = 0,
   videoSourceWidth = 0,
   bridgeReady = true,
+  sourceGamma?: string,
 ) {
   const { settings, update } = useSettings();
   const choice = (settings.playerAnime4kOverride as Anime4kChoice) || "auto";
@@ -112,8 +114,8 @@ export function useAnime4k(
   // Anime4K restores and upscales on its own, so the catalog shaders that feed
   // an upscale run in front of it and only finishers (sharpen, tonemap) follow.
   const shaderConfig = JSON.stringify({
-    chain: fullShaderChain(settings, src, choice, dims),
-    props: shaderCompanionProps(settings),
+    chain: fullShaderChain(settings, src, choice, dims, sourceGamma),
+    props: shaderCompanionProps(settings, sourceGamma),
   });
 
   useEffect(() => {

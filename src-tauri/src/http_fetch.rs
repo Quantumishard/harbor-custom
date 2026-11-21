@@ -369,7 +369,10 @@ fn apply_redirect_method(
 }
 
 pub(crate) fn http_client_builder() -> reqwest::ClientBuilder {
-    reqwest::Client::builder()
+    let builder = reqwest::Client::builder();
+    #[cfg(windows)]
+    let builder = builder.use_rustls_tls();
+    builder
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(30))

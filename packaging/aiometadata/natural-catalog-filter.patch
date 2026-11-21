@@ -1,0 +1,226 @@
+--- a/addon/index.ts
++++ b/addon/index.ts
+@@ -5226,6 +5226,38 @@
+   } else {
+     catalogPageSize = 20;
+   }
++  if (extraArgs.nlFilter) {
++    res.setHeader('Cache-Control', 'no-store');
++    try {
++      const { naturalFilterPage, planNaturalFilter, enrichTmdbCatalogMeta } = require('./lib/naturalCatalogFilter');
++      const sourceArgs = { ...extraArgs };
++      delete sourceArgs.nlFilter;
++      delete sourceArgs.nlAction;
++      delete sourceArgs.skip;
++      const routePrefix = req.originalUrl.split('/catalog/')[0];
++      const payload = naturalFilterPage({
++        identity: [userUUID, storedConfig, type, id, sourceArgs],
++        query: String(extraArgs.nlFilter),
++        action: extraArgs.nlAction === 'stop' ? 'stop' : undefined,
++        skip: Math.max(0, Number.parseInt(extraArgs.skip || '0', 10) || 0),
++        plan: () => planNaturalFilter(String(extraArgs.nlFilter), config),
++        load: async (page) => {
++          const params = new URLSearchParams({ ...sourceArgs, skip: String((page - 1) * catalogPageSize) });
++          const path = `${routePrefix}/catalog/${encodeURIComponent(type)}/${encodeURIComponent(id)}/${params.toString()}.json`;
++          const response = await fetch(`http://127.0.0.1:${process.env.PORT || 3232}${path}`, { signal: AbortSignal.timeout(90000) });
++          if (!response.ok) throw Error('Catalog unavailable');
++          const data = await response.json() as any;
++          if (data.error || data.err || !Array.isArray(data.metas)) throw Error('Catalog unavailable');
++          return data.metas;
++        },
++        enrich: (meta) => enrichTmdbCatalogMeta({ ...meta, type: meta.type || actualType }, config),
++      });
++      return res.json(payload);
++    } catch {
++      return res.status(400).json({ error: 'Unable to start catalog filter. Try a shorter filter or retry later.' });
++    }
++  }
++
+   const isOffsetBased = cleanId.startsWith('stremthru.') || cleanId.startsWith('custom.');
+   const catalogPage = extraArgs.skip 
+     ? (isOffsetBased 
+--- /dev/null
++++ b/addon/lib/naturalCatalogFilter.ts
+@@ -0,0 +1,182 @@
++import { createHash } from 'crypto';
++
++export interface FilterPlan {
++  summary: string; title?: string; minYear?: number; maxYear?: number;
++  sort?: 'catalog' | 'newest' | 'oldest';
++}
++type Job = { touched: number; status: 'planning' | 'scanning' | 'complete' | 'partial' | 'error';
++  scanned: number; unknown: number; matches: any[]; plan?: FilterPlan; error?: string };
++const jobs = new Map<string, Job>();
++const TTL = 30 * 60 * 1000;
++const normalize = (value: any) => String(value || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
++
++/** Local parser only: ordinary words are literal title text, never an AI request. */
++export async function planNaturalFilter(query: string, _config?: any): Promise<FilterPlan> {
++  if (!query.trim() || query.length > 1000) throw Object.assign(Error(), { safeMessage: 'Enter a title and/or year.' });
++  let text = query.trim();
++  const plan: FilterPlan = { summary: '' };
++  text = text.replace(/\s+sort:(newest|oldest|catalog)\s*$/i, (_, value) => { plan.sort = value.toLowerCase(); return ''; });
++  const quoted = text.match(/^(?:title:\s*)?["“](.*)["”]$/);
++  if (quoted) plan.title = quoted[1].trim();
++  else {
++    const explicitTitle = /^title:/i.test(text);
++    const patterns: [RegExp, (m: RegExpMatchArray) => void][] = [
++      [/\bbetween\s+(\d{4})\s+and\s+(\d{4})$/i, m => { plan.minYear = +m[1]; plan.maxYear = +m[2]; }],
++      [/(?:^|\s)(?:year:\s*)?(\d{4})\s*[-–]\s*(\d{4})$/, m => { plan.minYear = +m[1]; plan.maxYear = +m[2]; }],
++      [/(?:^|\s)(?:year:\s*)?(\d{4})\s*(?:[-–]|\+)$/, m => { plan.minYear = +m[1]; }],
++      [/\b(?:since|from)\s+(\d{4})$/i, m => { plan.minYear = +m[1]; }],
++      [/\bafter\s+(\d{4})$/i, m => { plan.minYear = +m[1] + 1; }],
++      [/\bbefore\s+(\d{4})$/i, m => { plan.maxYear = +m[1] - 1; }],
++      [/\b(?:until|through)\s+(\d{4})$/i, m => { plan.maxYear = +m[1]; }],
++      [/(?:^|\s)(?:year:\s*|in\s+)?\(?(\d{4})\)?$/i, m => { plan.minYear = plan.maxYear = +m[1]; }],
++    ];
++    // title:1917 or a quoted numeric title disambiguates it from a year filter.
++    if (!(explicitTitle && /^title:\s*\d{4}$/i.test(text))) {
++      for (const [pattern, apply] of patterns) {
++        const match = text.match(pattern);
++        if (match) { apply(match); text = text.slice(0, match.index).trim(); break; }
++      }
++    }
++    text = text.replace(/^title:\s*/i, '').trim().replace(/^["“]|["”]$/g, '').trim();
++    if (text) plan.title = text;
++  }
++  if ((plan.minYear != null && (plan.minYear < 1800 || plan.minYear > 2200)) || (plan.maxYear != null && (plan.maxYear < 1800 || plan.maxYear > 2200)) || (plan.minYear ?? 0) > (plan.maxYear ?? 9999)) throw Object.assign(Error(), { safeMessage: 'Use a valid year or year range, such as 2023, 2020-2024, or 2023-.' });
++  if (!plan.title && plan.minYear == null && plan.maxYear == null) throw Object.assign(Error(), { safeMessage: 'Enter a title and/or year.' });
++  if (plan.title && !normalize(plan.title)) throw Object.assign(Error(), { safeMessage: 'Enter a title containing letters or numbers.' });
++  plan.summary = 'TMDB metadata only: ' + [plan.title ? `title contains "${plan.title}"` : '', plan.minYear === plan.maxYear && plan.minYear != null ? `year ${plan.minYear}` : [plan.minYear != null ? `from ${plan.minYear}` : '', plan.maxYear != null ? `through ${plan.maxYear}` : ''].filter(Boolean).join(' ')].filter(Boolean).join('; ');
++  return plan;
++}
++
++export function matchMeta(meta: any, plan: FilterPlan): boolean | null {
++  const data = meta._nlTmdb;
++  if (!data) return null;
++  let unknown = false;
++  if (plan.title) {
++    if (!data.titles?.length) unknown = true;
++    else if (!data.titles.some((title: string) => normalize(title).includes(normalize(plan.title)))) return false;
++  }
++  if (plan.minYear != null || plan.maxYear != null) {
++    if (!data.year) unknown = true;
++    else if (plan.minYear != null && data.year < plan.minYear || plan.maxYear != null && data.year > plan.maxYear) return false;
++  }
++  return unknown ? null : true;
++}
++
++export function sortMatches(metas: any[], plan: FilterPlan): void {
++  if (!plan.sort || plan.sort === 'catalog') return;
++  metas.sort((a,b) => {
++    const av = a._nlTmdb?.year, bv = b._nlTmdb?.year;
++    if (!av) return bv ? 1 : 0; if (!bv) return -1;
++    return plan.sort === 'oldest' ? av - bv : bv - av;
++  });
++}
++
++export async function enrichTmdbCatalogMeta(meta: any, config: any, api?: any): Promise<any> {
++  const tmdb = api || require('./getTmdb');
++  try {
++    let id = meta._tmdbId || meta.tmdb_id || meta.tmdbId || String(meta.id || '').match(/^tmdb:(\d+)$/)?.[1];
++    const movie = meta.type === 'movie';
++    if (!id) {
++      const imdb = meta.imdb_id || meta.imdbId || (/^tt\d+$/.test(meta.id) ? meta.id : null);
++      if (imdb) {
++        const result = await tmdb.find({ id: imdb, external_source: 'imdb_id' }, config);
++        id = (movie ? result?.movie_results : result?.tv_results)?.[0]?.id;
++      }
++    }
++    if (!id) return { ...meta, _nlTmdb: null };
++    const details = await (movie ? tmdb.movieInfo : tmdb.tvInfo)({ id, language: config.language || 'en-US' }, config);
++    if (!details || Number(details.id) !== Number(id)) return { ...meta, _nlTmdb: null };
++    const title = movie ? details.title : details.name;
++    const original = movie ? details.original_title : details.original_name;
++    const release = movie ? details.release_date : details.first_air_date;
++    const year = Number(String(release || '').match(/^\d{4}/)?.[0]) || null;
++    return { ...meta, name: title || original || meta.name, releaseInfo: year ? String(year) : meta.releaseInfo,
++      _nlTmdb: { titles: [title, original].filter(Boolean), year } };
++  } catch { return { ...meta, _nlTmdb: null }; }
++}
++
++export function naturalFilterPage(args: {
++  identity: unknown; query: string; skip: number; action?: 'stop';
++  plan: () => Promise<FilterPlan>;
++  load: (page: number) => Promise<any[]>;
++  enrich: (meta: any, plan: FilterPlan) => Promise<any>;
++  review?: (metas: any[], plan: FilterPlan) => Promise<any[]>;
++}): any {
++  const now = Date.now();
++  for (const [key, job] of jobs) if (now - job.touched > TTL && job.status !== 'scanning' && job.status !== 'planning') jobs.delete(key);
++  const key = createHash('sha256').update(JSON.stringify([args.identity,args.query])).digest('hex');
++  let job = jobs.get(key);
++  if (args.action === 'stop') {
++    if (!job) throw Error('The filter expired. Apply it again before stopping.');
++    if (job.status === 'planning' || job.status === 'scanning') {
++      job.matches = job.matches.slice();
++      if (job.plan) sortMatches(job.matches, job.plan);
++      job.status = 'partial';
++    }
++  }
++  if (!job) {
++    if (jobs.size >= 12) throw Error('Filter capacity reached. Try again after cached filters expire.');
++    if (args.query.length > 1000 || !args.query.trim()) throw Error('Enter a filter of 1–1000 characters.');
++    job = { touched: now, status: 'planning', scanned: 0, unknown: 0, matches: [] };
++    jobs.set(key, job);
++    const target = job;
++    void (async () => {
++      try {
++        const stopped = () => target.status === 'partial';
++        const plan = await args.plan();
++        if (stopped()) return;
++        target.plan = plan;
++        target.status = 'scanning';
++        const seen = new Set<string>();
++        const started = Date.now();
++        for (let page = 1; ; page++) {
++          if (page > 5000 || seen.size >= 100000 || Date.now() - started > 30 * 60 * 1000) throw Error('Catalog exceeds this scan limit; narrow the catalog or genre and retry. No partial results were returned.');
++          if (stopped()) return;
++          const batch = await args.load(page);
++          if (stopped()) return;
++          if (!batch.length) break;
++          const fresh = batch.filter(m => {
++            if (!m?.id) return false;
++            const id = `${m.type}:${m.id}`;
++            if (seen.has(id)) return false;
++            seen.add(id); return true;
++          });
++          if (!fresh.length) throw Error('Catalog repeated a page. Cannot confirm full catalog coverage.');
++          // Review one provider page at a time. Commit counts/results only after review,
++          // so Stop never reports unreviewed candidates as checked matches.
++          const pageRows: any[] = [];
++          for (let offset = 0; offset < fresh.length; offset += 4) {
++            if (stopped()) return;
++            const rows = await Promise.all(fresh.slice(offset, offset + 4).map(m => args.enrich(m, target.plan!)));
++            if (stopped()) return;
++            pageRows.push(...rows);
++          }
++          const decisions = pageRows.map(row => matchMeta(row, target.plan!));
++          const candidates = pageRows.filter((_, index) => decisions[index] === true);
++          const reviewed = args.review && candidates.length ? await args.review(candidates, target.plan!) : candidates;
++          if (stopped()) return;
++          const candidateIds = new Set(candidates.map(row => `${row.type}:${row.id}`));
++          if (!Array.isArray(reviewed) || reviewed.some(row => !candidateIds.has(`${row.type}:${row.id}`))) throw Error('Invalid reviewed catalog member');
++          target.scanned += pageRows.length;
++          target.unknown += decisions.filter(decision => decision == null).length;
++          target.matches.push(...reviewed);
++
++        }
++        sortMatches(target.matches, target.plan);
++        target.status = 'complete';
++      } catch (e: any) {
++        if (target.status === 'partial') return;
++        target.status = 'error';
++        // Provider exceptions can contain private URLs: do not expose them.
++        target.error = e?.safeMessage || 'Filtering could not finish. Check the filter wording or try again later.';
++        target.matches = [];
++      }
++      target.touched = Date.now();
++    })();
++  }
++  job.touched = now;
++  return { metas: job.status === 'complete' || job.status === 'partial' ? job.matches.slice(args.skip, args.skip + 100) : [],
++    naturalFilter: { status: job.status, scanned: job.scanned, unknown: job.unknown,
++      total: job.matches.length, summary: job.plan?.summary, rules: job.plan, error: job.error } };
++}
++

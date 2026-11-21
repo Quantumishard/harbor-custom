@@ -55,9 +55,23 @@ export function MediaGallery({
         : videos.filter((video) => video.type === activeVideoFilter),
     [videos, activeVideoFilter],
   );
-  const backdrops = detail.gallery.backdrops;
-  const posters = detail.gallery.posters;
-  const logos = detail.gallery.logos;
+  // Keep the title's existing artwork selectable even when its provider has no
+  // alternatives (or TMDB excluded the selected hero logo from its gallery).
+  const backdrops = [
+    ...new Set([
+      ...(detail.gallery.backdrops ?? []),
+      ...(detail.backdrop ? [detail.backdrop] : []),
+    ]),
+  ];
+  const posters = [
+    ...new Set([...(detail.gallery.posters ?? []), ...(detail.poster ? [detail.poster] : [])]),
+  ];
+  const logos = [
+    ...new Set([
+      ...(detail.gallery.logos ?? []),
+      ...[detail.logo, logo].filter((src): src is string => !!src),
+    ]),
+  ];
 
   const tabs = useMemo(() => {
     const list: Array<{ id: Tab; label: string; count: number }> = [];
@@ -72,7 +86,7 @@ export function MediaGallery({
   }, [videos.length, shownVideos.length, backdrops.length, posters.length, logos.length]);
 
   const [active, setActive] = useState<Tab | null>(null);
-  const current = active ?? tabs[0]?.id ?? null;
+  const current = tabs.some((tab) => tab.id === active) ? active : (tabs[0]?.id ?? null);
   const [trailer, setTrailer] = useState<string | null>(null);
   const [lightbox, setLightbox] = useState<{ images: string[]; index: number; kind: Tab } | null>(
     null,

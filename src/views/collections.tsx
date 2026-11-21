@@ -19,12 +19,12 @@ function stripSuffix(name: string): string {
   return name.replace(/\s*(?:-|:)?\s*(?:the\s+)?collection$/i, "").trim() || name;
 }
 
-export function CollectionsView() {
+export function CollectionsView({ active = true }: { active?: boolean } = {}) {
   const t = useT();
   const { settings } = useSettings();
   const { goBack } = useView();
   const scrollRef = useRef<HTMLElement>(null);
-  useScrollMemory("collections", scrollRef);
+  useScrollMemory("collections", scrollRef, active);
 
   const [query, setQuery] = useSessionState("collections.query", "");
   const [category, setCategory] = useSessionState<string>("collections.category", "All");

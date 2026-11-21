@@ -10,7 +10,7 @@ import { ListGrid } from "./curated-list/list-grid";
 import { ListHeader } from "./curated-list/list-header";
 import { RegistryEntries } from "./curated-list/registry-entries";
 
-export function CuratedListView({ listId }: { listId: string }) {
+export function CuratedListView({ listId, active = true }: { listId: string; active?: boolean }) {
   const t = useT();
   const list = curatedList(listId);
   const sizing = usePosterRow();
@@ -18,7 +18,7 @@ export function CuratedListView({ listId }: { listId: string }) {
   const [items, setItems] = useState<readonly CuratedListItem[]>(list?.head ?? []);
   const [settled, setSettled] = useState(false);
 
-  useScrollMemory(`curated-list:${listId}`, scrollRef);
+  useScrollMemory(`curated-list:${listId}`, scrollRef, active);
 
   useEffect(() => {
     let cancelled = false;

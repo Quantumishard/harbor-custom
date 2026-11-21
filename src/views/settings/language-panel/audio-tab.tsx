@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useSettings } from "@/lib/settings";
 import { useT } from "@/lib/i18n";
 import { Section } from "../shared";
+import { ToggleRow } from "../shared";
 import { SettingRow } from "../kit";
 import { LanguagesPicker } from "../streaming-panel";
 import { ALL_LANGUAGE_NAMES } from "@/lib/subtitles/language";
@@ -22,6 +23,19 @@ export function AudioLanguageTab() {
           "When a release ships multiple audio tracks, Harbor selects the first match from this list.",
         )}
       >
+        <ToggleRow
+          label={t("Prefer each title's original language")}
+          sub={t(
+            "Uses TMDB enrichment to put a movie or show's original language ahead of your normal audio-language order. A saved per-show choice still takes priority.",
+          )}
+          value={settings.preferOriginalAudioLanguage}
+          onChange={(value) => update({ preferOriginalAudioLanguage: value })}
+          lockReason={
+            !settings.tmdbKey
+              ? t("Add a TMDB read access token to use original-language audio selection.")
+              : undefined
+          }
+        />
         <LanguagesPicker
           value={settings.preferredAudioLangs}
           onChange={(langs) => update({ preferredAudioLangs: langs })}
