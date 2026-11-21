@@ -1,0 +1,327 @@
+{
+  "notes": {
+    "1.0.0": {
+      "title": "Harbor 1.0.0",
+      "intro": "Harbor 1.0.0 is here, happy to have you guys aboard.",
+      "sections": [
+        {
+          "heading": "Highlights",
+          "items": [
+            "Music pairs with Spotify.",
+            "The Library opens your private TorBox cloud.",
+            "Anime sync lands every episode on the right cour.",
+            "PublicMetaDB joins as a tracker.",
+            "The player gains chapter navigation.",
+            "Media Servers gain collections, custom refresh times, and your server's own posters.",
+            "The new installer lets you pick what gets installed.",
+            "Trackers stop signing you out.",
+            "Playback survives audio device changes and episode switches.",
+            "Live streams stay live when you switch sources.",
+            "Media server libraries stop shrinking.",
+            "Episode ratings return.",
+            "The Mac launch crash is gone."
+          ]
+        },
+        {
+          "heading": "Music — Spotify",
+          "items": [
+            "Connect Spotify with a pairing code.",
+            "Choose Harbor's player or your own Spotify app.",
+            "The quality badge shows what Spotify is playing.",
+            "Visualizers and meters move with what you hear.",
+            "They no longer follow the volume slider.",
+            "Audio settings are one click from the music page."
+          ]
+        },
+        {
+          "heading": "Music — Playlists and menus",
+          "items": [
+            "Pin playlists to Home.",
+            "Open them from the pinned row.",
+            "Edit playlist details in a dialog.",
+            "Works for Harbor and Spotify playlists.",
+            "Right-click tracks, playlists, albums and artists for quick actions.",
+            "Jump back in, Made for you and recents get the same menus.",
+            "The add-to-playlist picker is a cover grid."
+          ]
+        },
+        {
+          "heading": "Manga",
+          "items": [
+            "Arrange extensions like the plugins tab.",
+            "Search keeps your order."
+          ]
+        },
+        {
+          "heading": "Library",
+          "items": [
+            "New: browse your private TorBox cloud.",
+            "Play files straight from it."
+          ]
+        },
+        {
+          "heading": "Anime and sync",
+          "items": [
+            "AniList and MAL rewatches now sync.",
+            "A Count rewatches toggle controls them.",
+            "AniList custom lists and private entries appear in your library.",
+            "Episode titles and descriptions pick the best source per language.",
+            "Anime title language is now a general setting.",
+            "New option: prefer IMDb ids."
+          ]
+        },
+        {
+          "heading": "PublicMetaDB",
+          "items": [
+            "PublicMetaDB is now supported.",
+            "Connect with your username and API key.",
+            "PMDB watchlists show on overview pages and in the Library.",
+            "Your PMDB watched history can feed Home's hide-watched.",
+            "Badges appear on Continue Watching cards.",
+            "Resume progress syncs as you watch."
+          ]
+        },
+        {
+          "heading": "Media servers",
+          "items": [
+            "Browse your server's collections.",
+            "Pick refresh intervals from minutes to weeks, or Daily.",
+            "Server posters come first, with TMDB as a fallback.",
+            "Bigger sync pages fetch in parallel.",
+            "The \"titles need review\" banner can be dismissed."
+          ]
+        },
+        {
+          "heading": "Player and trailers",
+          "items": [
+            "Chapter navigation in the desktop player.",
+            "Chapter markers on the timeline.",
+            "The chapters control can be hidden, moved or reordered.",
+            "Trailer autoplay is more reliable in hero views.",
+            "Autoplay can use its own resolution.",
+            "Failing trailers try alternative sources."
+          ]
+        },
+        {
+          "heading": "Details",
+          "items": ["Episode search looks across TMDB seasons."]
+        },
+        {
+          "heading": "Home",
+          "items": ["The featured hero can hide watched titles and backfill the row."]
+        },
+        {
+          "heading": "Installer and updates",
+          "items": [
+            "Meet Harbor Shipyard, the refreshed installer.",
+            "Pick optional components: extension support and the game engine.",
+            "Pick optional tabs: Music, eBook and Manga.",
+            "Everything is on by default.",
+            "Harbor honors your choices everywhere.",
+            "Hidden tabs stay hidden; links do nothing.",
+            "Updates and repairs keep your setup.",
+            "Settings → Updates & backup → Modify installation changes it later."
+          ]
+        },
+        {
+          "heading": "Music fixes",
+          "items": [
+            "Context menus fit their longest option.",
+            "Next and previous stay on the collapsed player bar.",
+            "Reloading rejoins stream or Spotify where you left off.",
+            "Resume lands on the right track even if the queue changed.",
+            "Restarting no longer wipes your save point.",
+            "Queued tracks start sooner.",
+            "Long playlists keep their scroll position past 100 songs."
+          ]
+        },
+        {
+          "heading": "Playback fixes",
+          "items": [
+            "A/B loops land exactly where you mark them.",
+            "The seek bar hover preview no longer sticks.",
+            "Audio device or window changes no longer interrupt playback.",
+            "Audio stays in sync when the device list churns.",
+            "Output reloads wait for the device list to settle.",
+            "A reload can't hijack a new episode or rewind a seek.",
+            "The audio normalizer resyncs after a reload.",
+            "Live streams stay live after an in-place source switch.",
+            "Indexed video files stay in VOD mode.",
+            "Playback does less background work."
+          ]
+        },
+        {
+          "heading": "Manga fixes",
+          "items": [
+            "The chapter list remembers your source filter.",
+            "It defaults to the source that owns the title.",
+            "Favorites and list entries re-resolve when sources change.",
+            "A stale entry never opens the wrong title.",
+            "Color-edition tags are stripped from titles.",
+            "Tracking and Discord presence stay accurate."
+          ]
+        },
+        {
+          "heading": "Library fixes",
+          "items": [
+            "Bookmarks survive playback progress writes.",
+            "Offline progress still reaches the queue.",
+            "Single-video TorBox downloads show the playing spinner.",
+            "Repeat clicks no longer re-request the link.",
+            "The cast panel no longer overwrites your library tab."
+          ]
+        },
+        {
+          "heading": "Anime fixes",
+          "items": [
+            "Sync and Continue Watching land on the cour that aired the episode.",
+            "Split franchises resolve to the right cour.",
+            "Simkl scrobbles the entry that owns the episode.",
+            "Simkl no longer shows S2E6 as S1E6.",
+            "Queued Simkl watches retry on their own.",
+            "A first-watch finale no longer counts as a rewatch.",
+            "The rewatch guard survives restarts.",
+            "Unaired sequel episodes no longer borrow other seasons' data.",
+            "Undated episodes are no longer marked TBA or stripped of art.",
+            "Missing episode titles fill in from MAL and Kitsu.",
+            "Episode titles keep your chosen language, even through provider fallbacks.",
+            "Continue Watching labels episodes as S# E#.",
+            "Black Clover opens the TV series, not its 2016 special.",
+            "The calendar drops duplicate franchise rows.",
+            "The calendar includes locally watched anime.",
+            "Anime4K verifies and repairs its shader pack.",
+            "Known anime open without the series-view flash.",
+            "Episode lists replace stale placeholders with aired data.",
+            "Continue Watching recovers old mappings and retries failed lists.",
+            "Resume lands on the right season."
+          ]
+        },
+        {
+          "heading": "Details fixes",
+          "items": [
+            "Episode search no longer gets stuck on \"Loading episodes...\".",
+            "Episode search matches the titles shown in your language.",
+            "Returning from an episode keeps the season you were on."
+          ]
+        },
+        {
+          "heading": "PublicMetaDB fixes",
+          "items": [
+            "PMDB reconnects after a restart.",
+            "Progress reaches PMDB before the player closes.",
+            "Completed watches clear their resume point.",
+            "PMDB maps anime episodes correctly."
+          ]
+        },
+        {
+          "heading": "Media server fixes",
+          "items": [
+            "A short page no longer truncates or sweeps your library.",
+            "Custom intervals now fire on time.",
+            "The grid and posters paint progressively, without flicker.",
+            "Posters stay loaded across Collections and scrolling.",
+            "Open collections stay filled after a sync.",
+            "Quality labels show correctly.",
+            "Connecting is more reliable, and failures explain themselves.",
+            "A misconfigured proxy can no longer hijack server requests.",
+            "Big Picture filters no longer empty the tab.",
+            "The review banner counts correctly."
+          ]
+        },
+        {
+          "heading": "Home fixes",
+          "items": [
+            "Watched movies and shows stay apart in the hero.",
+            "The hero falls back to its cache instead of vanishing."
+          ]
+        },
+        {
+          "heading": "Letterboxd fixes",
+          "items": ["Friends' review links no longer open source-check windows."]
+        },
+        {
+          "heading": "Discord presence fixes",
+          "items": [
+            "Manga shows a real cover, even from local or extension sources.",
+            "Music presence updates instantly.",
+            "No duplicate track credits.",
+            "Presence fades a few seconds after pause (Privacy setting).",
+            "Continue Watching cards name the episode.",
+            "Timestamps stay correct when you seek.",
+            "Anime presence uses your preferred title.",
+            "Presence links point at Harbor's address."
+          ]
+        },
+        {
+          "heading": "Ratings and details fixes",
+          "items": [
+            "IMDb scores agree everywhere.",
+            "The hero and the cards always match.",
+            "Episode ratings are back for every series.",
+            "Harbor's own ratings rank above OMDb."
+          ]
+        },
+        {
+          "heading": "Search fixes",
+          "items": [
+            "AIOMetadata results survive catalog merges.",
+            "Search keeps your place when you come back."
+          ]
+        },
+        {
+          "heading": "Add-on, plugin and subtitle fixes",
+          "items": [
+            "Addon setup pages fall back to your browser.",
+            "Retired TorBox and Stremio Local Files addons are no longer queried.",
+            "TorBox still works through the API.",
+            "Plugin episode links no longer carry stray season/episode tags.",
+            "User-installed local addons can serve subtitles.",
+            "Local trust now requires a truly local address.",
+            "Long translation offers are no longer dropped.",
+            "Auto-loaded subtitles no longer override the embedded preference.",
+            "Manual Off wins over late-loading translations."
+          ]
+        },
+        {
+          "heading": "Tracker fixes",
+          "items": [
+            "Trakt tokens refresh properly, so you stay connected.",
+            "Simkl and Trakt only sign out on a true token rejection.",
+            "Sessions load at startup on any build or profile.",
+            "A fresh login is saved immediately.",
+            "Simkl and Trakt share one session across profiles.",
+            "MAL and AniList keep per-profile sessions."
+          ]
+        },
+        {
+          "heading": "Backup fixes",
+          "items": ["On Linux, .harbx restore uses the normal file picker."]
+        },
+        {
+          "heading": "Installer and update fixes",
+          "items": ["Android extension support follows your installer choice."]
+        },
+        {
+          "heading": "Platform and build fixes",
+          "items": [
+            "Fixed the Mac launch crash.",
+            "Releases are verified before shipping.",
+            "macOS builds fetch ffmpeg and ffprobe again.",
+            "Linux and Flatpak builds provision themselves again.",
+            "Windows setup uses the newest mpv.",
+            "Extension builds no longer hit Windows' command-line limits.",
+            "They work on macOS and BSD too.",
+            "Toolchain updates handle new CMake and spaced paths.",
+            "Harbor's services now live at harborcommunity.site."
+          ]
+        },
+        {
+          "heading": "Thanks",
+          "items": [
+            "Thanks to @Thunderhawkk, @Quantumishard, @comet776, @3-pr, @Justsnoopy30 and @jton3."
+          ]
+        }
+      ]
+    }
+  }
+}

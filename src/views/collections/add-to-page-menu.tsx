@@ -1,0 +1,129 @@
+import { Check, LayoutGrid } from "lucide-react";
+import { useEffect, useRef, useState, type RefObject } from "react";
+import { captureMembershipProfile } from "@/lib/membership-operations";
+import { membershipFailureMessage } from "@/lib/membership-actions";
+import { useT } from "@/lib/i18n";
+import { MenuSurface } from "@/components/context-menu/menu-surface";
+import { useLocalMenuPresence } from "@/components/context-menu/use-local-menu-presence";
+import { emitListToast } from "@/components/lists/list-toast";
+import {
+  COLLECTION_ROW_PAGES,
+  setCollectionOnPageWithResult,
+  usePagesForCollection,
+  type CollectionRowPage,
+} from "@/lib/page-collection-rows";
+
+export function AddToPageMenu({
+  collectionId,
+  anchorRef,
+  open,
+  onClose,
+}: {
+  collectionId: string;
+  anchorRef: RefObject<HTMLElement | null>;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const t = useT();
+  const presence = useLocalMenuPresence(open, collectionId, onClose);
+  const pages = usePagesForCollection(collectionId);
+  const [profile, setProfile] = useState(captureMembershipProfile);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (open) {
+      setProfile(captureMembershipProfile());
+      setError("");
+    }
+  }, [open]);
+
+  const toggle = (page: CollectionRowPage, label: string) => {
+    if (!presence.isOpen()) return;
+    if (!profile) {
+      setError(t("The active profile changed. Open the menu again."));
+      return;
+    }
+    const result = setCollectionOnPageWithResult({
+      page,
+      collectionId,
+      present: !pages.has(page),
+      profile,
+    });
+    if (result.status === "error") {
+      setError(t(membershipFailureMessage(result)));
+      return;
+    }
+    setError("");
+    emitListToast(
+      t(
+        result.status === "removed" || result.status === "unchanged"
+          ? "Removed from {page}"
+          : "Added to {page}",
+        { page: t(label) },
+      ),
+    );
+  };
+
+  const retainedAnchor = useRef<DOMRect | null>(null);
+  const currentAnchor = anchorRef.current?.getBoundingClientRect();
+  if (open && currentAnchor && presence.isOpen()) retainedAnchor.current = currentAnchor;
+  const anchor = presence.enabled ? retainedAnchor.current : currentAnchor;
+  if (!presence.present || !anchor) return null;
+  return (
+    <MenuSurface
+      key={presence.session}
+      point={{ x: anchor.left, y: anchor.bottom + 6 }}
+      onClose={(restore) => {
+        if (!presence.close()) return;
+        if (restore) anchorRef.current?.focus({ preventScroll: true });
+      }}
+      width={272}
+      label={t("Show as a row on")}
+      phase={presence.phase}
+      onExitComplete={presence.completeClose}
+    >
+      <div
+        className={`${presence.enabled ? "" : "animate-popover-in "}overflow-hidden rounded-2xl border border-edge-soft bg-elevated shadow-[0_18px_50px_-15px_rgba(0,0,0,0.6)]`}
+      >
+        <div className="flex items-center gap-2 border-b border-edge-soft/55 px-3.5 pt-3 pb-2.5">
+          <LayoutGrid size={14} strokeWidth={2} className="text-ink-subtle" />
+          <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-ink-subtle">
+            {t("Show as a row on")}
+          </span>
+        </div>
+        <div className="py-1.5">
+          {error && (
+            <p role="alert" className="px-3.5 py-2 text-xs text-danger">
+              {error}
+            </p>
+          )}
+          {COLLECTION_ROW_PAGES.map(({ id, label }) => {
+            const on = pages.has(id);
+            return (
+              <button
+                key={id}
+                type="button"
+                role="menuitem"
+                aria-pressed={on}
+                disabled={presence.enabled && presence.phase === "closing"}
+                onClick={() => toggle(id, label)}
+                className="flex w-full items-center gap-3 px-3.5 py-2.5 text-start text-[13.5px] text-ink-muted transition-colors hover:bg-raised hover:text-ink"
+              >
+                <span
+                  className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition-colors ${
+                    on ? "border-accent bg-accent/15 text-accent" : "border-edge"
+                  }`}
+                >
+                  {on && <Check size={13} strokeWidth={2.6} />}
+                </span>
+                <span className="flex-1 truncate">{t(label)}</span>
+              </button>
+            );
+          })}
+        </div>
+        <p className="border-t border-edge-soft/55 px-3.5 py-2.5 text-[11.5px] leading-snug text-ink-subtle">
+          {t("The collection shows up as its own row you can reorder or hide from that page.")}
+        </p>
+      </div>
+    </MenuSurface>
+  );
+}

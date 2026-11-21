@@ -1,0 +1,372 @@
+// @ts-expect-error Node test types are intentionally outside the browser-only tsconfig.
+import assert from "node:assert/strict";
+// @ts-expect-error Node test types are intentionally outside the browser-only tsconfig.
+import { readFileSync } from "node:fs";
+// @ts-expect-error Node test types are intentionally outside the browser-only tsconfig.
+import test from "node:test";
+import {
+  animeCoordPairs,
+  findAnimeEntryNumber,
+  isScopedSplitFranchiseRoot,
+  partitionByExactAnimeEpisode,
+  selectSiblingWindows,
+  splitAnimeStreamCoordinates,
+} from "../src/lib/streams/anime-identity-core.ts";
+import { buildStreamIds, unverifiedAnimeSeasonId } from "../src/lib/streams/stream-ids.ts";
+import { enhanceAnimeStreams } from "../src/lib/streams/anitomy.ts";
+
+const ONE_PIECE = {
+  mappings: { kitsu_id: 11243 },
+  episodes: {
+    "1": { seasonNumber: 1, episodeNumber: 1 },
+    "1100": { seasonNumber: 23, episodeNumber: 13 },
+    "1169": { seasonNumber: 23, episodeNumber: 14, absoluteEpisodeNumber: 1169 },
+  },
+};
+
+test("TYBW S4E9 rejects earlier seasons even when the episode number matches", () => {
+  const target = splitAnimeStreamCoordinates("kitsu:49444:9")!;
+  assert.deepEqual(target.absoluteNumbers, [49, 415]);
+  const stream = (season: number | null, episode: number | null, seasonPack = false) => ({
+    season,
+    episode,
+    seasonPack,
+  });
+  const good = [stream(4, 9), stream(17, 49), stream(null, 49), stream(null, 415)];
+  const bad = [
+    stream(1, 9),
+    stream(2, 9),
+    stream(3, 9),
+    stream(1, null, true),
+    stream(17, 9),
+    stream(null, 48),
+  ];
+  const result = partitionByExactAnimeEpisode(
+    [...good, ...bad],
+    new Set([9, 49, 415]),
+    target.coordinates,
+  );
+  assert.deepEqual(result.keep, good);
+  assert.deepEqual(result.drop, bad);
+});
+
+test("TYBW never queries the original Bleach catalog id through its S17 mapping", () => {
+  assert.deepEqual(
+    buildStreamIds(
+      "kitsu:49444",
+      {
+        season: 1,
+        episode: 9,
+        kitsuStreamId: "kitsu:49444:9",
+        imdbId: "tt0434665",
+        imdbSeason: 17,
+        imdbEpisode: 49,
+      },
+      "tt0434665",
+    ),
+    ["kitsu:49444:9"],
+  );
+});
+
+test("TYBW S4 episode does not query the shared 2004 provider id", () => {
+  assert.deepEqual(
+    buildStreamIds(
+      "kitsu:49444",
+      {
+        season: 4,
+        episode: 11,
+        kitsuStreamId: "kitsu:49444:11",
+        imdbId: "tt0434665",
+        imdbSeason: 4,
+        imdbEpisode: 11,
+      },
+      "tt0434665",
+    ),
+    ["kitsu:49444:11"],
+  );
+});
+
+test("bare TYBW episode 09 does not prove part 4 ownership", () => {
+  const make = (filename: string, episode = 9) => ({
+    season: null,
+    episode,
+    seasonPack: false,
+    behaviorHints: { filename },
+  });
+  const bad = [
+    make("Bleach_-_Thousand_Year_Blood_War_[09]_[BDRip_1080p_AV1].mkv"),
+    make("[Lazy] Bleach Thousand-Year Blood War - 09 [074C8B77].mkv"),
+  ];
+  const good = [
+    make("[Erai-raws] Bleach - Sennen Kessen Hen - Kashin Tan - 09 [1080p].mkv"),
+    make("Bleach Thousand-Year Blood War - The Calamity - 09.mkv"),
+    make("Bleach Thousand-Year Blood War - 49.mkv", 49),
+    make("Bleach - 415.mkv", 415),
+  ];
+  const result = partitionByExactAnimeEpisode(
+    [...bad, ...good],
+    new Set([9, 49, 415]),
+    [
+      [4, 9],
+      [17, 49],
+    ],
+    4,
+  );
+  assert.deepEqual(result.keep, good);
+  assert.deepEqual(result.drop, bad);
+});
+
+test("JoJo S6E5 rejects Comet's earlier seasons and Stardust Crusaders entry", () => {
+  const make = (filename: string, season: number | null) => ({
+    episode: 5,
+    season,
+    seasonPack: false,
+    behaviorHints: { filename },
+  });
+  const bad = [
+    make("JoJo's Bizarre Adventure (2012) S03E05 The Nijimura Brothers (3).mkv", 3),
+    make("JoJo's Bizarre Adventure (2012) S02E05 Silver Chariot.mkv", 2),
+    make("[Erai-raws] JoJo no Kimyou na Bouken - Stardust Crusaders - 05 [1080p].mkv", null),
+  ];
+  const good = [
+    make("[Xspitfire91] Jojo No Kimyou Na Bouken S06E05 BDRIP.mkv", 6),
+    make("JoJos.Bizarre.Adventure.S06E05.The.Terrorist.from.a.Faraway.Country.mkv", 6),
+    make("[Erai-raws] JoJo no Kimyou na Bouken: Steel Ball Run - 05.mkv", null),
+  ];
+  const result = partitionByExactAnimeEpisode(
+    [...bad, ...good],
+    new Set([5]),
+    [[6, 5]],
+    undefined,
+    ["JoJo's Bizarre Adventure: Steel Ball Run"],
+  );
+  assert.deepEqual(result.keep, good);
+  assert.deepEqual(result.drop, bad);
+});
+
+test("bracketed Comet episode survives parsing as a number so it can be rejected", async () => {
+  const streams = [
+    {
+      season: null,
+      episode: null,
+      seasonPack: false,
+      behaviorHints: { filename: "Bleach_-_Thousand_Year_Blood_War_[09]_[BDRip_1080p_AV1].mkv" },
+    },
+  ];
+  await enhanceAnimeStreams(streams as never);
+  assert.equal(streams[0].episode, 9);
+  assert.equal(
+    partitionByExactAnimeEpisode(
+      streams,
+      new Set([9, 49, 415]),
+      [
+        [4, 9],
+        [17, 49],
+      ],
+      4,
+    ).keep.length,
+    0,
+  );
+});
+
+test("long-running anime resolves provider season coordinates to the absolute episode", () => {
+  const n = findAnimeEntryNumber(ONE_PIECE, [[23, 14]]);
+  assert.equal(n, 1169);
+});
+
+test("entry-relative keys take precedence over absoluteEpisodeNumber", () => {
+  const shifted = {
+    mappings: { kitsu_id: 1 },
+    episodes: {
+      "7": { seasonNumber: 1, episodeNumber: 7, absoluteEpisodeNumber: 99 },
+    },
+  };
+  assert.equal(findAnimeEntryNumber(shifted, [[1, 7]]), 7);
+});
+
+test("seasonal anime resolves its own cour-relative number", () => {
+  const saoII = {
+    mappings: { kitsu_id: 13307 },
+    episodes: {
+      "1": { seasonNumber: 2, episodeNumber: 1 },
+      "24": { seasonNumber: 2, episodeNumber: 24 },
+    },
+  };
+  assert.equal(findAnimeEntryNumber(saoII, [[2, 1]]), 1);
+});
+
+test("a freshly published flat entry resolves its season-1 episode by key", () => {
+  const flat = {
+    mappings: { kitsu_id: 50404 },
+    episodes: { "1": {}, "2": {}, "3": {} },
+  };
+  assert.equal(findAnimeEntryNumber(flat, [[1, 2]]), 2);
+  // A later provider season is never guessed from a flat entry; the
+  // sibling/sequel resolvers must prove ownership instead.
+  assert.equal(findAnimeEntryNumber(flat, [[2, 2]]), null);
+  assert.equal(findAnimeEntryNumber(flat, [[1, 9]]), null);
+});
+
+test("franchise trap: an entry that never aired the requested season yields null instead of guessing", () => {
+  const drStoneS1 = {
+    mappings: { kitsu_id: 41493 },
+    episodes: {
+      "1": { seasonNumber: 1, episodeNumber: 1 },
+      "24": { seasonNumber: 1, episodeNumber: 24 },
+    },
+  };
+  const coords = { imdbSeason: 2, imdbEpisode: 1, season: 2, episode: 1 };
+  assert.equal(findAnimeEntryNumber(drStoneS1, animeCoordPairs(coords)), null);
+});
+
+test("an unknown first coordinate pair falls through to the provider pair", () => {
+  const coords = { imdbSeason: 40, imdbEpisode: 12, season: 23, episode: 14 };
+  assert.equal(findAnimeEntryNumber(ONE_PIECE, animeCoordPairs(coords)), 1169);
+});
+
+test("a known season with a missing episode bails instead of trying other pairs", () => {
+  const hybrid = {
+    mappings: { kitsu_id: 5 },
+    episodes: {
+      "1": { seasonNumber: 1, episodeNumber: 1 },
+      "900": { seasonNumber: 23, episodeNumber: 13 },
+    },
+  };
+  const pairs = animeCoordPairs({ imdbSeason: 1, imdbEpisode: 999, season: 23, episode: 14 });
+  assert.deepEqual(pairs, [
+    [1, 999],
+    [23, 14],
+  ]);
+  assert.equal(findAnimeEntryNumber(hybrid, pairs), null);
+});
+
+test("invalid or absent coordinates produce no pairs and no resolution", () => {
+  assert.deepEqual(animeCoordPairs(null), []);
+  assert.deepEqual(animeCoordPairs({ season: 0, episode: 5 }), []);
+  assert.deepEqual(animeCoordPairs({ season: 1, episode: 0 }), []);
+  assert.equal(findAnimeEntryNumber(ONE_PIECE, []), null);
+});
+
+test("legacy stream ids are unchanged when identity cannot be resolved", () => {
+  const episode = { season: 23, episode: 14 };
+  const ids = buildStreamIds("tmdb:tv:37854", episode, "tt0388629");
+  assert.ok(ids.includes("tmdb:tv:37854:23:14"));
+  assert.ok(ids.includes("tt0388629:23:14"));
+});
+
+test("a later provider season with no verified episode id is an unverified anime id", () => {
+  const later = { season: 4, episode: 9, imdbSeason: 4, imdbEpisode: 9 };
+  assert.equal(unverifiedAnimeSeasonId("kitsu:41493", later), "kitsu:41493:9");
+  assert.equal(unverifiedAnimeSeasonId("tt9335498", later), null);
+  assert.equal(unverifiedAnimeSeasonId("kitsu:41493", null), null);
+  assert.equal(
+    unverifiedAnimeSeasonId("kitsu:41493", { ...later, kitsuStreamId: "kitsu:48661:9" }),
+    null,
+  );
+  assert.equal(
+    unverifiedAnimeSeasonId("kitsu:41493", {
+      season: 1,
+      episode: 9,
+      imdbSeason: 1,
+      imdbEpisode: 9,
+    }),
+    null,
+  );
+});
+
+test("a later-season row stops asking the opened entry for its own episode 9", () => {
+  const ids = buildStreamIds(
+    "kitsu:41493",
+    { season: 4, episode: 9, imdbSeason: 4, imdbEpisode: 9 },
+    "tt9335498",
+  );
+  assert.equal(ids[0], "tt9335498:4:9");
+  assert.equal(ids[ids.length - 1], "kitsu:41493:9");
+});
+
+test("an entry keeps its own numbering first for a season it owns", () => {
+  const ids = buildStreamIds(
+    "kitsu:41493",
+    { season: 1, episode: 9, imdbSeason: 1, imdbEpisode: 9 },
+    "tt9335498",
+  );
+  assert.equal(ids[0], "kitsu:41493:9");
+});
+
+test("a verified kitsu episode id still leads", () => {
+  const ids = buildStreamIds(
+    "kitsu:41493",
+    { season: 4, episode: 9, imdbSeason: 4, imdbEpisode: 9, kitsuStreamId: "kitsu:48661:9" },
+    "tt9335498",
+  );
+  assert.equal(ids[0], "kitsu:48661:9");
+});
+
+test("an unverified anime id hands the imdb pair to addons that accept both", () => {
+  const src = readFileSync(new URL("../src/lib/streams/addons.ts", import.meta.url), "utf8");
+  assert.match(src, /if \(animeIdUnverified\) return \[ttId\];/);
+  assert.match(
+    src,
+    /pickIds\(\s*addon,\s*req\.type,\s*req\.ids,\s*req\.animeIdUnverified === true(?:,|\))/,
+  );
+});
+
+test("episode filter drops only confident single-episode mismatches", () => {
+  const streams = [
+    { label: "wrong single", episode: 1099, seasonPack: false },
+    { label: "target single", episode: 1169, seasonPack: false },
+    { label: "batch pack", episode: null, seasonPack: true },
+    { label: "range batch keeps parsed low bound", episode: 1099, seasonPack: true },
+    { label: "no episode token", episode: null, seasonPack: false },
+  ];
+  const { keep, drop } = partitionByExactAnimeEpisode(streams, new Set([1169]));
+  assert.deepEqual(
+    keep.map((s) => s.label),
+    ["target single", "batch pack", "range batch keeps parsed low bound", "no episode token"],
+  );
+  assert.deepEqual(
+    drop.map((s) => s.label),
+    ["wrong single"],
+  );
+});
+
+test("episode filter with no mismatches keeps everything", () => {
+  const streams = [
+    { episode: 1169, seasonPack: false },
+    { episode: null, seasonPack: true },
+  ];
+  const { keep, drop } = partitionByExactAnimeEpisode(streams, new Set([1169]));
+  assert.equal(keep.length, 2);
+  assert.equal(drop.length, 0);
+});
+
+test("sibling selection returns distinct entries claiming the requested season", () => {
+  const windows = [
+    { anidbId: 2960, season: 1, offset: 0 },
+    { anidbId: 16524, season: 17, offset: 0 },
+    { anidbId: 16524, season: 18, offset: 0 },
+    { anidbId: 16524, season: 17, offset: 0 },
+  ];
+  assert.deepEqual(selectSiblingWindows(windows, 17), [16524]);
+});
+
+test("sibling selection excludes the base entry and ignores absolute windows", () => {
+  const windows = [
+    { anidbId: 2960, season: 17, offset: 0 },
+    { anidbId: 16524, season: "a" as const, offset: 0 },
+    { anidbId: 16524, season: 17, offset: 0 },
+  ];
+  assert.deepEqual(selectSiblingWindows(windows, 17, 2960), [16524]);
+});
+
+test("sibling selection on empty or missing buckets yields nothing", () => {
+  assert.deepEqual(selectSiblingWindows(undefined, 17), []);
+  assert.deepEqual(selectSiblingWindows([], 1), []);
+});
+
+test("split-franchise scope allowlist admits only listed roots", () => {
+  assert.equal(isScopedSplitFranchiseRoot(244), true);
+  assert.equal(isScopedSplitFranchiseRoot(43078), false);
+  assert.equal(isScopedSplitFranchiseRoot(null), false);
+  assert.equal(isScopedSplitFranchiseRoot(undefined), false);
+});

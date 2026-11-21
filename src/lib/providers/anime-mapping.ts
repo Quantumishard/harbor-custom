@@ -1,0 +1,743 @@
+import {
+  aniZipByAnidb,
+  aniZipByAnilist,
+  aniZipByImdb,
+  aniZipByKitsu,
+  aniZipByMal,
+  aniZipByTmdbTv,
+  type AniZipMapping,
+} from "@/lib/providers/anizip";
+import {
+  kitsuAnime,
+  kitsuMainTvSeries,
+  kitsuRelated,
+  parseKitsuId,
+  type KitsuEpisode,
+} from "@/lib/providers/kitsu";
+import { selectSiblingWindows, type AnimeListWindow } from "@/lib/streams/anime-identity-core";
+import { mappingStore } from "./mapping-store";
+import { animeDbReadProvider, animeDbWriteProvider } from "@/lib/anime-identity-db";
+import { kitsuExternalIds, kitsuFromExternal } from "./kitsu-mapping";
+
+const SIDE_ENTRY_TYPES = new Set(["ova", "ona", "special", "music"]);
+
+async function preferMainTv(kitsuId: number, type?: string): Promise<number> {
+  if (type && SIDE_ENTRY_TYPES.has(type.toLowerCase())) {
+    const anime = await kitsuAnime(kitsuId, undefined, true).catch(() => null);
+    if (anime && anime.episodeCount != null && anime.episodeCount > 1) {
+      return kitsuId;
+    }
+    const main = await kitsuMainTvSeries(kitsuId, true).catch(() => null);
+    if (main != null) return main;
+  }
+  return kitsuId;
+}
+
+const ARM = "https://relations.yuna.moe/api/ids";
+const ANIME_LIST_URL =
+  "https://raw.githubusercontent.com/Anime-Lists/anime-lists/master/anime-list-master.xml";
+
+const ARM_KITSU_KEY = "harbor.armkitsucache.v3";
+const ANIDB_TVDB_KEY = "harbor.anidbtvdbcache.v2";
+const ARM_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+// A missing mapping is common right after a new cour is announced: the external
+// id graph catches up days later. Remembering "no Kitsu entry" for a month
+// leaves the show stuck on whichever fallback list the app can find. Keep the
+// miss short so the next lookup can pick up the entry.
+const ARM_NEG_TTL_MS = 6 * 60 * 60 * 1000;
+const XML_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+type ArmKitsuEntry = { mal?: number; anidb?: number; anilist?: number; t: number };
+
+type AnidbMapCache = {
+  tvdb: Record<string, number>;
+  imdb: Record<string, string>;
+  byTvdb?: Record<string, AnimeListWindow[]>;
+  byImdb?: Record<string, AnimeListWindow[]>;
+  t: number;
+};
+
+function readJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+const inflightArm = new Map<number, Promise<ArmKitsuEntry | null>>();
+const armKitsuCache = mappingStore<ArmKitsuEntry>(ARM_KITSU_KEY);
+
+async function armFromKitsu(kitsuId: number): Promise<ArmKitsuEntry | null> {
+  await armKitsuCache.ready;
+  const hit = armKitsuCache.get(String(kitsuId));
+  if (hit && Date.now() - hit.t < ARM_TTL_MS) return hit;
+  const existing = inflightArm.get(kitsuId);
+  if (existing) return existing;
+  const p = (async () => {
+    try {
+      const r = await fetch(`${ARM}?source=kitsu&id=${kitsuId}`, {
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (!r.ok) return null;
+      const j = (await r.json()) as { mal?: number; anidb?: number; anilist?: number };
+      const entry: ArmKitsuEntry = {
+        mal: j?.mal,
+        anidb: j?.anidb,
+        anilist: j?.anilist,
+        t: Date.now(),
+      };
+      armKitsuCache.set(String(kitsuId), entry);
+      return entry;
+    } catch {
+      return null;
+    } finally {
+      inflightArm.delete(kitsuId);
+    }
+  })();
+  inflightArm.set(kitsuId, p);
+  return p;
+}
+
+const EXT_KITSU_KEY = "harbor.extkitsucache.v2";
+const inflightExt = new Map<string, Promise<ExtLookup>>();
+const extKitsuCache = mappingStore<{ kitsu: number | null; t: number }>(EXT_KITSU_KEY);
+
+type ExtLookup = { value: number | null; unavailable: boolean };
+
+export async function externalToKitsu(
+  source: string,
+  id: number,
+  maxAge?: number,
+  strict = false,
+): Promise<number | null> {
+  await extKitsuCache.ready;
+  const key = `${source}:${id}`;
+  const hit = extKitsuCache.get(key);
+  const ttl = hit?.kitsu == null ? ARM_NEG_TTL_MS : ARM_TTL_MS;
+  if (hit && Date.now() - hit.t < Math.min(ttl, maxAge ?? ttl)) return hit.kitsu;
+  // The shared request carries the raw outcome, never one caller's policy.
+  let lookup = inflightExt.get(key);
+  if (!lookup) {
+    lookup = (async (): Promise<ExtLookup> => {
+      try {
+        const r = await fetch(`${ARM}?source=${source}&id=${id}`, {
+          signal: AbortSignal.timeout(8_000),
+        });
+        if (r.status === 404) return { value: null, unavailable: false };
+        if (!r.ok) return { value: null, unavailable: true };
+        const j = (await r.json()) as { kitsu?: number };
+        const kitsu = typeof j?.kitsu === "number" ? j.kitsu : null;
+        extKitsuCache.set(key, { kitsu, t: Date.now() });
+        return { value: kitsu, unavailable: false };
+      } catch {
+        return { value: null, unavailable: true };
+      } finally {
+        inflightExt.delete(key);
+      }
+    })();
+    inflightExt.set(key, lookup);
+  }
+  const result = await lookup;
+  if (result.unavailable && strict) throw new Error("anime mapping unavailable");
+  return result.value;
+}
+
+let xmlInflight: Promise<AnidbMapCache> | null = null;
+let xmlMemory: AnidbMapCache | null = null;
+let xmlRetryAfter = 0;
+const xmlCacheKey = `mapping-store:${ANIDB_TVDB_KEY}`;
+let xmlWarm: Promise<AnidbMapCache | null> | null = null;
+function loadStoredXml(): Promise<AnidbMapCache | null> {
+  if (xmlWarm) return xmlWarm;
+  xmlWarm = (async (): Promise<AnidbMapCache | null> => {
+    const old = readJson<AnidbMapCache | null>(ANIDB_TVDB_KEY, null);
+    const stored = await animeDbReadProvider<AnidbMapCache>(xmlCacheKey);
+    if (stored?.value) {
+      if (old) {
+        try {
+          localStorage.removeItem(ANIDB_TVDB_KEY);
+        } catch {}
+      }
+      return stored.value;
+    }
+    if (!old) return null;
+    const ok = await animeDbWriteProvider({
+      key: xmlCacheKey,
+      value: old,
+      expiresAt: Number.MAX_SAFE_INTEGER,
+      fetchedAt: Date.now(),
+    });
+    if (ok) {
+      try {
+        localStorage.removeItem(ANIDB_TVDB_KEY);
+      } catch {}
+    }
+    return old;
+  })();
+  return xmlWarm;
+}
+
+export async function loadAnidbMaps(): Promise<AnidbMapCache> {
+  if (xmlInflight) return xmlInflight;
+  const task = (async () => {
+    const cached = xmlMemory ?? (await loadStoredXml());
+    xmlMemory = cached;
+    if (cached && cached.byTvdb && Date.now() - cached.t < XML_TTL_MS) return cached;
+    if (Date.now() < xmlRetryAfter) return cached ?? { tvdb: {}, imdb: {}, t: 0 };
+    // Avoid repeated downloads/parsing when storage is full or the provider fails.
+    xmlRetryAfter = Date.now() + 60_000;
+    try {
+      const r = await fetch(ANIME_LIST_URL, { signal: AbortSignal.timeout(15_000) });
+      if (!r.ok) return cached ?? { tvdb: {}, imdb: {}, t: 0 };
+      const text = await r.text();
+      const tvdb: Record<string, number> = {};
+      const imdb: Record<string, string> = {};
+      const byTvdb: Record<string, AnimeListWindow[]> = {};
+      const byImdb: Record<string, AnimeListWindow[]> = {};
+      const re = /<anime\b([^>]*)>/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(text)) !== null) {
+        const attrs = m[1];
+        const anidbMatch = /\banidbid="(\d+)"/.exec(attrs);
+        if (!anidbMatch) continue;
+        const anidbId = anidbMatch[1];
+        const tvdbMatch = /\btvdbid="([^"]+)"/.exec(attrs);
+        let tvdbId: number | null = null;
+        if (tvdbMatch) {
+          const tv = tvdbMatch[1];
+          if (tv && tv !== "unknown" && tv !== "movie" && tv !== "tba" && tv !== "hentai") {
+            const n = Number(tv);
+            if (Number.isFinite(n)) {
+              tvdbId = n;
+              if (!tvdb[anidbId]) tvdb[anidbId] = n;
+            }
+          }
+        }
+        const imdbMatch = /\bimdbid="(tt\d+)"/.exec(attrs);
+        if (imdbMatch && !imdb[anidbId]) imdb[anidbId] = imdbMatch[1];
+
+        // Season windows: which provider season of the shared series this
+        // AniDB entry occupies. Absolute entries ("a") are skipped here.
+        const seasonAttr =
+          /\bdefaulttvdbseason="(\d+)"/.exec(attrs) ?? /\btmdbseason="(\d+)"/.exec(attrs);
+        if (!seasonAttr) continue;
+        const season = Number(seasonAttr[1]);
+        if (!Number.isFinite(season)) continue;
+        const offsetAttr = /\bepisodeoffset="(-?\d+)"/.exec(attrs);
+        const windowEntry: AnimeListWindow = {
+          anidbId: Number(anidbId),
+          season,
+          offset: offsetAttr ? Number(offsetAttr[1]) : 0,
+        };
+        const imdbKey = imdbMatch?.[1];
+        if (tvdbId != null) {
+          (byTvdb[String(tvdbId)] ??= []).push(windowEntry);
+          if (imdbKey) (byImdb[imdbKey] ??= []).push(windowEntry);
+        } else if (imdbKey) {
+          (byImdb[imdbKey] ??= []).push(windowEntry);
+        }
+      }
+      const out: AnidbMapCache = { tvdb, imdb, byTvdb, byImdb, t: Date.now() };
+      xmlMemory = out;
+      void animeDbWriteProvider({
+        key: xmlCacheKey,
+        value: out,
+        expiresAt: Number.MAX_SAFE_INTEGER,
+        fetchedAt: Date.now(),
+      });
+      return out;
+    } catch {
+      return cached ?? { tvdb: {}, imdb: {}, t: 0 };
+    }
+  })().finally(() => {
+    // Calls cannot replace this promise while it is pending, since all callers
+    // return the same xmlInflight value.
+    xmlInflight = null;
+  });
+  xmlInflight = task;
+  return task;
+}
+
+export async function findSiblingAnidbEntries(
+  provider: "tvdb" | "imdb",
+  providerId: string,
+  season: number,
+  excludeAnidbId?: number | null,
+): Promise<number[]> {
+  const maps = await loadAnidbMaps();
+  const bucket = provider === "tvdb" ? maps.byTvdb?.[providerId] : maps.byImdb?.[providerId];
+  return selectSiblingWindows(bucket, season, excludeAnidbId);
+}
+
+type AniZipField =
+  | "anilist_id"
+  | "kitsu_id"
+  | "mal_id"
+  | "anidb_id"
+  | "thetvdb_id"
+  | "themoviedb_id"
+  | "imdb_id";
+
+async function validatedKitsuAniZip(
+  kitsuId: number,
+  maxAge?: number,
+  strict = false,
+): Promise<AniZipMapping | null> {
+  const mapping = strict
+    ? await aniZipByKitsu(kitsuId, false, maxAge, true)
+    : await aniZipByKitsu(kitsuId, false, maxAge).catch(() => null);
+  if (mapping?.mappings?.kitsu_id != null && mapping.mappings.kitsu_id !== kitsuId) return null;
+  return mapping;
+}
+
+function hasAniZipEnrichment(mapping: AniZipMapping | null): boolean {
+  return (
+    !!mapping &&
+    (Object.keys(mapping.episodes ?? {}).length > 0 ||
+      mapping.mappings?.thetvdb_id != null ||
+      mapping.mappings?.anilist_id != null ||
+      mapping.mappings?.mal_id != null)
+  );
+}
+
+function hasAniZipFields(mapping: AniZipMapping | null, fields: readonly AniZipField[]): boolean {
+  return fields.every((field) => mapping?.mappings?.[field] != null);
+}
+
+function mergeAniZipMappings(primary: AniZipMapping, alternate: AniZipMapping): AniZipMapping {
+  const mappings: NonNullable<AniZipMapping["mappings"]> = { ...alternate.mappings };
+  for (const [key, value] of Object.entries(primary.mappings ?? {})) {
+    if (value != null) (mappings as Record<string, unknown>)[key] = value;
+  }
+  return {
+    ...alternate,
+    ...primary,
+    mappings,
+    episodes: Object.keys(primary.episodes ?? {}).length ? primary.episodes : alternate.episodes,
+    titles: primary.titles ?? alternate.titles,
+  };
+}
+
+async function alternateKitsuAniZip(
+  kitsuId: number,
+  maxAge?: number,
+  strict = false,
+): Promise<AniZipMapping | null> {
+  const ids = strict
+    ? await kitsuExternalIds(kitsuId, maxAge, true)
+    : await kitsuExternalIds(kitsuId, maxAge).catch(() => null);
+  if (!ids) return null;
+  const alternate =
+    ids.anilist != null
+      ? strict
+        ? await aniZipByAnilist(ids.anilist, maxAge, true)
+        : await aniZipByAnilist(ids.anilist, maxAge).catch(() => null)
+      : ids.mal != null
+        ? strict
+          ? await aniZipByMal(ids.mal, maxAge, true)
+          : await aniZipByMal(ids.mal, maxAge).catch(() => null)
+        : null;
+  const mapping = alternate?.mappings;
+  if (
+    !mapping ||
+    (mapping.kitsu_id != null && mapping.kitsu_id !== kitsuId) ||
+    (ids.anilist != null && mapping.anilist_id !== ids.anilist) ||
+    (ids.mal != null && mapping.mal_id != null && mapping.mal_id !== ids.mal)
+  )
+    return null;
+  if (ids.anilist == null && mapping.mal_id !== ids.mal) return null;
+  return alternate;
+}
+
+export async function kitsuToTvdb(kitsuId: number, maxAge?: number): Promise<number | null> {
+  const az = await validatedKitsuAniZip(kitsuId, maxAge);
+  if (az?.mappings?.thetvdb_id) return az.mappings.thetvdb_id;
+  const arm = await armFromKitsu(kitsuId);
+  if (arm?.anidb) {
+    const maps = await loadAnidbMaps();
+    const mapped = maps.tvdb[String(arm.anidb)];
+    if (mapped) return mapped;
+  }
+  return (await animeMappingByKitsu(kitsuId, ["thetvdb_id"], maxAge))?.mappings?.thetvdb_id ?? null;
+}
+
+export async function kitsuToImdb(kitsuId: number, maxAge?: number): Promise<string | null> {
+  const az = await validatedKitsuAniZip(kitsuId, maxAge);
+  if (az?.mappings?.imdb_id) return az.mappings.imdb_id;
+  const arm = await armFromKitsu(kitsuId);
+  if (arm?.anidb) {
+    const maps = await loadAnidbMaps();
+    const mapped = maps.imdb[String(arm.anidb)];
+    if (mapped) return mapped;
+  }
+  return (await animeMappingByKitsu(kitsuId, ["imdb_id"], maxAge))?.mappings?.imdb_id ?? null;
+}
+
+/**
+ * Attach the anime-lists season window to episodes AniZip does not cover.
+ *
+ * New seasons often get an AniZip mapping (ids only) before its episode
+ * records exist, and the Kitsu addon labels every cour "season 1" — so a
+ * sequel cour's identity-less rows carry seasonNumber 1 and fall back to the
+ * franchise's season 1 during the TVDB merge (wrong air dates, stills,
+ * overviews and ratings). The window's season/offset gives those rows their
+ * real provider coordinates; rows AniZip already covered keep their own.
+ */
+export async function applyAnidbSeasonWindow(
+  episodes: KitsuEpisode[],
+  kitsuId: number,
+): Promise<void> {
+  if (episodes.every((ep) => ep.imdbSeason != null)) return;
+  const anidb = await kitsuToAnidb(kitsuId).catch(() => null);
+  if (anidb == null) return;
+  const maps = await loadAnidbMaps().catch(() => null);
+  if (!maps) return;
+  const tvdbId = maps.tvdb[String(anidb)];
+  const win =
+    tvdbId != null ? maps.byTvdb?.[String(tvdbId)]?.find((w) => w.anidbId === anidb) : undefined;
+  if (!win || typeof win.season !== "number") return;
+  const imdbId = maps.imdb[String(anidb)] ?? null;
+  for (const ep of episodes) {
+    if (ep.imdbSeason != null || ep.number == null) continue;
+    ep.imdbSeason = win.season;
+    ep.imdbEpisode = ep.number + win.offset;
+    if (imdbId && !ep.imdbId) ep.imdbId = imdbId;
+  }
+}
+
+export async function kitsuToAnidb(kitsuId: number, maxAge?: number): Promise<number | null> {
+  const arm = await armFromKitsu(kitsuId);
+  if (arm?.anidb != null) return arm.anidb;
+  return (await animeMappingByKitsu(kitsuId, ["anidb_id"], maxAge))?.mappings?.anidb_id ?? null;
+}
+
+export async function kitsuToAnilist(
+  kitsuId: number,
+  maxAge?: number,
+  strict = false,
+): Promise<number | null> {
+  const arm = await armFromKitsu(kitsuId);
+  if (arm?.anilist != null) return arm.anilist;
+  const az = await validatedKitsuAniZip(kitsuId, maxAge, strict);
+  if (az?.mappings?.anilist_id != null) return az.mappings.anilist_id;
+  const external = strict
+    ? await kitsuExternalIds(kitsuId, maxAge, true)
+    : await kitsuExternalIds(kitsuId, maxAge).catch(() => null);
+  return external?.anilist ?? null;
+}
+
+/**
+ * `strict` is for callers that cannot treat an unavailable provider as "this
+ * anime has no mapping" — CW advancement removes a card on that answer.
+ */
+export async function animeMappingByKitsu(
+  kitsuId: number,
+  required: readonly AniZipField[] = [],
+  maxAge?: number,
+  strict = false,
+): Promise<AniZipMapping | null> {
+  const primary = await validatedKitsuAniZip(kitsuId, maxAge, strict);
+  if (
+    primary &&
+    (required.length === 0 ? hasAniZipEnrichment(primary) : hasAniZipFields(primary, required))
+  )
+    return primary;
+  const alternate = await alternateKitsuAniZip(kitsuId, maxAge, strict);
+  if (!alternate) return primary;
+  return primary ? mergeAniZipMappings(primary, alternate) : alternate;
+}
+
+export async function kitsuToMal(kitsuId: number, maxAge?: number): Promise<number | null> {
+  const arm = await armFromKitsu(kitsuId);
+  if (arm?.mal != null) return arm.mal;
+  const az = await validatedKitsuAniZip(kitsuId, maxAge);
+  if (az?.mappings?.mal_id != null) return az.mappings.mal_id;
+  const native = await kitsuExternalIds(kitsuId, maxAge).catch(() => null);
+  if (native?.mal != null) return native.mal;
+  const anilistId = await kitsuToAnilist(kitsuId, maxAge).catch(() => null);
+  if (anilistId == null) return null;
+  return anilistToMal(anilistId).catch(() => null);
+}
+
+const ARM_SRC_KEY = "harbor.armsrcmalcache.v2";
+const inflightArmSrc = new Map<string, Promise<number | null>>();
+const armSrcCache = mappingStore<{ mal: number | null; t: number }>(ARM_SRC_KEY);
+
+async function armSourceToMal(source: "anilist" | "anidb", id: number): Promise<number | null> {
+  await armSrcCache.ready;
+  const key = `${source}:${id}`;
+  const hit = armSrcCache.get(key);
+  if (hit && Date.now() - hit.t < ARM_TTL_MS) return hit.mal;
+  const existing = inflightArmSrc.get(key);
+  if (existing) return existing;
+  const p = (async () => {
+    try {
+      const r = await fetch(`${ARM}?source=${source}&id=${id}`, {
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (!r.ok) return null;
+      const j = (await r.json()) as { mal?: number };
+      const mal = j?.mal ?? null;
+      if (mal != null) armSrcCache.set(key, { mal, t: Date.now() });
+      return mal;
+    } catch {
+      return null;
+    } finally {
+      inflightArmSrc.delete(key);
+    }
+  })();
+  inflightArmSrc.set(key, p);
+  return p;
+}
+
+const ANILIST_MAL_KEY = "harbor.anilistmalcache.v1";
+const inflightAnilistMal = new Map<number, Promise<number | null>>();
+const anilistMalCache = mappingStore<{ mal: number | null; t: number }>(ANILIST_MAL_KEY);
+
+const ANILIST_IDMAL_QUERY = `query ($id: Int) { Media(id: $id, type: ANIME) { idMal } }`;
+
+// ARM and AniZip both miss some newer entries while AniList itself carries idMal.
+async function anilistIdMal(anilistId: number): Promise<number | null> {
+  await anilistMalCache.ready;
+  const key = String(anilistId);
+  const hit = anilistMalCache.get(key);
+  if (hit && Date.now() - hit.t < ARM_TTL_MS) return hit.mal;
+  const existing = inflightAnilistMal.get(anilistId);
+  if (existing) return existing;
+  const p = (async () => {
+    try {
+      // Lazy: the AniList client is browser-only and must not enter every mapping graph.
+      const { anilistRequest } = await import("@/lib/anilist/client");
+      const data = await anilistRequest<{ Media: { idMal: number | null } | null }>(
+        ANILIST_IDMAL_QUERY,
+        { id: anilistId },
+        undefined,
+        true,
+      );
+      const mal = data?.Media?.idMal ?? null;
+      if (mal != null) anilistMalCache.set(key, { mal, t: Date.now() });
+      return mal;
+    } catch {
+      return null;
+    } finally {
+      inflightAnilistMal.delete(anilistId);
+    }
+  })();
+  inflightAnilistMal.set(anilistId, p);
+  return p;
+}
+
+export async function anilistToMal(anilistId: number): Promise<number | null> {
+  const viaArm = await armSourceToMal("anilist", anilistId);
+  if (viaArm != null) return viaArm;
+  const az = await aniZipByAnilist(anilistId).catch(() => null);
+  if (az?.mappings?.mal_id != null) return az.mappings.mal_id;
+  return anilistIdMal(anilistId);
+}
+
+export async function anidbToMal(anidbId: number): Promise<number | null> {
+  const viaArm = await armSourceToMal("anidb", anidbId);
+  if (viaArm != null) return viaArm;
+  const az = await aniZipByAnidb(anidbId).catch(() => null);
+  return az?.mappings?.mal_id ?? null;
+}
+
+let imdbAnidbIndex: Record<string, number> | null = null;
+
+export type SharedCourMapping = {
+  kitsu_id?: number | null;
+  anidb_id?: number | null;
+  imdb_id?: string | null;
+  themoviedb_id?: number | string | null;
+};
+
+/**
+ * Decide whether a Kitsu id resolved through a *shared* provider id (one
+ * IMDb/TMDB id claimed by several cours, so AniZip answers with
+ * `kitsu_id: null`) should be redirected to an earlier cour.
+ *
+ * Pure decision helper: the async caller walks the prequel chain and hands us
+ * the root plus its AniZip mappings; we only redirect when the root provably
+ * shares the same provider id. Explicit AniZip hits (`kitsu_id` set, e.g. a
+ * later cour with its own IMDb id) are always trusted as-is.
+ */
+export function sharedCourRedirectTarget(
+  original: SharedCourMapping | null | undefined,
+  resolvedKitsuId: number | null,
+  rootKitsuId: number | null,
+  rootMappings: SharedCourMapping | null | undefined,
+): number | null {
+  if (resolvedKitsuId == null) return null;
+  if (typeof original?.kitsu_id === "number") return null;
+  if (rootKitsuId == null || rootKitsuId === resolvedKitsuId) return null;
+  const oImdb = original?.imdb_id ?? null;
+  const rImdb = rootMappings?.imdb_id ?? null;
+  if (oImdb && rImdb && oImdb === rImdb) return rootKitsuId;
+  const oTmdb = original?.themoviedb_id;
+  const rTmdb = rootMappings?.themoviedb_id;
+  if (oTmdb != null && String(oTmdb).trim() !== "" && String(oTmdb) === String(rTmdb ?? "")) {
+    return rootKitsuId;
+  }
+  return null;
+}
+
+async function firstCourViaPrequels(startKitsu: number): Promise<number> {
+  let current = startKitsu;
+  const visited = new Set<number>([startKitsu]);
+  for (let i = 0; i < 8; i++) {
+    const related = await kitsuRelated(current).catch(() => []);
+    const prequels: Array<{ id: number; year: number; series: boolean }> = [];
+    for (const r of related ?? []) {
+      if (r.role.toLowerCase() !== "prequel") continue;
+      const kid = parseKitsuId(r.meta.id);
+      if (kid == null || visited.has(kid)) continue;
+      prequels.push({
+        id: kid,
+        year: parseInt(r.meta.releaseInfo ?? "", 10) || 9999,
+        series: r.meta.type !== "movie",
+      });
+    }
+    if (prequels.length === 0) break;
+    prequels.sort((a, b) =>
+      a.series !== b.series
+        ? a.series
+          ? -1
+          : 1
+        : a.year !== b.year
+          ? a.year - b.year
+          : a.id - b.id,
+    );
+    current = prequels[0].id;
+    visited.add(current);
+  }
+  return current;
+}
+
+/**
+ * Shared provider ids (one IMDb/TMDB id across split cours) make AniZip
+ * answer with the *later* cour's mapping (`kitsu_id: null`). Following that
+ * id puts a TMDB-merged detail page on Season 2 Episode 1 while calling it
+ * Season 1 Episode 1. Walk to the earliest prequel and use it when it claims
+ * the same provider id.
+ */
+async function preferFirstCour(
+  resolved: number | null,
+  original: AniZipMapping | SharedCourMapping | null,
+): Promise<number | null> {
+  if (resolved == null) return null;
+  const originalMappings: SharedCourMapping | null =
+    original == null
+      ? null
+      : "mappings" in original
+        ? (original.mappings ?? null)
+        : (original as SharedCourMapping);
+  if (typeof originalMappings?.kitsu_id === "number") return resolved;
+  let root = resolved;
+  try {
+    root = await firstCourViaPrequels(resolved);
+  } catch {
+    return resolved;
+  }
+  if (root === resolved) return resolved;
+  const rootAz = await aniZipByKitsu(root).catch(() => null);
+  return sharedCourRedirectTarget(originalMappings, resolved, root, rootAz?.mappings) ?? resolved;
+}
+
+async function nativeKitsuFromAniZip(az: AniZipMapping | null): Promise<number | null> {
+  const anilist = az?.mappings?.anilist_id;
+  if (typeof anilist === "number") {
+    const k = await kitsuFromExternal("anilist/anime", anilist).catch(() => null);
+    if (k != null) return k;
+  }
+  const mal = az?.mappings?.mal_id;
+  if (typeof mal === "number") {
+    return kitsuFromExternal("myanimelist/anime", mal).catch(() => null);
+  }
+  return null;
+}
+
+export async function imdbToKitsu(imdbId: string, strict = false): Promise<number | null> {
+  if (!imdbId.startsWith("tt")) return null;
+  const az = strict
+    ? await aniZipByImdb(imdbId, true, undefined, true)
+    : await aniZipByImdb(imdbId, true).catch(() => null);
+  if (typeof az?.mappings?.kitsu_id === "number") {
+    return preferMainTv(az.mappings.kitsu_id, (az.mappings as { type?: string }).type);
+  }
+  if (typeof az?.mappings?.anidb_id === "number") {
+    const k = await externalToKitsu("anidb", az.mappings.anidb_id);
+    if (k != null) return preferFirstCour(k, az);
+  }
+  const native = await nativeKitsuFromAniZip(az);
+  if (native != null) {
+    return preferFirstCour(native, az);
+  }
+  const maps = await loadAnidbMaps();
+  if (!imdbAnidbIndex && maps.t > 0) {
+    const idx: Record<string, number> = {};
+    for (const [anidb, imdb] of Object.entries(maps.imdb)) {
+      const n = Number(anidb);
+      if (Number.isFinite(n) && !(imdb in idx)) idx[imdb] = n;
+    }
+    imdbAnidbIndex = idx;
+  }
+  const anidb = (imdbAnidbIndex ?? {})[imdbId];
+  if (!anidb) return null;
+  const fallback = await externalToKitsu("anidb", anidb);
+  // No AniZip record for the shared id here, so verify against the id itself.
+  return preferFirstCour(fallback, { imdb_id: imdbId });
+}
+
+export async function tmdbTvToKitsu(tmdbId: number, strict = false): Promise<number | null> {
+  const az = strict
+    ? await aniZipByTmdbTv(tmdbId, true, undefined, true)
+    : await aniZipByTmdbTv(tmdbId, true).catch(() => null);
+  if (typeof az?.mappings?.kitsu_id === "number") {
+    return preferMainTv(az.mappings.kitsu_id, (az.mappings as { type?: string }).type);
+  }
+  if (typeof az?.mappings?.anidb_id === "number") {
+    const k = await externalToKitsu("anidb", az.mappings.anidb_id);
+    if (k != null) return preferFirstCour(k, az);
+  }
+  const native = await nativeKitsuFromAniZip(az);
+  if (native != null) {
+    return preferMainTv(native, (az?.mappings as { type?: string } | undefined)?.type);
+  }
+  return null;
+}
+
+export async function relatedLibraryIds(id: string): Promise<string[]> {
+  let az: AniZipMapping | null = null;
+  const anime = /^(kitsu|mal|anilist|anidb):(\d+)/.exec(id);
+  if (anime) {
+    const n = Number(anime[2]);
+    az =
+      anime[1] === "kitsu"
+        ? await aniZipByKitsu(n).catch(() => null)
+        : anime[1] === "anilist"
+          ? await aniZipByAnilist(n).catch(() => null)
+          : anime[1] === "mal"
+            ? await aniZipByMal(n).catch(() => null)
+            : await aniZipByAnidb(n).catch(() => null);
+  } else if (/^tt\d+$/.test(id)) {
+    az = await aniZipByImdb(id).catch(() => null);
+  } else {
+    const tv = /^tmdb:tv:(\d+)/.exec(id);
+    if (tv) az = await aniZipByTmdbTv(Number(tv[1])).catch(() => null);
+  }
+  const mp = az?.mappings;
+  if (!mp) return [];
+  const out = new Set<string>();
+  if (mp.imdb_id) out.add(mp.imdb_id);
+  if (mp.themoviedb_id != null && String(mp.themoviedb_id).trim() !== "") {
+    out.add(`tmdb:tv:${mp.themoviedb_id}`);
+  }
+  if (typeof mp.kitsu_id === "number") out.add(`kitsu:${mp.kitsu_id}`);
+  if (typeof mp.anilist_id === "number") out.add(`anilist:${mp.anilist_id}`);
+  if (typeof mp.mal_id === "number") out.add(`mal:${mp.mal_id}`);
+  if (typeof mp.anidb_id === "number") out.add(`anidb:${mp.anidb_id}`);
+  out.delete(id);
+  return [...out];
+}

@@ -1,0 +1,1418 @@
+// @ts-expect-error Node test types are intentionally outside the browser-only tsconfig.
+import assert from "node:assert/strict";
+// @ts-expect-error Node test types are intentionally outside the browser-only tsconfig.
+import { readFileSync } from "node:fs";
+// @ts-expect-error Node test types are intentionally outside the browser-only tsconfig.
+import test from "node:test";
+import ts from "typescript";
+import * as githubFormat from "../src/lib/updater/github-release-format.ts";
+import * as releaseLinks from "../src/lib/updater/release-links.ts";
+import * as experimental from "../src/lib/updater/experimental.ts";
+import ar from "../src/lib/i18n/locales/ar/experimental-updates.ts";
+import pt from "../src/lib/i18n/locales/pt/experimental-updates.ts";
+import ru from "../src/lib/i18n/locales/ru/experimental-updates.ts";
+
+type Updater = typeof import("../src/lib/updater/use-update");
+type Channels = typeof import("../src/lib/updater/channel");
+type BackupModule = typeof import("../src/lib/backup");
+type BetaReturn = typeof import("../src/lib/updater/beta-return");
+type ExperimentalAccess = typeof import("../src/lib/updater/experimental-access");
+
+// Execute the real store with mocked native boundaries. No network requests,
+// installer launches, real storage writes, or existing subtitle-test helpers.
+function load<T>(
+  path: string,
+  mocks: Record<string, unknown>,
+  globals: Record<string, unknown>,
+): T {
+  const source = readFileSync(new URL(`../${path}`, import.meta.url), "utf8").replaceAll(
+    "import.meta.env.DEV",
+    String(globals.__DEV__ === true),
+  );
+  const { outputText } = ts.transpileModule(source, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  });
+  const module = { exports: {} };
+  const require = (name: string) => {
+    assert.ok(Object.hasOwn(mocks, name), `Unexpected native boundary: ${name}`);
+    return mocks[name];
+  };
+  new Function("require", "module", "exports", ...Object.keys(globals), outputText)(
+    require,
+    module,
+    module.exports,
+    ...Object.values(globals),
+  );
+  return module.exports as T;
+}
+
+function storage() {
+  const data = new Map<string, string>();
+  return {
+    get length() {
+      return data.size;
+    },
+    key: (i: number) => [...data.keys()][i] ?? null,
+    getItem: (k: string) => data.get(k) ?? null,
+    setItem: (k: string, v: string) => {
+      data.set(k, v);
+    },
+    removeItem: (k: string) => {
+      data.delete(k);
+    },
+  };
+}
+
+function manifest() {
+  return {
+    channel: "experimental",
+    version: "0.9.123",
+    experimentalVersion: "0.0.1",
+    buildId: "abc1234",
+    notes: "Test fixes",
+    platforms: {
+      "windows-x86_64": {
+        url: "https://example.test/0.9.123/Harbor.exe",
+        signature: "signed-test-artifact",
+      },
+      "darwin-aarch64": {
+        url: "https://example.test/0.9.123/Harbor.app.tar.gz",
+        signature: "signed-mac-artifact",
+      },
+    },
+    installer: {
+      "windows-x86_64": {
+        url: "https://example.test/0.9.123/Harbor-installer.exe",
+        signature: "signed-test-installer",
+        payloadVersion: 9123,
+        size: 2048,
+        recoveryProtocol: 1,
+      },
+    },
+    returnToBeta: [
+      {
+        channel: "beta",
+        version: "0.9.122",
+        platformKey: "windows-x86_64",
+        dataCompatible: true,
+        recoveryProtocol: 1,
+        payloadVersion: 9122,
+        size: 1024,
+        url: "https://example.test/updates/Harbor_0.9.122_x64-installer.exe",
+        signature: "beta-signature",
+      },
+    ],
+  };
+}
+
+test("standalone recovery discovers exact installed approval without account access", async () => {
+  const h = harness({ version: "0.9.123" });
+  h.config.access = "unavailable";
+  const paths: (string | undefined)[] = [];
+  const context = await h.betaReturn.discoverBetaReturnContext(
+    "0.9.123",
+    "windows-x86_64",
+    async (path) => {
+      paths.push(path);
+      return manifest();
+    },
+  );
+  assert.equal(context?.version, "0.9.123");
+  assert.equal(context?.targets[0].version, "0.9.122");
+  assert.equal(paths.length, 2);
+  assert.equal(paths[1], `experimental/0.9.123/${manifest().buildId}/manifest.json`);
+});
+
+test("standalone recovery rejects unrelated, missing and unapproved releases", async () => {
+  for (const raw of [
+    null,
+    { ...manifest(), version: "0.9.124" },
+    { ...manifest(), returnToBeta: [] },
+    { ...manifest(), withdrawn: true },
+  ]) {
+    const h = harness();
+    assert.equal(
+      await h.betaReturn.discoverBetaReturnContext("0.9.123", "windows-x86_64", async () => raw),
+      null,
+    );
+    assert.equal(h.betaReturn.readBetaReturnContext("0.9.123"), null);
+  }
+});
+
+test("standalone recovery requires matching immutable approval", async () => {
+  const h = harness();
+  assert.equal(
+    await h.betaReturn.discoverBetaReturnContext("0.9.123", "windows-x86_64", async (path) =>
+      path ? null : manifest(),
+    ),
+    null,
+  );
+  assert.equal(h.betaReturn.readBetaReturnContext("0.9.123"), null);
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
+
+function harness(
+  options: {
+    beta?: boolean;
+    managed?: boolean;
+    platform?: string;
+    version?: string;
+    dev?: boolean;
+    contextReview?: boolean;
+    versions?: { beta?: string | null; stable?: string | null };
+    stableFailure?: boolean;
+  } = {},
+) {
+  const localStorage = storage();
+  localStorage.setItem("harbor.settings", JSON.stringify({ betaUpdates: !!options.beta }));
+  const calls = {
+    headers: [] as unknown[],
+    fetchHeaders: [] as unknown[],
+    fetchUrls: [] as string[],
+    nativeFetchUrls: [] as string[],
+    download: 0,
+    install: 0,
+    close: 0,
+    stage: 0,
+    launch: 0,
+    relaunch: 0,
+    manual: 0,
+    manualUrls: [] as string[],
+    backup: 0,
+  };
+  const config = {
+    access: "allowed" as "allowed" | "denied" | "unavailable",
+    writable: true,
+    raw: manifest() as unknown,
+    status: 200,
+    nativeRaw: null as unknown,
+    nativeMissing: false,
+    nativeWait: null as Promise<void> | null,
+    downloadWait: null as Promise<void> | null,
+    installPreparation: null as (() => void) | null,
+    signatureFailure: false,
+    backupFailure: false,
+    launchFailure: false,
+    probeMissing: false,
+  };
+  const recovery = {
+    setItemWithRecovery: (key: string, value: string) => {
+      if (!config.writable) return false;
+      localStorage.setItem(key, value);
+      return true;
+    },
+  };
+  const channel = load<Channels>(
+    "src/lib/updater/channel.ts",
+    { "@/lib/storage-recovery": recovery },
+    { localStorage },
+  );
+  const betaReturn = load<BetaReturn>(
+    "src/lib/updater/beta-return.ts",
+    {
+      "./experimental": experimental,
+      "./channel": channel,
+    },
+    { localStorage },
+  );
+  const handle = {
+    version: "0.9.123",
+    body: "Test fixes",
+    get rawJson() {
+      return config.nativeRaw ?? config.raw;
+    },
+    async close() {
+      calls.close++;
+    },
+    async download() {
+      calls.download++;
+      if (config.downloadWait) await config.downloadWait;
+      if (config.signatureFailure) throw new Error("Signature verification failed");
+    },
+    async install() {
+      calls.install++;
+    },
+  };
+  const handoff = {
+    async probeHandoff() {
+      if (config.probeMissing) return null;
+      return {
+        supported: !options.platform || options.platform.startsWith("windows"),
+        managed: options.managed !== false,
+        payloadVersion: 9121,
+        installDir: "test",
+        platformKey: options.platform ?? "windows-x86_64",
+      };
+    },
+    async readHandoffPlan() {
+      return null;
+    },
+    async stageHandoff() {
+      calls.stage++;
+      if (config.downloadWait) await config.downloadWait;
+      if (config.signatureFailure) throw new Error("Signature verification failed");
+    },
+    async launchHandoff() {
+      calls.launch++;
+      if (config.launchFailure) throw new Error("Launch failed");
+    },
+  };
+  const githubPlatform = options.platform ?? "windows-x86_64";
+  const githubAssets = (tag: string, version: string) => {
+    const base = `https://github.com/HarborCommunity/Harbor/releases/download/${tag}/`;
+    if (githubPlatform.startsWith("windows")) {
+      const name = `harbor-shipyard-${tag}.exe`;
+      return [
+        { name, browser_download_url: `${base}${name}`, size: 10 },
+        { name: `${name}.sig`, browser_download_url: `${base}${name}.sig` },
+      ];
+    }
+    if (githubPlatform.startsWith("darwin")) {
+      const arch = githubPlatform.endsWith("aarch64") ? "aarch64" : "x64";
+      const name = `Harbor_${version}_${arch}.dmg`;
+      return [{ name, browser_download_url: `${base}${name}` }];
+    }
+    return [];
+  };
+  const githubUpdate = load<typeof import("../src/lib/updater/github-update")>(
+    "src/lib/updater/github-update.ts",
+    {
+      "@/lib/safe-fetch": {
+        safeFetch: async () => ({
+          ok: config.status === 200,
+          status: config.status,
+          json: async () =>
+            options.versions
+              ? Object.entries(options.versions)
+                  .filter(([, version]) => version)
+                  .map(([channel, version]) => {
+                    const tag = `v${version}-${channel}`;
+                    return { tag_name: tag, assets: githubAssets(tag, version) };
+                  })
+              : config.nativeMissing
+                ? []
+                : [{ tag_name: "v0.9.123", assets: githubAssets("v0.9.123", "0.9.123") }],
+        }),
+      },
+      "./github-release-format": githubFormat,
+      "./release-links": releaseLinks,
+      "./installer-plan": { payloadVersionFor: () => null },
+    },
+    {},
+  );
+  const updater = load<Updater>(
+    "src/lib/updater/use-update.ts",
+    {
+      "@/lib/context-review": { isContextReview: () => options.contextReview === true },
+      react: { useSyncExternalStore: (_subscribe: unknown, snapshot: () => unknown) => snapshot() },
+      "@tauri-apps/plugin-updater": {
+        async check(init: unknown) {
+          calls.headers.push(init);
+          if (config.nativeWait) await config.nativeWait;
+          if (options.versions) {
+            const beta = Boolean(
+              (init as { headers?: Record<string, string> } | undefined)?.headers?.[
+                "x-harbor-channel"
+              ] === "beta",
+            );
+            const version = beta ? options.versions.beta : options.versions.stable;
+            if (!version) {
+              if (!beta && options.stableFailure) throw new Error("stable check failed");
+              return null;
+            }
+            return { ...handle, version };
+          }
+          return config.nativeMissing ? null : handle;
+        },
+      },
+      "@tauri-apps/plugin-http": {
+        async fetch(url: string) {
+          calls.nativeFetchUrls.push(url);
+          if (config.nativeWait) await config.nativeWait;
+          return {
+            ok: config.status >= 200 && config.status < 300,
+            status: config.status,
+            async json() {
+              return config.raw;
+            },
+          };
+        },
+      },
+      "@/lib/safe-fetch": {
+        async safeFetch(url: string, init: { headers?: unknown } = {}) {
+          calls.fetchUrls.push(url);
+          calls.fetchHeaders.push(init.headers);
+          if (config.nativeWait) await config.nativeWait;
+          return {
+            ok: config.status >= 200 && config.status < 300,
+            status: config.status,
+            async json() {
+              return config.raw;
+            },
+          };
+        },
+      },
+      "@/lib/config/endpoints": { HARBOR_API_BASE: "https://example.test" },
+      "@/lib/i18n": { t: (s: string) => s },
+      "./github-update": githubUpdate,
+      "./release-links": releaseLinks,
+      "./channel": channel,
+      "./experimental": experimental,
+      "./experimental-access": {
+        currentExperimentalAccess: () => config.access === "allowed",
+        subscribeExperimentalAccess: () => () => {},
+        verifyExperimentalAccess: async () => config.access,
+      },
+      "./beta-return": betaReturn,
+      "./handoff": handoff,
+      "@/lib/backup": { buildBackup: async () => ({ format: "harbor-backup", data: {} }) },
+      "@tauri-apps/api/app": {
+        async getVersion() {
+          return options.version ?? "0.9.121";
+        },
+      },
+      "@tauri-apps/api/core": {
+        async invoke(command: string) {
+          if (command === "handoff_save_backup") {
+            calls.backup++;
+            if (config.backupFailure) throw new Error("Backup failed");
+          }
+          config.installPreparation?.();
+        },
+      },
+      "@tauri-apps/plugin-process": {
+        async relaunch() {
+          calls.relaunch++;
+        },
+      },
+      "@/lib/window": {
+        openUrl(url: string) {
+          calls.manual++;
+          calls.manualUrls.push(url);
+        },
+      },
+    },
+    {
+      __DEV__: options.dev,
+      __APP_VERSION__: "1.0.1",
+      localStorage,
+      window: {
+        __TAURI_INTERNALS__: {},
+        location: { search: "" },
+        addEventListener() {},
+        setInterval() {},
+      },
+      navigator: { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" },
+      fetch: async (url: string, init: { headers?: unknown }) => {
+        calls.fetchUrls.push(url);
+        calls.fetchHeaders.push(init.headers);
+        if (url.includes("/experimental/")) throw new TypeError("CORS blocked immutable history");
+        if (config.nativeWait) await config.nativeWait;
+        return {
+          ok: config.status >= 200 && config.status < 300,
+          status: config.status,
+          async json() {
+            return config.raw;
+          },
+        };
+      },
+      AbortSignal: {}, // Older supported WebViews have no AbortSignal.timeout.
+      setTimeout: (fn: () => void, ms: number) => {
+        if (ms === 600) fn();
+        return 0;
+      },
+    },
+  );
+  return { updater, channel, betaReturn, localStorage, recovery, config, calls, githubUpdate };
+}
+
+test("development builds leave installed-release update and recovery state untouched", async () => {
+  for (const channel of ["stable", "beta", "experimental"] as const) {
+    const h = harness({ dev: true, beta: channel === "beta" });
+    if (channel === "experimental") h.updater.setExperimentalUpdates(true);
+    const pending = JSON.stringify({ version: "999.0.0", channel });
+    h.localStorage.setItem("harbor.update.pending", pending);
+    h.updater.startUpdateWatcher();
+    await h.updater.checkForUpdate(true);
+    await h.updater.prepareBetaReturn("0.9.122");
+    await h.updater.downloadUpdate();
+    await h.updater.installUpdate();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(h.calls.headers, []);
+    assert.deepEqual(h.calls.fetchUrls, []);
+    assert.deepEqual(h.calls.nativeFetchUrls, []);
+    assert.equal(
+      h.calls.download + h.calls.install + h.calls.stage + h.calls.launch + h.calls.relaunch,
+      0,
+    );
+    assert.equal(h.updater.useUpdate().status, "idle");
+    assert.equal(h.localStorage.getItem("harbor.update.pending"), pending);
+  }
+});
+
+test("account requests use native-aware transport and retry with the refreshed token", async () => {
+  let token = "old-test-token";
+  const calls: unknown[] = [];
+  const controller = new AbortController();
+  const mocks = {
+    "@/lib/theme-auth": {
+      authToken: () => token,
+      captureSessionScope: () => () => true,
+      refreshToken: async () => {
+        token = "new-test-token";
+        return true;
+      },
+    },
+    "@/lib/config/endpoints": { HARBOR_API_BASE: "https://example.test" },
+    "@/lib/safe-fetch": {
+      safeFetch: async (url: string, options: { headers: unknown; signal: unknown }) => {
+        calls.push({
+          url,
+          ...options,
+          headers: Object.fromEntries(new Headers(options.headers as HeadersInit)),
+        });
+        return {
+          status: calls.length === 1 ? 401 : 200,
+          ok: calls.length > 1,
+          json: async () => ({ user: { badges: [{ name: "tester" }] } }),
+        };
+      },
+    },
+  };
+  const client = load<typeof import("../src/lib/account/client")>(
+    "src/lib/account/client.ts",
+    {
+      ...mocks,
+      "./authenticated-fetch": load("src/lib/account/authenticated-fetch.ts", mocks, {}),
+    },
+    {},
+  );
+  await client.getJson("/identity/api/me", { bearer: true, signal: controller.signal });
+  assert.deepEqual(
+    calls,
+    ["old-test-token", "new-test-token"].map((value) => ({
+      url: "https://example.test/themes/api/identity/api/me",
+      headers: { authorization: `Bearer ${value}` },
+      signal: controller.signal,
+    })),
+  );
+});
+
+test("verification distinguishes rejected sessions from network failures without trusting cached badges", async () => {
+  for (const status of [401, 403, 500, undefined]) {
+    const access = load<ExperimentalAccess>(
+      "src/lib/updater/experimental-access.ts",
+      {
+        react: {},
+        "@/lib/account/client": {
+          getJson: async () => {
+            throw Object.assign(new Error("test"), { status });
+          },
+        },
+        "@/lib/theme-auth": {
+          currentAuthor: () => ({ badges: [{ name: "dev" }] }),
+          applyServerUser() {},
+          subscribeAuthor() {},
+        },
+      },
+      {},
+    );
+    assert.equal(
+      await access.verifyExperimentalAccess(),
+      status === 401 || status === 403 ? "denied" : "unavailable",
+    );
+  }
+});
+
+test("isolated context review never starts normal or experimental update requests", async () => {
+  const h = harness({ contextReview: true });
+  h.updater.startUpdateWatcher();
+  await h.updater.checkForUpdate(true);
+  h.updater.setExperimentalUpdates(true);
+  await h.updater.checkForUpdate(true);
+  assert.deepEqual(h.calls.headers, []);
+  assert.deepEqual(h.calls.fetchUrls, []);
+  assert.deepEqual(h.calls.nativeFetchUrls, []);
+  assert.equal(h.calls.download, 0);
+  assert.equal(h.calls.install, 0);
+});
+
+test("experimental access recognizes only the approved Harbor account badges", () => {
+  let author: { badges?: Array<{ name: string }> } | null = null;
+  const access = load<ExperimentalAccess>(
+    "src/lib/updater/experimental-access.ts",
+    {
+      react: { useSyncExternalStore: (_subscribe: unknown, snapshot: () => unknown) => snapshot() },
+      "@/lib/account/client": { getJson: async () => ({ user: author }) },
+      "@/lib/theme-auth": {
+        applyServerUser() {},
+        currentAuthor: () => author,
+        subscribeAuthor: () => () => {},
+      },
+    },
+    {},
+  );
+
+  for (const name of ["tester", "moderator", "admin", "dev", " Dev "]) {
+    assert.equal(access.hasExperimentalAccess({ badges: [{ name }] } as never), true);
+  }
+  for (const name of ["beta", "contri", "developer", "hod", "verified", ""]) {
+    assert.equal(access.hasExperimentalAccess({ badges: [{ name }] } as never), false);
+  }
+  assert.equal(access.hasExperimentalAccess(null), false);
+  assert.equal(access.currentExperimentalAccess(), false);
+  author = { badges: [{ name: "tester" }] };
+  assert.equal(access.currentExperimentalAccess(), true);
+});
+
+test("experimental enrollment, checks, and installation fail closed without badge access", async () => {
+  const h = harness();
+  h.config.access = "denied";
+  assert.equal(h.updater.setExperimentalUpdates(true), false);
+  assert.equal(h.channel.selectedUpdateChannel(), "stable");
+
+  h.config.access = "allowed";
+  assert.equal(h.updater.setExperimentalUpdates(true), true);
+  h.config.access = "unavailable";
+  await h.updater.checkForUpdate(true);
+  assert.equal(h.updater.useUpdate().status, "error");
+  // Public recovery discovery is allowed; Experimental installation remains gated.
+  assert.equal(h.calls.fetchUrls.length, 1);
+  assert.equal(h.calls.stage, 0);
+  assert.equal(h.channel.selectedUpdateChannel(), "experimental");
+
+  h.config.access = "allowed";
+  await h.updater.checkForUpdate(true);
+  await h.updater.downloadUpdate();
+  h.config.access = "denied";
+  await h.updater.installUpdate();
+  assert.equal(h.calls.launch, 0);
+  assert.equal(h.channel.selectedUpdateChannel(), "stable");
+  assert.equal(h.updater.useUpdate().channel, "stable");
+});
+
+test("normal channels discover GitHub releases without the old manifest headers", async () => {
+  for (const beta of [false, true]) {
+    const h = harness({ beta });
+    await h.updater.checkForUpdate();
+    assert.deepEqual(h.calls.headers, []);
+    assert.equal(h.updater.useUpdate().version, "0.9.123");
+    assert.equal(h.updater.useUpdate().panelOpen, true);
+  }
+});
+
+test("development simulation shows the real prompt and cannot install", async () => {
+  const h = harness({ dev: true });
+  await h.updater.simulateUpdate();
+  assert.equal(h.updater.useUpdate().version, "1.0.2");
+  assert.equal(h.updater.useUpdate().panelOpen, true);
+  await h.updater.downloadUpdate();
+  await h.updater.installUpdate();
+  await h.updater.openManualDownload();
+  assert.equal(
+    h.calls.download + h.calls.install + h.calls.stage + h.calls.launch + h.calls.manual,
+    0,
+  );
+  const production = harness();
+  await production.updater.simulateUpdate();
+  assert.equal(production.updater.useUpdate().status, "idle");
+});
+
+test("beta users are offered a stable release that is ahead of beta", async () => {
+  const h = harness({ beta: true, versions: { beta: "1.0.5", stable: "1.1.0" } });
+  await h.updater.checkForUpdate(true);
+  const update = h.updater.useUpdate();
+  assert.equal(update.status, "available");
+  assert.equal(update.version, "1.1.0");
+  assert.equal(update.channel, "stable");
+});
+
+test("beta users keep the newer beta when beta leads stable", async () => {
+  const h = harness({ beta: true, versions: { beta: "1.1.0", stable: "1.0.5" } });
+  await h.updater.checkForUpdate(true);
+  const update = h.updater.useUpdate();
+  assert.equal(update.status, "available");
+  assert.equal(update.version, "1.1.0");
+  assert.equal(update.channel, "beta");
+});
+
+test("GitHub discovery offers beta when no stable release exists and handles an empty list", async () => {
+  const keepsBeta = harness({
+    beta: true,
+    versions: { beta: "1.1.0", stable: null },
+    stableFailure: true,
+  });
+  await keepsBeta.updater.checkForUpdate(true);
+  assert.equal(keepsBeta.updater.useUpdate().version, "1.1.0");
+  assert.equal(keepsBeta.updater.useUpdate().channel, "beta");
+
+  const quiet = harness({ beta: true, versions: { beta: null, stable: null } });
+  await quiet.updater.checkForUpdate(true);
+  assert.equal(quiet.updater.useUpdate().status, "uptodate");
+});
+
+test("consent is durable, restores the previous normal channel, and fails closed on storage failure", () => {
+  const h = harness({ beta: true });
+  assert.equal(h.channel.selectedUpdateChannel(), "beta");
+  assert.ok(h.updater.setExperimentalUpdates(true));
+  h.localStorage.setItem("harbor.settings", '{"betaUpdates":false}');
+  assert.equal(h.channel.selectedUpdateChannel(), "experimental");
+  assert.ok(h.updater.setExperimentalUpdates(false));
+  assert.equal(h.channel.selectedUpdateChannel(), "beta");
+  h.config.writable = false;
+  assert.equal(h.updater.setExperimentalUpdates(true), false);
+  assert.equal(h.channel.selectedUpdateChannel(), "beta");
+  for (const value of [
+    "not-json",
+    "{}",
+    '{"channel":"preview","normal":"beta"}',
+    '{"channel":"stable","normal":"beta"}',
+  ]) {
+    assert.equal(h.channel.parseChannelPreference(value), null);
+  }
+});
+
+test("explicit stable exit never invokes the legacy inferred-beta fallback", async () => {
+  const h = harness();
+  h.updater.setExperimentalUpdates(true);
+  h.updater.setExperimentalUpdates(false);
+  h.config.nativeMissing = true;
+  await h.updater.checkForUpdate();
+  assert.deepEqual(h.calls.headers, []);
+  assert.equal(h.calls.fetchHeaders.length, 0);
+});
+
+test("GitHub discovery does not use legacy prerelease inference", async () => {
+  const h = harness();
+  h.config.nativeMissing = true;
+  h.config.raw = { version: "0.9.20" };
+  await h.updater.checkForUpdate();
+  assert.deepEqual(h.calls.headers, []);
+});
+
+test("background checks keep a verified download ready until install or channel change", async () => {
+  const h = harness();
+  h.updater.setExperimentalUpdates(true);
+  await h.updater.checkForUpdate();
+  await h.updater.downloadUpdate();
+  await h.updater.checkForUpdate();
+  assert.equal(h.updater.useUpdate().status, "downloaded");
+  assert.equal(h.calls.headers.length, 0);
+  await h.updater.installUpdate();
+  assert.equal(h.calls.launch, 1);
+});
+
+test("experimental rejects stable fallback, empty feed, missing platforms and malformed metadata", async () => {
+  const invalid: unknown[] = [
+    null,
+    { version: "0.9.123", platforms: manifest().platforms },
+    { ...manifest(), channel: "beta" },
+    { ...manifest(), buildId: "" },
+    { ...manifest(), experimentalVersion: "0.0.0" },
+    { ...manifest(), experimentalVersion: "1.0.0" },
+    { ...manifest(), version: "0.9.123-exp.2" },
+    { ...manifest(), platforms: {} },
+    { ...manifest(), installer: [] },
+    { ...manifest(), url: "https://example.test/other.exe" },
+  ];
+  for (const raw of invalid) {
+    const h = harness();
+    h.updater.setExperimentalUpdates(true);
+    h.config.raw = raw;
+    await h.updater.checkForUpdate(true);
+    await h.updater.downloadUpdate();
+    await h.updater.installUpdate();
+    assert.equal(h.updater.useUpdate().status, "unavailable");
+    assert.equal(h.calls.headers.length, 0);
+    assert.equal(h.calls.install + h.calls.launch + h.calls.download + h.calls.stage, 0);
+  }
+  for (const status of [204, 404, 503]) {
+    const h = harness();
+    h.updater.setExperimentalUpdates(true);
+    h.config.status = status;
+    await h.updater.checkForUpdate();
+    assert.equal(h.updater.useUpdate().status, "unavailable");
+  }
+});
+
+test("manifest validation uses exact architecture, HTTPS, signatures and unchanged installer version formula", () => {
+  const valid = manifest();
+  assert.ok(experimental.parseExperimentalRelease(valid, "darwin-aarch64"));
+  assert.equal(
+    experimental.parseExperimentalRelease({ ...valid, withdrawn: true }, "windows-x86_64"),
+    null,
+  );
+  for (const platform of ["darwin-x86_64", "linux-x86_64", "android-aarch64"]) {
+    assert.equal(experimental.parseExperimentalRelease(valid, platform), null);
+  }
+  for (const url of [
+    "http://example.test/file.exe",
+    "https://user:secret@example.test/file.exe",
+    "https://example.test/file.exe#fragment",
+    "not-a-url",
+  ]) {
+    const bad = manifest();
+    bad.platforms["windows-x86_64"].url = url;
+    assert.equal(experimental.parseExperimentalRelease(bad, "windows-x86_64"), null);
+  }
+  const unsigned = manifest();
+  unsigned.platforms["windows-x86_64"].signature = " ";
+  assert.equal(experimental.parseExperimentalRelease(unsigned, "windows-x86_64"), null);
+  const wrongPayload = manifest();
+  wrongPayload.installer["windows-x86_64"].payloadVersion++;
+  assert.equal(experimental.parseExperimentalRelease(wrongPayload, "windows-x86_64"), null);
+  assert.equal(experimental.experimentalPayloadVersion("0.9.123"), 9123);
+  assert.equal(experimental.experimentalPayloadVersion("0.999.1"), 999001);
+  assert.equal(experimental.experimentalChannelVersion("0.0.1"), 1);
+  for (const version of ["0.1000.1", "0.9.1000", "0.09.123", "0.9.123-beta", "0.9.123.1"]) {
+    assert.equal(experimental.experimentalPayloadVersion(version), null);
+  }
+});
+
+test("legacy NSIS Windows bootstraps through only the verified recoverable installer", async () => {
+  const h = harness({ managed: false });
+  h.updater.setExperimentalUpdates(true);
+  await h.updater.checkForUpdate(true);
+  assert.ok(h.updater.useUpdate().handoff?.verifiable);
+  assert.deepEqual(h.calls.headers, []);
+  assert.deepEqual(h.calls.fetchHeaders, [undefined, undefined]);
+  assert.ok(h.calls.fetchUrls[0].endsWith("/updates/latest-experimental.json"));
+  await h.updater.downloadUpdate();
+  await h.updater.installUpdate();
+  assert.equal(h.calls.stage, 1);
+  assert.equal(h.calls.backup, 1);
+  assert.equal(h.calls.launch, 1);
+  assert.equal(h.calls.download + h.calls.install, 0);
+});
+
+test("unsupported platforms and missing return approval cannot install experimental", async () => {
+  const mac = harness({ platform: "darwin-aarch64", managed: false });
+  mac.updater.setExperimentalUpdates(true);
+  await mac.updater.checkForUpdate(true);
+  assert.equal(mac.updater.useUpdate().status, "unavailable");
+  await mac.updater.downloadUpdate();
+  await mac.updater.installUpdate();
+  assert.equal(mac.calls.install + mac.calls.launch, 0);
+
+  const h = harness();
+  h.updater.setExperimentalUpdates(true);
+  h.config.raw = { ...manifest(), returnToBeta: [] };
+  await h.updater.checkForUpdate();
+  assert.equal(h.updater.useUpdate().status, "unavailable");
+  assert.equal(h.calls.install + h.calls.launch, 0);
+});
+
+test("managed Windows uses only its verified installer, never the legacy NSIS fallback", async () => {
+  const h = harness({ managed: true });
+  h.updater.setExperimentalUpdates(true);
+  await h.updater.checkForUpdate();
+  assert.ok(h.updater.useUpdate().handoff?.verifiable);
+  assert.equal(h.calls.headers.length, 0);
+  await h.updater.downloadUpdate();
+  await h.updater.installUpdate();
+  assert.equal(h.calls.stage, 1);
+  assert.equal(h.calls.launch, 1);
+  assert.equal(h.calls.install, 0);
+  const missing = harness({ managed: true });
+  missing.updater.setExperimentalUpdates(true);
+  missing.config.raw = { ...manifest(), installer: {} };
+  await missing.updater.checkForUpdate();
+  assert.equal(missing.updater.useUpdate().status, "unavailable");
+  assert.equal(missing.calls.headers.length, 0);
+});
+
+test("signature rejection and unsupported paths never permit an experimental install bypass", async () => {
+  for (const managed of [true]) {
+    const h = harness({ managed });
+    h.updater.setExperimentalUpdates(true);
+    await h.updater.checkForUpdate();
+    h.config.signatureFailure = true;
+    await h.updater.downloadUpdate();
+    assert.equal(h.updater.useUpdate().status, "error");
+    await h.updater.installUpdate();
+    await h.updater.openManualDownload();
+    await h.updater.openHandoffDownload();
+    assert.equal(h.calls.install + h.calls.launch + h.calls.manual, 0);
+  }
+});
+
+test("same or older experimental builds are not offered as downgrades", async () => {
+  for (const version of ["0.9.123", "0.9.124"]) {
+    const h = harness({ version });
+    h.updater.setExperimentalUpdates(true);
+    await h.updater.checkForUpdate();
+    assert.equal(h.updater.useUpdate().status, "uptodate");
+    assert.equal(h.calls.headers.length, 0);
+  }
+});
+
+test("manual downloads open GitHub without guessing another platform's asset", async () => {
+  for (const platform of ["darwin-x86_64", "darwin-aarch64", "windows-aarch64", "linux-x86_64"]) {
+    const h = harness({ platform });
+    await h.updater.openManualDownload();
+    assert.deepEqual(h.calls.manualUrls, ["https://github.com/HarborCommunity/Harbor/releases"]);
+    assert.equal(h.calls.download + h.calls.install + h.calls.launch, 0);
+  }
+});
+
+test("a discovered release opens its exact GitHub asset", async () => {
+  const h = harness();
+  await h.updater.checkForUpdate();
+  await h.updater.downloadUpdate();
+  assert.deepEqual(h.calls.manualUrls, [
+    "https://github.com/HarborCommunity/Harbor/releases/download/v0.9.123/harbor-shipyard-v0.9.123.exe",
+  ]);
+});
+
+test("switching channels invalidates a late experimental manifest check", async () => {
+  const h = harness();
+  h.updater.setExperimentalUpdates(true);
+  const wait = deferred<void>();
+  h.config.nativeWait = wait.promise;
+  const check = h.updater.checkForUpdate();
+  while (!h.calls.fetchUrls.length) await Promise.resolve();
+  assert.ok(h.updater.setExperimentalUpdates(false));
+  wait.resolve();
+  await check;
+  assert.equal(h.updater.useUpdate().status, "idle");
+  assert.equal(h.updater.useUpdate().channel, "stable");
+  assert.equal(h.calls.launch, 0);
+});
+
+test("channel changes are blocked during verification; external changes invalidate download completion", async () => {
+  for (const managed of [true]) {
+    const h = harness({ managed });
+    if (managed) h.updater.setExperimentalUpdates(true);
+    await h.updater.checkForUpdate();
+    const wait = deferred<void>();
+    h.config.downloadWait = wait.promise;
+    const download = h.updater.downloadUpdate();
+    while (h.calls.stage + h.calls.download === 0) await Promise.resolve();
+    assert.equal(h.updater.setExperimentalUpdates(false), false);
+    assert.equal(h.channel.selectedUpdateChannel(), managed ? "experimental" : "stable");
+    h.channel.writeUpdateChannel(managed ? "stable" : "beta");
+    wait.resolve();
+    await download;
+    await h.updater.installUpdate();
+    assert.equal(h.updater.useUpdate().status, "idle");
+    assert.equal(h.calls.install + h.calls.launch, 0);
+  }
+});
+
+test("switching after download or during native preparation prevents stale installation", async () => {
+  const h = harness();
+  h.updater.setExperimentalUpdates(true);
+  await h.updater.checkForUpdate();
+  await h.updater.downloadUpdate();
+  h.config.installPreparation = () => {
+    h.channel.writeUpdateChannel("stable");
+  };
+  await h.updater.installUpdate();
+  assert.equal(h.calls.install + h.calls.launch, 0);
+  assert.equal(h.updater.useUpdate().status, "error");
+  assert.equal(h.localStorage.getItem("harbor.update.pending"), null);
+  h.updater.setExperimentalUpdates(true);
+  await h.updater.checkForUpdate();
+  await h.updater.downloadUpdate();
+  h.updater.setExperimentalUpdates(false);
+  await h.updater.installUpdate();
+  assert.equal(h.calls.install, 0);
+});
+
+test("explicit return verifies the exact approved target, backs up, and does not change channels before restart", async () => {
+  const h = harness({ version: "0.9.123" });
+  h.updater.setExperimentalUpdates(true);
+  h.betaReturn.saveBetaReturnContext(
+    "0.9.123",
+    "0.0.1",
+    "abc1234",
+    "windows-x86_64",
+    manifest().returnToBeta,
+  );
+  await h.updater.prepareBetaReturn("0.9.122");
+  assert.equal(h.updater.useUpdate().intent, "return-beta");
+  assert.equal(h.updater.useUpdate().handoff?.version, "0.9.122");
+  assert.deepEqual(h.calls.fetchUrls, []);
+  assert.deepEqual(h.calls.nativeFetchUrls, [
+    "https://example.test/updates/experimental/0.9.123/abc1234/manifest.json",
+  ]);
+  await h.updater.downloadUpdate();
+  await h.updater.installUpdate();
+  assert.equal(h.calls.stage, 1);
+  assert.equal(h.calls.backup, 1);
+  assert.equal(h.calls.launch, 1);
+  assert.equal(h.channel.selectedUpdateChannel(), "experimental");
+  assert.equal(JSON.parse(h.localStorage.getItem("harbor.update.pending")!).intent, "return-beta");
+});
+
+test("failed approval, signature, backup or launch never silently switches to beta", async () => {
+  for (const failure of ["approval", "signature", "backup", "launch"]) {
+    const h = harness({ version: "0.9.123" });
+    h.updater.setExperimentalUpdates(true);
+    h.betaReturn.saveBetaReturnContext(
+      "0.9.123",
+      "0.0.1",
+      "abc1234",
+      "windows-x86_64",
+      manifest().returnToBeta,
+    );
+    if (failure === "approval") h.config.raw = { ...manifest(), returnToBeta: [] };
+    h.config.signatureFailure = failure === "signature";
+    h.config.backupFailure = failure === "backup";
+    h.config.launchFailure = failure === "launch";
+    await h.updater.prepareBetaReturn("0.9.122");
+    await h.updater.downloadUpdate();
+    await h.updater.installUpdate();
+    assert.equal(h.updater.useUpdate().status, "error");
+    assert.equal(h.channel.selectedUpdateChannel(), "experimental");
+    assert.equal(h.calls.launch, failure === "launch" ? 1 : 0);
+  }
+});
+
+test("return preferences update all profile mirrors only at the exact beta version and can undo a failed launch", () => {
+  const h = harness({ version: "0.9.123" });
+  h.updater.setExperimentalUpdates(true);
+  h.localStorage.setItem("harbor.settings.shared", '{"betaUpdates":false,"volume":73}');
+  h.localStorage.setItem("harbor.settings.profile1", '{"betaUpdates":false,"volume":55}');
+  h.localStorage.setItem(
+    "harbor.update.pending",
+    '{"intent":"return-beta","version":"0.9.122","recoverable":true}',
+  );
+  h.betaReturn.completeBetaReturnPreferences("0.9.123");
+  assert.equal(h.channel.selectedUpdateChannel(), "experimental");
+  assert.equal(h.betaReturn.returnedToExactVersion("0.9.123", "0.9.122"), false);
+  h.betaReturn.completeBetaReturnPreferences("0.9.122");
+  assert.equal(h.channel.selectedUpdateChannel(), "beta");
+  assert.deepEqual(JSON.parse(h.localStorage.getItem("harbor.settings.shared")!), {
+    betaUpdates: true,
+    volume: 73,
+  });
+  h.localStorage.setItem("harbor.settings.shared", '{"betaUpdates":true,"volume":80}');
+  h.betaReturn.completeBetaReturnPreferences("0.9.123");
+  assert.equal(h.channel.selectedUpdateChannel(), "experimental");
+  assert.deepEqual(JSON.parse(h.localStorage.getItem("harbor.settings.shared")!), {
+    betaUpdates: false,
+    volume: 80,
+  });
+});
+
+test("return parsing rejects untested, wrong-channel, duplicate, unsigned and newer targets", () => {
+  const h = harness();
+  const target = manifest().returnToBeta[0];
+  for (const patch of [
+    { channel: "stable" },
+    { dataCompatible: false },
+    { recoveryProtocol: 0 },
+    { signature: "" },
+    { version: "0.9.124", payloadVersion: 9124 },
+    { url: "http://example.test/file.exe" },
+    { payloadVersion: 9000 },
+  ])
+    assert.deepEqual(
+      h.betaReturn.parseBetaReturnTargets([{ ...target, ...patch }], "0.9.123", "windows-x86_64"),
+      [],
+    );
+  assert.deepEqual(
+    h.betaReturn.parseBetaReturnTargets([target, target], "0.9.123", "windows-x86_64"),
+    [],
+  );
+  assert.deepEqual(h.betaReturn.parseBetaReturnTargets([target], "0.9.123", "darwin-aarch64"), []);
+});
+
+test("startup never reports a failed downgrade as success just because experimental is newer", async () => {
+  const h = harness({ version: "0.9.123" });
+  h.updater.setExperimentalUpdates(true);
+  h.localStorage.setItem(
+    "harbor.update.pending",
+    JSON.stringify({
+      intent: "return-beta",
+      handoff: true,
+      recoverable: true,
+      version: "0.9.122",
+      payloadVersion: 9122,
+    }),
+  );
+  h.updater.startUpdateWatcher();
+  for (let i = 0; i < 30 && h.updater.useUpdate().status !== "error"; i++) await Promise.resolve();
+  assert.equal(h.updater.useUpdate().status, "error");
+  assert.equal(h.updater.useUpdate().installFailed, true);
+  assert.equal(h.channel.selectedUpdateChannel(), "experimental");
+  assert.equal(h.calls.headers.length, 0);
+});
+
+test("backups neither enroll another device nor erase this device's channel or staged state", async () => {
+  const h = harness();
+  h.updater.setExperimentalUpdates(true);
+  h.localStorage.setItem("harbor.update.pending", "local-pending");
+  const empty = {};
+  const backup = load<BackupModule>(
+    "src/lib/backup.ts",
+    {
+      "@/lib/download-text": empty,
+      "@/lib/profile-sync/backup-payload": { buildSyncBackup: () => ({}) },
+      "@/lib/theme-storage": empty,
+      "@/lib/profiles": { readAllProfilesIdentity: () => [] },
+      "@/lib/active-profile-id": { activeProfileId: () => "local" },
+      "@/lib/secret-store": {
+        getAllSecrets: () => ({}),
+        isSecretKey: () => false,
+        flushSecrets: async () => {},
+      },
+      "@/lib/storage-recovery": h.recovery,
+      "@/lib/local-library": {
+        localLibraryReady: async () => {},
+        readLocalLibrary: () => ({}),
+        restoreLocalLibrary() {},
+      },
+    },
+    { localStorage: h.localStorage },
+  );
+  const exported = await backup.buildBackup();
+  assert.ok(!Object.keys(exported.data).some((key) => key.startsWith("harbor.update.")));
+  const imported = {
+    ...exported,
+    sections: undefined,
+    data: {
+      "harbor.example": "value",
+      "harbor.update.pending": "foreign-pending",
+      [h.channel.UPDATE_CHANNEL_KEY]: '{"channel":"stable","normal":"stable"}',
+    },
+  };
+  const parsed = backup.parseBackup(JSON.stringify(imported));
+  assert.ok(parsed.ok);
+  if (parsed.ok) assert.deepEqual(parsed.backup.data, { "harbor.example": "value" });
+  await backup.applyBackup(imported);
+  assert.equal(h.channel.selectedUpdateChannel(), "experimental");
+  assert.equal(h.localStorage.getItem("harbor.update.pending"), "local-pending");
+});
+
+test("experimental copy has matching translation keys and interpolation tokens", () => {
+  for (const translated of [pt, ru])
+    assert.deepEqual(Object.keys(translated).sort(), Object.keys(ar).sort());
+  for (const translated of [ar, pt, ru]) {
+    for (const [key, value] of Object.entries(translated)) {
+      assert.deepEqual(value.match(/\{\w+\}/g)?.sort() ?? [], key.match(/\{\w+\}/g)?.sort() ?? []);
+    }
+  }
+});
+
+test("experimental settings live between updates and backup, with search pointing to that page", () => {
+  const source = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+  const updates = source("src/views/settings/updates-panel.tsx");
+  const advanced = source("src/views/settings/advanced-panel/system-tab.tsx");
+  const navigation = source("src/views/settings/nav.tsx");
+  const experimentalSection = source("src/views/settings/experimental-builds-section.tsx");
+  const placement = updates.indexOf("<ExperimentalBuildsSection />");
+
+  assert.equal(updates.match(/<ExperimentalBuildsSection\s*\/>/g)?.length, 1);
+  assert.ok(updates.indexOf('title={t("Updates")}') < placement);
+  assert.ok(placement < updates.indexOf('title={t("Backup & restore")}'));
+  assert.ok(!advanced.includes("ExperimentalBuildsSection"));
+  assert.match(
+    navigation,
+    /label:\s*"Experimental builds",\s*section:\s*"updates",\s*anchorTitle:\s*"Experimental builds"/,
+  );
+  assert.ok(!experimentalSection.includes("Open updates & backup"));
+  assert.ok(
+    !source("src/views/settings/advanced-panel/update-rows.tsx").includes(
+      "experimental builds in Advanced",
+    ),
+  );
+});
+
+test("GitHub discovery compares numeric versions and ignores drafts, utilities and older releases", () => {
+  const { selectGithubUpdate } = harness().githubUpdate;
+  const releases = [
+    { tag_name: "v1.0.9", published_at: "2099-01-01" },
+    { tag_name: "v1.0.10-beta", prerelease: true },
+    { tag_name: "v9.0.0", draft: true },
+    { tag_name: "libmpv-999" },
+    { tag_name: "v1.0.1" },
+  ];
+  assert.equal(selectGithubUpdate(releases, "1.0.1", "beta")?.version, "1.0.10");
+  assert.equal(selectGithubUpdate(releases, "1.0.10"), null);
+  assert.equal(selectGithubUpdate([], "1.0.1"), null);
+});
+
+test("failed GitHub checks report an error instead of claiming up to date", async () => {
+  const h = harness();
+  h.config.status = 403;
+  await h.updater.checkForUpdate(true);
+  assert.equal(h.updater.useUpdate().status, "error");
+});
+
+test("GitHub uses the exact signed Shipyard asset only on managed Windows x64", async () => {
+  for (const tag of ["v1.0.1-beta", "v1.0.0-stable"]) {
+    const base = `https://github.com/HarborCommunity/Harbor/releases/download/${tag}/`;
+    const asset = {
+      name: `harbor-shipyard-${tag}.exe`,
+      browser_download_url: `${base}harbor-shipyard-${tag}.exe`,
+      size: 1024,
+    };
+    const release = {
+      tag_name: tag,
+      assets: [
+        asset,
+        { name: `${asset.name}.sig`, browser_download_url: `${asset.browser_download_url}.sig` },
+      ],
+    };
+    const requests: string[] = [];
+    const github = load<typeof import("../src/lib/updater/github-update")>(
+      "src/lib/updater/github-update.ts",
+      {
+        "@/lib/safe-fetch": {
+          safeFetch: async (url: string) => {
+            requests.push(url);
+            return { ok: true, json: async () => [release], text: async () => "test-signature" };
+          },
+        },
+        "./github-release-format": githubFormat,
+      "./release-links": releaseLinks,
+        "./installer-plan": { payloadVersionFor: () => 1000002 },
+      },
+      {},
+    );
+    const probe = {
+      supported: true,
+      managed: true,
+      platformKey: "windows-x86_64",
+      payloadVersion: 999000,
+      installDir: "test",
+    };
+    const update = await github.discoverGithubUpdate("0.9.999", probe, "beta");
+    assert.equal(update?.handoff?.url, asset.browser_download_url);
+    assert.equal(update?.handoff?.signature, "");
+    assert.equal(update?.handoff?.signatureUrl, `${asset.browser_download_url}.sig`);
+    assert.equal(requests.length, 1);
+    assert.equal(
+      (
+        await github.discoverGithubUpdate(
+          "0.9.999",
+          { ...probe, platformKey: "windows-aarch64" },
+          "beta",
+        )
+      )?.handoff,
+      null,
+    );
+    release.assets.pop();
+    assert.equal(await github.discoverGithubUpdate("0.9.999", probe, "beta"), null);
+  }
+});
+
+test("the GitHub installer signature is fetched only when staging", async () => {
+  const requests: string[] = [];
+  let staged: Record<string, unknown> | null = null;
+  const handoff = load<typeof import("../src/lib/updater/handoff")>(
+    "src/lib/updater/handoff.ts",
+    {
+      "@tauri-apps/api/core": {
+        Channel: class {
+          onmessage: unknown = null;
+        },
+        invoke: async (_command: string, args: Record<string, unknown>) => {
+          staged = args;
+        },
+      },
+      "@/lib/config/endpoints": { HARBOR_API_BASE: "https://example.test" },
+      "@/lib/safe-fetch": {
+        safeFetch: async (url: string) => {
+          requests.push(url);
+          return { ok: true, status: 200, text: async () => "test-signature" };
+        },
+      },
+      "./github-releases": { githubInstallerFor: async () => null },
+      "./installer-plan": { payloadVersionFor: () => 1 },
+    },
+    {},
+  );
+
+  await handoff.stageHandoff(
+    {
+      version: "1.0.1",
+      notes: null,
+      url: "https://example.test/Harbor.exe",
+      signature: "",
+      signatureUrl: "https://example.test/Harbor.exe.sig",
+      size: 10,
+      payloadVersion: 1000001,
+      verifiable: true,
+    },
+    () => {},
+  );
+
+  assert.deepEqual(requests, ["https://example.test/Harbor.exe.sig"]);
+  assert.equal(staged?.signature, "test-signature");
+});
+
+test("GitHub discovery skips releases without usable assets", async () => {
+  const base = "https://github.com/HarborCommunity/Harbor/releases/download/";
+  const asset = (tag: string, suffix = ".exe") => {
+    const name = `harbor-shipyard-${tag}${suffix}`;
+    return { name, browser_download_url: `${base}${tag}/${name}`, size: 1 };
+  };
+  const release = (tag: string, assets: unknown[]) => ({ tag_name: tag, assets });
+  let releases = [
+    release("v1.0.3", []),
+    release("v1.0.2", [asset("v1.0.2")]),
+    release("v1.0.1", [asset("v1.0.1"), asset("v1.0.1", ".exe.sig")]),
+  ];
+  const github = load<typeof import("../src/lib/updater/github-update")>(
+    "src/lib/updater/github-update.ts",
+    {
+      "@/lib/safe-fetch": {
+        safeFetch: async () => ({
+          ok: true,
+          json: async () => releases,
+          text: async () => "test-signature",
+        }),
+      },
+      "./github-release-format": githubFormat,
+      "./release-links": releaseLinks,
+      "./installer-plan": { payloadVersionFor: () => 1000002 },
+    },
+    {},
+  );
+  const probe = {
+    supported: true,
+    managed: true,
+    platformKey: "windows-x86_64",
+    payloadVersion: 999000,
+    installDir: "test",
+  };
+  const update = await github.discoverGithubUpdate("1.0.0", probe, "stable");
+  assert.equal(update?.version, "1.0.1");
+  assert.equal(update?.handoff?.url, asset("v1.0.1").browser_download_url);
+  const plain = await github.discoverGithubUpdate("1.0.0", { ...probe, managed: false }, "stable");
+  assert.equal(plain?.version, "1.0.2");
+  assert.equal(plain?.handoff, null);
+  releases = [release("v1.0.2", [asset("v1.0.2")])];
+  assert.equal(await github.discoverGithubUpdate("1.0.0", probe, "stable"), null);
+});
+
+test("platform-suffixed Shipyard assets remain updater-compatible", () => {
+  const { githubUpdate } = harness();
+  const base = "https://github.com/HarborCommunity/Harbor/releases/download/v1.0.2/";
+  const name = "harbor-shipyard-v1.0.2-beta-windows-x64.exe";
+  const assets = [name, `${name}.sig`].map((asset) => ({
+    name: asset,
+    browser_download_url: `${base}${asset}`,
+  }));
+  const probe = {
+    supported: true,
+    managed: true,
+    platformKey: "windows-x86_64",
+  } as Parameters<typeof githubUpdate.releaseIsComplete>[1];
+
+  assert.equal(githubUpdate.releaseIsComplete({ assets }, probe), true);
+  assert.equal(githubUpdate.githubDownloadAsset({ assets }, "windows-x86_64")?.name, name);
+
+  const old = "harbor-shipyard-v1.0.2-beta.exe";
+  const oldAssets = [old, `${old}.sig`].map((asset) => ({
+    name: asset,
+    browser_download_url: `${base}${asset}`,
+  }));
+  assert.equal(githubUpdate.releaseIsComplete({ assets: oldAssets }, probe), true);
+  assert.equal(
+    githubUpdate.githubDownloadAsset({ assets: oldAssets }, "windows-x86_64")?.name,
+    old,
+  );
+
+  const windowsOnly = "harbor-shipyard-v1.0.2-beta-windows.exe";
+  const windowsOnlyAssets = [windowsOnly, `${windowsOnly}.sig`].map((asset) => ({
+    name: asset,
+    browser_download_url: `${base}${asset}`,
+  }));
+  assert.equal(githubUpdate.releaseIsComplete({ assets: windowsOnlyAssets }, probe), true);
+  assert.equal(
+    githubUpdate.githubDownloadAsset({ assets: windowsOnlyAssets }, "windows-x86_64")?.name,
+    windowsOnly,
+  );
+});
+
+test("channel-prefixed macOS artifacts keep architecture detection", () => {
+  const { githubUpdate } = harness();
+  const base = "https://github.com/HarborCommunity/Harbor/releases/download/v1.2.3-beta/";
+  const names = [
+    "Harbor_1.2.3_beta_macos-apple-silicon-aarch64.dmg",
+    "Harbor_1.2.3_beta_macos-intel-x64.dmg",
+  ];
+  const assets = names.map((name) => ({
+    name,
+    browser_download_url: `${base}${name}`,
+  }));
+
+  assert.equal(githubUpdate.githubDownloadAsset({ assets }, "darwin-aarch64")?.name, names[0]);
+  assert.equal(githubUpdate.githubDownloadAsset({ assets }, "darwin-x86_64")?.name, names[1]);
+});
+
+test("GitHub downloads match native OS and architecture, independent of asset order", () => {
+  const { githubDownloadAsset } = harness().githubUpdate;
+  const names = [
+    "Harbor_1.0.2_x64.dmg",
+    "Harbor_1.0.2_arm64.exe",
+    "Harbor_1.0.2_aarch64.dmg",
+    "Harbor_1.0.2_x64-setup.exe",
+    "harbor-shipyard-v1.0.2.exe",
+  ];
+  const raw = {
+    assets: names.map((name) => ({
+      name,
+      browser_download_url: `https://github.com/HarborCommunity/Harbor/releases/download/v1.0.2/${name}`,
+    })),
+  };
+  for (const assets of [raw.assets, [...raw.assets].reverse()]) {
+    assert.equal(githubDownloadAsset({ assets }, "windows-x86_64")?.name, names[4]);
+    assert.equal(githubDownloadAsset({ assets }, "windows-aarch64")?.name, names[1]);
+    assert.equal(githubDownloadAsset({ assets }, "darwin-aarch64")?.name, names[2]);
+    assert.equal(githubDownloadAsset({ assets }, "darwin-x86_64")?.name, names[0]);
+    assert.equal(githubDownloadAsset({ assets }, undefined), null);
+  }
+  const armOnly = { assets: [raw.assets[2]] };
+  assert.equal(githubDownloadAsset(armOnly, "darwin-x86_64"), null);
+  assert.equal(githubDownloadAsset(armOnly, "windows-x86_64"), null);
+  assert.equal(
+    githubDownloadAsset(
+      {
+        assets: [
+          { name: "Harbor_1.0.2_x64.dmg", browser_download_url: "https://example.test/fake.dmg" },
+        ],
+      },
+      "darwin-x86_64",
+    ),
+    null,
+  );
+});
+
+test("stable preferences exclude newer beta releases while beta preferences include both channels", async () => {
+  for (const beta of [false, true]) {
+    const h = harness({ beta, version: "0.9.999", versions: { stable: "1.0.0", beta: "1.0.1" } });
+    await h.updater.checkForUpdate(true);
+    assert.equal(h.updater.useUpdate().version, beta ? "1.0.1" : "1.0.0");
+    assert.equal(h.updater.useUpdate().channel, beta ? "beta" : "stable");
+  }
+  const h = harness({ version: "1.0.0", versions: { stable: "1.0.0", beta: "1.0.1" } });
+  await h.updater.checkForUpdate(true);
+  assert.equal(h.updater.useUpdate().status, "uptodate");
+  const { selectGithubUpdate } = h.githubUpdate;
+  assert.equal(
+    selectGithubUpdate([{ tag_name: "v1.0.2", prerelease: true }], "1.0.0", "stable"),
+    null,
+  );
+  assert.equal(
+    selectGithubUpdate([{ tag_name: "v1.0.2-beta", prerelease: false }], "1.0.0", "stable"),
+    null,
+  );
+  const simulation = harness({ dev: true });
+  await simulation.updater.simulateUpdate("beta");
+  assert.equal(simulation.updater.useUpdate().channel, "beta");
+  assert.equal(simulation.updater.useUpdate().status, "available");
+});

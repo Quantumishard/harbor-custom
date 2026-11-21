@@ -1,0 +1,231 @@
+import { anilistRequest } from "./client";
+import { kitsuToAnilist } from "@/lib/providers/anime-mapping";
+
+const RELATIONS_QUERY = `query ($id: Int) {
+  Media(id: $id, type: ANIME) {
+    relations {
+      edges {
+        relationType(version: 2)
+        node {
+          id
+          format
+          episodes
+          status
+          averageScore
+          seasonYear
+          title { english romaji userPreferred }
+          coverImage { large }
+          bannerImage
+          description(asHtml: false)
+          startDate { year month day }
+        }
+      }
+    }
+  }
+}`;
+
+const FRANCHISE_RELATIONS = new Set(["SEQUEL", "PREQUEL", "PARENT", "SIDE_STORY"]);
+const MAX_DEPTH = 6;
+const MAX_NODES = 40;
+
+type RawNode = {
+  id: number;
+  format: string | null;
+  episodes: number | null;
+  status: string | null;
+  averageScore: number | null;
+  seasonYear: number | null;
+  title: { english: string | null; romaji: string | null; userPreferred: string | null };
+  coverImage: { large: string | null } | null;
+  bannerImage: string | null;
+  description: string | null;
+  startDate: { year: number | null; month: number | null; day: number | null } | null;
+};
+type RawEdge = { relationType: string | null; node: RawNode | null };
+type RelationsResponse = { Media: { relations: { edges: RawEdge[] } | null } | null };
+
+export type AnilistFranchiseNode = {
+  id: number;
+  name: string;
+  type: "movie" | "series";
+  format?: string;
+  poster?: string;
+  banner?: string;
+  description?: string;
+  episodes?: number;
+  year?: number;
+  startDate?: string;
+  rating?: string;
+  upcoming: boolean;
+};
+
+const edgeCache = new Map<number, { at: number; edges: RawEdge[] }>();
+const edgeInflight = new Map<number, Promise<RawEdge[]>>();
+// A failed fetch is a miss, not an answer. Caching it in `edgeCache` would make
+// a transient 429 look like "this title has no relations" for the whole session,
+// so failures get a short retry window and then the next caller tries again.
+const edgeFailures = new Map<number, number>();
+const EDGE_FAILURE_TTL_MS = 60_000;
+
+async function fetchEdges(anilistId: number): Promise<RawEdge[]> {
+  const cached = edgeCache.get(anilistId);
+  if (cached && Date.now() - cached.at < 30 * 60_000) return cached.edges;
+  const shared = edgeInflight.get(anilistId);
+  if (shared) return shared;
+  const failedAt = edgeFailures.get(anilistId);
+  if (failedAt != null && Date.now() - failedAt < EDGE_FAILURE_TTL_MS) return [];
+  const request = (async () => {
+    try {
+      const data = await anilistRequest<RelationsResponse>(
+        RELATIONS_QUERY,
+        { id: anilistId },
+        undefined,
+        true,
+      );
+      const edges = data?.Media?.relations?.edges ?? [];
+      edgeCache.delete(anilistId);
+      edgeCache.set(anilistId, { at: Date.now(), edges });
+      while (edgeCache.size > 250) edgeCache.delete(edgeCache.keys().next().value!);
+      edgeFailures.delete(anilistId);
+      return edges;
+    } catch {
+      edgeFailures.set(anilistId, Date.now());
+      while (edgeFailures.size > 250) edgeFailures.delete(edgeFailures.keys().next().value!);
+      return [];
+    } finally {
+      edgeInflight.delete(anilistId);
+    }
+  })();
+  edgeInflight.set(anilistId, request);
+  return request;
+}
+
+/**
+ * True while the last edge fetch for this entry failed. `animeRelations` answers
+ * [] for both "no relations" and "could not ask"; callers that must not confuse
+ * the two (CW advancement) check this before trusting an empty result.
+ */
+export function animeRelationsUnavailable(anilistId: number): boolean {
+  const failedAt = edgeFailures.get(anilistId);
+  return failedAt != null && Date.now() - failedAt < EDGE_FAILURE_TTL_MS;
+}
+
+function fmtDate(d: RawNode["startDate"]): string | undefined {
+  if (!d?.year) return undefined;
+  const mm = String(d.month ?? 1).padStart(2, "0");
+  const dd = String(d.day ?? 1).padStart(2, "0");
+  return `${d.year}-${mm}-${dd}`;
+}
+
+function toNode(n: RawNode): AnilistFranchiseNode {
+  return {
+    id: n.id,
+    name: (n.title.english ?? n.title.romaji ?? n.title.userPreferred ?? "").trim(),
+    type: n.format === "MOVIE" ? "movie" : "series",
+    format: n.format ?? undefined,
+    poster: n.coverImage?.large ?? undefined,
+    banner: n.bannerImage ?? undefined,
+    description: (n.description ?? "").replace(/<[^>]+>/g, "").trim() || undefined,
+    episodes: n.episodes ?? undefined,
+    year: n.seasonYear ?? n.startDate?.year ?? undefined,
+    startDate: fmtDate(n.startDate),
+    rating:
+      typeof n.averageScore === "number" && n.averageScore > 0
+        ? (n.averageScore / 10).toFixed(1)
+        : undefined,
+    upcoming: n.status === "NOT_YET_RELEASED",
+  };
+}
+
+export async function anilistFranchise(kitsuId: number): Promise<AnilistFranchiseNode[]> {
+  const root = await kitsuToAnilist(kitsuId).catch(() => null);
+  if (!root) return [];
+  const out = new Map<number, AnilistFranchiseNode>();
+  const visited = new Set<number>([root]);
+  let frontier: number[] = [root];
+  let depth = 0;
+  while (frontier.length > 0 && depth < MAX_DEPTH && out.size < MAX_NODES) {
+    const batches = await Promise.all(frontier.map((id) => fetchEdges(id)));
+    const next: number[] = [];
+    for (const edges of batches) {
+      for (const e of edges) {
+        if (!e.relationType || !FRANCHISE_RELATIONS.has(e.relationType)) continue;
+        const n = e.node;
+        if (!n || n.id == null || visited.has(n.id)) continue;
+        visited.add(n.id);
+        const node = toNode(n);
+        if (node.name) out.set(n.id, node);
+        next.push(n.id);
+      }
+    }
+    frontier = next;
+    depth++;
+  }
+  return [...out.values()];
+}
+
+export type AnimeRelation = {
+  id: number;
+  name: string;
+  year?: number;
+  format?: string;
+  poster?: string;
+  kind: "prequel" | "sequel";
+  upcoming: boolean;
+};
+
+const MAX_RELATIONS = 20;
+
+export async function animeRelations(
+  anilistId: number,
+  opts?: { strict?: boolean },
+): Promise<AnimeRelation[]> {
+  const out: AnimeRelation[] = [];
+  const seen = new Map<number, number>();
+  let frontier: Array<{ id: number; dir: number }> = [{ id: anilistId, dir: 0 }];
+  seen.set(anilistId, 0);
+  while (frontier.length > 0 && out.length < MAX_RELATIONS) {
+    const batches = await Promise.all(frontier.map((f) => fetchEdges(f.id)));
+    if (opts?.strict) {
+      // A franchise walk that loses one entry can select the wrong sequel or
+      // report none at all. Only an empty answer backed by a failure counts:
+      // a cached success stays usable even if a later refresh failed.
+      for (let i = 0; i < frontier.length; i++) {
+        if (batches[i].length === 0 && animeRelationsUnavailable(frontier[i].id))
+          throw new Error("anime relations unavailable");
+      }
+    }
+    const next: Array<{ id: number; dir: number }> = [];
+    for (let i = 0; i < frontier.length; i++) {
+      const dir = frontier[i].dir;
+      for (const e of batches[i]) {
+        if (e.relationType !== "PREQUEL" && e.relationType !== "SEQUEL") continue;
+        const n = e.node;
+        if (!n || n.id == null) continue;
+        if (n.format === "MOVIE") continue;
+        if (seen.has(n.id)) continue;
+        const nextDir = dir + (e.relationType === "SEQUEL" ? 1 : -1);
+        seen.set(n.id, nextDir);
+        const node = toNode(n);
+        if (!node.name) continue;
+        out.push({
+          id: node.id,
+          name: node.name,
+          year: node.year,
+          format: node.format,
+          poster: node.poster,
+          kind: nextDir < 0 ? "prequel" : "sequel",
+          upcoming: node.upcoming,
+        });
+        next.push({ id: n.id, dir: nextDir });
+      }
+    }
+    frontier = next;
+  }
+  out.sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === "prequel" ? -1 : 1;
+    if (a.kind === "prequel") return (b.year ?? 0) - (a.year ?? 0);
+    return (a.year ?? 0) - (b.year ?? 0);
+  });
+  return out;
+}

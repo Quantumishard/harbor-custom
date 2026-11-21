@@ -1,0 +1,194 @@
+import type { Meta } from "@/lib/cinemeta";
+import type { KitsuEpisode } from "@/lib/providers/kitsu";
+import { parseKitsuId } from "@/lib/providers/kitsu";
+import { splitFranchiseDisplaySeason } from "@/lib/streams/anime-identity-core";
+import type { EpisodeDetailPlayback, PlayEpisode } from "@/lib/view";
+
+/**
+ * The native entry that canonically owns a displayed provider season.
+ *
+ * A catalog/umbrella page can show the same cour under a provider season while
+ * the native entry owns it under entry-relative numbering. Switching to the
+ * owner makes metadata, ratings and watched progress come from one work. Only
+ * switch when that owner already supplies episodes in the loaded pool.
+ */
+export function canonicalSeasonOwnerId(
+  currentId: string,
+  season: number | null,
+  resolvedOwnerId: string | null,
+  pool: Array<Pick<KitsuEpisode, "sourceMetaId">>,
+): string | null {
+  if (season == null || !Number.isInteger(season) || season < 1) return null;
+  if (!resolvedOwnerId || resolvedOwnerId === currentId) return null;
+  return pool.some((episode) => episode.sourceMetaId === resolvedOwnerId) ? resolvedOwnerId : null;
+}
+
+export function animeSeasonKey(ep: KitsuEpisode): number {
+  if (ep.imdbSeason === 0) return 0;
+  return ep.id < 0 ? (ep.imdbSeason ?? ep.seasonNumber ?? 1) : (ep.seasonNumber ?? 1);
+}
+
+/** Whether an episode belongs to the resume's season (either numbering). */
+export function episodeInResumeSeason(ep: KitsuEpisode, season: number): boolean {
+  if (animeSeasonKey(ep) === season) return true;
+  return ep.imdbSeason != null && ep.imdbSeason === season;
+}
+
+/** Whether the pool represents the given resume season at all. */
+export function poolHasSeason(episodes: KitsuEpisode[], season: number): boolean {
+  return episodes.some((e) => episodeInResumeSeason(e, season));
+}
+
+/**
+ * Find the pool episode a resume entry points at. The episode's season must
+ * agree with the resume: episode numbers repeat across seasons (JoJo's part 1
+ * has an E3 while the resume can point at Steel Ball Run's E3), and matching on
+ * the number alone elects the wrong season for the whole page.
+ */
+export function matchPlayedEpisode(
+  episodes: KitsuEpisode[],
+  played: { season: number; episode: number; displaySeason?: number } | null,
+  playedId: string | null,
+  metaId: string,
+  partScoped: boolean,
+): KitsuEpisode | undefined {
+  if (!played) return undefined;
+  const agrees = (e: KitsuEpisode) => episodeInResumeSeason(e, played.season);
+  if (playedId != null) {
+    const byEntry = episodes.find(
+      (e) => e.number === played.episode && (e.sourceMetaId ?? metaId) === playedId && agrees(e),
+    );
+    if (byEntry) return byEntry;
+  }
+  if (partScoped && played.displaySeason != null) {
+    const byPart = episodes.find(
+      (e) =>
+        e.number === played.episode &&
+        splitFranchiseDisplaySeason(parseKitsuId(e.sourceMetaId ?? "")) === played.displaySeason &&
+        agrees(e),
+    );
+    if (byPart) return byPart;
+  }
+  return episodes.find((e) => e.number === played.episode && agrees(e));
+}
+
+export type AnimeDetailTarget = {
+  seriesId: string;
+  season: number;
+  episode: number;
+  seriesMeta: Meta;
+  playback: EpisodeDetailPlayback;
+};
+
+export function animePlayEpisode(ep: KitsuEpisode): PlayEpisode {
+  return {
+    season: animeSeasonKey(ep),
+    episode: ep.number,
+    name: ep.title,
+    still: ep.thumbnail ?? undefined,
+    overview: ep.synopsis || undefined,
+    kitsuStreamId: ep.streamId,
+    sourceMetaId: ep.sourceMetaId,
+    imdbId: ep.imdbId,
+    imdbSeason: ep.imdbSeason,
+    imdbEpisode: ep.imdbEpisode,
+    absoluteNumber: ep.absoluteNumber ?? ep.number,
+    tvdbEpisodeId: ep.tvdbEpisodeId,
+    airDate: ep.airdate ?? undefined,
+    runtime: ep.length ?? undefined,
+  };
+}
+
+function isResolvableSeriesId(id: string): boolean {
+  return id.startsWith("tt") || id.startsWith("tmdb:tv:");
+}
+
+// Resolve the episode-detail target for an anime episode without mutating
+// display/play/watched identifiers (ep.number, animeSeasonKey).
+// A Kitsu entry needs a complete mapping before querying another provider.
+// Preserve its playback identity and the original page for Back navigation.
+export function resolveAnimeDetailTarget(
+  ep: KitsuEpisode,
+  parentMeta: Meta,
+  epMeta: Meta,
+): AnimeDetailTarget {
+  const canonicalSeason = ep.imdbSeason ?? animeSeasonKey(ep);
+  const canonicalEpisode = ep.imdbEpisode ?? ep.number;
+  const canonicalId =
+    (ep.imdbId?.startsWith("tt") ? ep.imdbId : null) ??
+    (isResolvableSeriesId(epMeta.id) ? epMeta.id : null) ??
+    (isResolvableSeriesId(parentMeta.id) ? parentMeta.id : null);
+  const playback = { meta: epMeta, episode: animePlayEpisode(ep) };
+  const mapped = ep.imdbSeason != null && ep.imdbEpisode != null;
+  if (canonicalId && (mapped || (ep.id < 0 && canonicalId === epMeta.id))) {
+    return {
+      seriesId: canonicalId,
+      season: canonicalSeason,
+      episode: canonicalEpisode,
+      seriesMeta: parentMeta,
+      playback,
+    };
+  }
+  return {
+    seriesId: epMeta.id,
+    season: animeSeasonKey(ep),
+    episode: ep.number,
+    seriesMeta: parentMeta,
+    playback,
+  };
+}
+
+export function nativeSeasonRows(
+  visibleEpisodes: KitsuEpisode[],
+  nativeEpisodes: KitsuEpisode[],
+  seasonHint: number,
+): KitsuEpisode[] {
+  const byCoordinate = new Map(
+    nativeEpisodes
+      .filter((ep) => ep.imdbSeason === seasonHint && ep.imdbEpisode != null)
+      .map((ep) => [ep.imdbEpisode, ep]),
+  );
+  return visibleEpisodes.map((ep) => {
+    if ((ep.imdbSeason ?? ep.seasonNumber) !== seasonHint) return ep;
+    const native = byCoordinate.get(ep.imdbEpisode ?? ep.number);
+    return native && (!ep.imdbId || !native.imdbId || ep.imdbId === native.imdbId) ? native : ep;
+  });
+}
+
+
+/** Only an episode that names this exact IMDb show and provider season
+ * can authorize a tracker status / airing-timer owner. A saved or searched
+ * season candidate by itself is just a hint, never verified ownership. */
+export function verifiedSeasonOwnerFromEpisodes(
+  rows: readonly Pick<KitsuEpisode, "sourceMetaId" | "imdbId" | "imdbSeason">[],
+  imdbId: string | null | undefined,
+  season: number | null,
+): string | null {
+  if (!imdbId || !/^tt[1-9]\d*$/.test(imdbId) ||
+      !Number.isInteger(season) || season == null || season < 1) return null;
+  const owners = new Set(rows
+    .filter((row) => row.imdbId === imdbId && row.imdbSeason === season)
+    .map((row) => row.sourceMetaId)
+    .filter((id): id is string => !!id && /^(?:kitsu|mal|anilist|anidb):[1-9]\d*$/.test(id)));
+  return owners.size === 1 ? [...owners][0] : null;
+}
+
+/**
+ * Native rows are resolved for one specific provider season; do not use rows
+ * from the previously selected season while the next one is loading.
+ * This owner can be unambiguous even when the displayed TVDB rows mix entries.
+ */
+export function nativeSeasonOwnerId(
+  native: {
+    page: string;
+    season: number;
+    episodes: readonly Pick<KitsuEpisode, "sourceMetaId">[];
+  } | null,
+  page: string,
+  season: number | null,
+): string | null {
+  if (!native || native.page !== page || native.season !== season || !native.episodes.length)
+    return null;
+  const ids = new Set(native.episodes.map((ep) => ep.sourceMetaId).filter((id): id is string => !!id));
+  return ids.size === 1 ? [...ids][0] : null;
+}

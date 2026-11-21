@@ -1,0 +1,240 @@
+// @ts-expect-error Node test types are intentionally outside the browser-only tsconfig.
+import { readFileSync } from "node:fs";
+import ts from "typescript";
+import * as snapshots from "../../src/lib/player/bridge.ts";
+import * as selection from "../../src/lib/player/subtitle-selection.ts";
+import * as cleanups from "../../src/lib/player/prepared-subtitle-cleanups.ts";
+import * as seeds from "../../src/lib/subtitles/seed-batch.ts";
+import * as autoload from "../../src/lib/subtitles/autoload.ts";
+import * as failures from "../../src/lib/player/mpv-failure.ts";
+import * as translationJobs from "../../src/lib/subtitles/translation-jobs.ts";
+import * as addedSubs from "../../src/lib/subtitles/added-subs.ts";
+import * as language from "../../src/lib/subtitles/language.ts";
+import * as pauseTrace from "../../src/lib/player/pause-trace.ts";
+import { SubtitlePreparationError as RealSubtitlePreparationError } from "../../src/lib/subtitles/prepare.ts";
+import type { PlayerBridge, PlayerSnapshot } from "../../src/lib/player/bridge.ts";
+import type { MpvOptions } from "../../src/lib/player/mpv.ts";
+
+export function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((ok, fail) => {
+    resolve = ok;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
+export async function flushBridge() {
+  for (let i = 0; i < 40; i += 1) await Promise.resolve();
+}
+
+export function playerSnapshotChanged() {
+  const source = readFileSync(
+    new URL("../../src/views/player/hooks/use-player-bridge.ts", import.meta.url),
+    "utf8",
+  );
+  const ast = ts.createSourceFile("hook.ts", source, ts.ScriptTarget.Latest, true);
+  const comparator = ast.statements.find(
+    (node) => ts.isFunctionDeclaration(node) && node.name?.text === "snapChangedIgnoringClock",
+  );
+  if (!comparator) throw new Error("Player snapshot comparator not found");
+  const compiled = ts.transpileModule(comparator.getText(ast), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  return new Function(
+    `const AUTOMATIC_SUBTITLE_BUFFER_SEC = ${autoload.AUTOMATIC_SUBTITLE_BUFFER_SEC}; ${compiled}; return snapChangedIgnoringClock;`,
+  )() as (a: PlayerSnapshot, b: PlayerSnapshot) => boolean;
+}
+
+export function mpvBridgeHarness(prefs = { volume: 0.35, muted: false }, options?: MpvOptions) {
+  const source = readFileSync(new URL("../../src/lib/player/mpv.ts", import.meta.url), "utf8");
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const handlers = new Map<string, (event: { payload: unknown }) => void>();
+  const commands: Array<{ command: string; args: Record<string, unknown> }> = [];
+  const errors: string[] = [];
+  // Fixed RAM and buffer values keep playback tests independent of the test machine.
+  const totalPhysBytes = 16 * 1024 ** 3;
+  const autoBufferProfile = () => ({
+    cacheSecs: 300,
+    readaheadSecs: 300,
+    maxBytes: 768 * 1024 ** 2,
+    maxBackBytes: 256 * 1024 ** 2,
+    pauseWaitSecs: 1,
+  });
+  const formatMpvBytes = (bytes: number) =>
+    bytes % 1024 ** 3 === 0 ? `${bytes / 1024 ** 3}GiB` : `${Math.round(bytes / 1024 ** 2)}MiB`;
+  const properties = new Map<string, unknown>([
+    ["sid", "no"],
+    ["secondary-sid", "no"],
+  ]);
+  let reset: () => Promise<void> = async () => {};
+  let write: (name: string, value: unknown) => Promise<void> = async () => {};
+  let nativeInvoke: ((command: string, args: Record<string, unknown>) => Promise<unknown>) | null =
+    null;
+  let prepare: (input: { url: string }) => Promise<unknown> = async ({ url }) => ({
+    playableUrl: url,
+    format: "srt",
+    cues: [{ start: 0, end: 1, text: "fixture" }],
+    cleanup() {},
+  });
+  const dependencies: Record<string, unknown> = {
+    "@tauri-apps/api/core": {
+      invoke: async (command: string, args: Record<string, unknown> = {}) => {
+        commands.push({ command, args });
+        if (nativeInvoke) return nativeInvoke(command, args);
+        if (command === "mpv_set_property") {
+          await write(String(args.name), args.value);
+          properties.set(String(args.name), args.value);
+        }
+        if (command === "mpv_get_property") return properties.get(String(args.name)) ?? "";
+      },
+    },
+    "@tauri-apps/api/event": {
+      listen: async (name: string, handler: (event: { payload: unknown }) => void) => {
+        handlers.set(name, handler);
+        return () => handlers.delete(name);
+      },
+    },
+    "./buffer-profile": {
+      autoBufferProfile,
+      formatMpvBytes,
+      isBlockedDiskCacheOptionLine: () => false,
+    },
+    "@/lib/native-memory": { getTotalPhysBytes: () => totalPhysBytes },
+    "@/lib/subtitles/prepare": {
+      prepareSubtitle: (input: { url: string }) => prepare(input),
+      SubtitlePreparationError: RealSubtitlePreparationError,
+    },
+    "@/lib/subtitles/provider-auth": { subtitleTrackDownloadHeaders: () => undefined },
+    "@/lib/subtitles/prepared-registry": { takePreparedSubtitle: () => null },
+    "@/lib/subtitles/limit-signal": { markLimitReached() {} },
+    "@/lib/subtitles/pending-subs": {
+      markPendingSub() {},
+      clearPendingSub() {},
+      wasPendingSub: () => false,
+    },
+    "@/lib/subtitles/autoload": autoload,
+    "@/lib/subtitles/translation-jobs": translationJobs,
+    "@/lib/subtitles/added-subs": addedSubs,
+    "@/lib/subtitles/language": language,
+    "./mpv-failure": failures,
+    "./pause-trace": pauseTrace,
+    "@/lib/platform": {
+      isWindowsDesktop: () => true,
+      isLinuxDesktop: () => false,
+      isMacDesktop: () => false,
+    },
+    "@/lib/tauri-unlisten": { makeSafeTauriUnlisten: (fn: unknown) => fn },
+    "./mpv-properties": {
+      resetMpvSubtitleFpsForTransition: () => reset(),
+      invalidateMpvSubtitleFpsContext() {},
+      markMpvSubtitleFpsSessionRecreated() {},
+    },
+    "./subtitle-fps": { SUBTITLE_FPS_TRANSITION_FAILED_EVENT: "selection-failed" },
+    "@/lib/perf/playback-trace": { finishPlaybackTrace() {}, markPlaybackTrace() {} },
+    "./prepared-subtitle-cleanups": cleanups,
+    "./subtitle-selection": selection,
+    "@/lib/subtitles/seed-batch": seeds,
+    "@/lib/subtitles/provider-url": { isSafeProviderSubtitleUrl: () => true },
+    "./bridge": {
+      ...snapshots,
+      initialPlayerSnapshot: () => ({ ...snapshots.emptySnapshot, ...prefs }),
+    },
+  };
+  const module = { exports: {} as { createMpvBridge: (options?: MpvOptions) => PlayerBridge } };
+  const windowEvents = new EventTarget();
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  const documentEvents = new EventTarget();
+  const timers = new Map<number, () => void>();
+  let timerId = 0;
+  let visibilityState: DocumentVisibilityState = "visible";
+  new Function("require", "module", "exports", "window", "console", "document", compiled)(
+    (id: string) => {
+      if (!(id in dependencies)) throw new Error(`Unexpected dependency: ${id}`);
+      return dependencies[id];
+    },
+    module,
+    module.exports,
+    {
+      setTimeout: (callback: () => void) => {
+        timers.set(++timerId, callback);
+        return timerId;
+      },
+      clearTimeout: (id: number) => timers.delete(id),
+      requestAnimationFrame: (callback: FrameRequestCallback) => {
+        frames.set(++frameId, callback);
+        return frameId;
+      },
+      cancelAnimationFrame: (id: number) => frames.delete(id),
+      addEventListener: windowEvents.addEventListener.bind(windowEvents),
+      removeEventListener: windowEvents.removeEventListener.bind(windowEvents),
+      dispatchEvent: (event: Event) => {
+        errors.push(event.type);
+        return windowEvents.dispatchEvent(event);
+      },
+    },
+    { warn() {}, info() {} },
+    {
+      get visibilityState() {
+        return visibilityState;
+      },
+      addEventListener: documentEvents.addEventListener.bind(documentEvents),
+      removeEventListener: documentEvents.removeEventListener.bind(documentEvents),
+    },
+  );
+  const bridge = module.exports.createMpvBridge(options);
+  let snapshot: PlayerSnapshot = snapshots.emptySnapshot;
+  bridge.subscribe((next) => {
+    snapshot = next;
+  });
+  return {
+    bridge,
+    commands,
+    errors,
+    emitWindow(name: string) {
+      windowEvents.dispatchEvent(new Event(name));
+    },
+    emitVisibility(state: DocumentVisibilityState) {
+      visibilityState = state;
+      documentEvents.dispatchEvent(new Event("visibilitychange"));
+    },
+    runTimers() {
+      const callbacks = [...timers.values()];
+      timers.clear();
+      callbacks.forEach((callback) => callback());
+    },
+    runFrame() {
+      const callbacks = [...frames.values()];
+      frames.clear();
+      callbacks.forEach((callback) => callback(0));
+    },
+    snapshot: () => snapshot,
+    emitEvent(event: Record<string, unknown>) {
+      handlers.get("mpv://event")?.({ payload: event });
+    },
+    emit(name: string, data: unknown) {
+      properties.set(name, data);
+      handlers.get("mpv://event")?.({ payload: { event: "property-change", name, data } });
+    },
+    resetWith(fn: typeof reset) {
+      reset = fn;
+    },
+    writeWith(fn: typeof write) {
+      write = fn;
+    },
+    prepareWith(fn: typeof prepare) {
+      prepare = fn;
+    },
+    invokeWith(fn: NonNullable<typeof nativeInvoke>) {
+      nativeInvoke = fn;
+    },
+    picks: () =>
+      commands
+        .filter(({ command, args }) => command === "mpv_set_property" && args.name === "sid")
+        .map(({ args }) => args.value),
+  };
+}

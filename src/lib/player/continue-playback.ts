@@ -1,0 +1,205 @@
+import {
+  playbackSourceKey,
+  actualPlaybackSourceKey,
+  streamMatchesEntry,
+  type ActualPlayback,
+  type PlaybackActor,
+  type PlaybackContinuation,
+} from "../playback-history";
+import type { Meta } from "../cinemeta";
+import type { PlayEpisode, PlayerSrc } from "../view";
+import { isLocalUrl } from "./local-url";
+import { persistablePlaybackIdentity } from "./playback-history-source";
+
+export type ContinuationServices = {
+  isCurrent: (actor: PlaybackActor) => boolean;
+  latest: () => ActualPlayback | null;
+  active: () => {
+    src: PlayerSrc;
+    resume: (options?: { restart?: boolean }) => Promise<void>;
+  } | null;
+  localFileExists: (path: string) => Promise<boolean>;
+  openPlayer: (src: PlayerSrc) => void;
+  openPicker: (
+    meta: Meta,
+    episode: PlayEpisode | undefined,
+    options: { autoPlay: boolean; resume: boolean; continuation: PlaybackContinuation },
+  ) => void;
+  prepareServer: (src: PlayerSrc, positionMs: number) => Promise<PlayerSrc>;
+};
+
+export function continuationStream<T extends Parameters<typeof streamMatchesEntry>[0]>(
+  stream: T,
+  context: PlaybackContinuation,
+): T | null {
+  if (!streamMatchesEntry(stream, context.source)) return null;
+  if (stream.infoHash && context.source.infoHash && context.source.fileIdx != null) {
+    return { ...stream, fileIdx: context.source.fileIdx };
+  }
+  return stream;
+}
+
+/** A renewed URL is not itself proof that the same physical release was recovered. */
+export function continuationAppliesToSource(
+  src: PlayerSrc,
+  context: PlaybackContinuation,
+): boolean {
+  const target = context.target;
+  if (
+    target &&
+    (target.metaId !== persistablePlaybackIdentity(src.meta.id) ||
+      target.season !== src.episode?.season ||
+      target.episode !== src.episode?.episode)
+  )
+    return false;
+  if (context.sourceKey && context.sourceKey === playbackSourceKey(src)) return true;
+  if (!target || !src.streamRef) return false;
+  const source = { ...src.streamRef, url: src.historyUrl ?? src.url };
+  const saved = context.source;
+  if (saved.fileIdx != null && source.fileIdx !== saved.fileIdx) return false;
+  if (!streamMatchesEntry(source, saved)) return false;
+  if (saved.infoHash && source.infoHash) return true;
+  // Direct addon URLs have no content hash. Require the known release and its
+  // exact byte size; matching an addon or title alone is not a file identity.
+  return (
+    !!saved.parsedTitle &&
+    source.parsedTitle === saved.parsedTitle &&
+    !!saved.size &&
+    saved.size > 0 &&
+    source.size === saved.size
+  );
+}
+
+export function continuationFor(
+  target: ActualPlayback,
+  actor: PlaybackActor,
+  restart = false,
+): PlaybackContinuation {
+  return {
+    id: target.id,
+    actor,
+    restart,
+    positionMs: restart ? 0 : target.positionMs,
+    sourceKey: actualPlaybackSourceKey(target),
+    target: {
+      metaId: target.src.meta.id,
+      season: target.src.episode?.season,
+      episode: target.src.episode?.episode,
+    },
+    audioTrack: target.audioTrack,
+    subtitle: target.subtitle,
+    subDelaySec: target.subDelaySec,
+    audioDelaySec: target.audioDelaySec,
+    source: {
+      ...target.src.streamRef,
+      url: target.src.historyUrl ?? target.src.url,
+      title: target.src.meta.name,
+      savedAt: target.playedAt,
+    },
+  };
+}
+
+/** Only replay genuinely reusable direct HTTP links without a picker refresh.
+ * Debrid/torrent URLs are signed or provider-resolved and may expire while the
+ * source identity (hash, file index, addon) remains usable for fresh resolution.
+ */
+export function canReuseRecentRemotePlayback(
+  target: Pick<ActualPlayback, "playedAt" | "requiresSourceRefresh" | "src">,
+  now = Date.now(),
+): boolean {
+  const age = now - target.playedAt;
+  if (!Number.isFinite(age) || age < 0 || age > 2 * 60 * 60 * 1000) return false;
+  if (target.requiresSourceRefresh || target.src.streamRef?.infoHash) return false;
+  return /^https?:\/\/(?!127\.0\.0\.1(?:[:/]|$)|localhost(?:[:/]|$)|\[::1\](?:[:/]|$))/i.test(
+    target.src.url,
+  );
+}
+
+export async function continueActualPlayback(
+  target: ActualPlayback,
+  options: { restart?: boolean; actor?: PlaybackActor },
+  services: ContinuationServices,
+): Promise<"returned" | "player-opened" | "picker-opened"> {
+  const actor = options.actor ?? target.actor;
+  const valid = () => {
+    if (!services.isCurrent(actor))
+      throw new Error("The active profile changed. Open the menu again.");
+    if (services.latest()?.id !== target.id)
+      throw new Error("Last playback changed. Open the menu again.");
+  };
+  valid();
+  if (target.completed && !options.restart)
+    throw new Error("This playback has finished. Choose Play from beginning to restart it.");
+  const active = services.active();
+  if (active) {
+    if (
+      !playbackSourceKey(active.src) ||
+      playbackSourceKey(active.src) !== actualPlaybackSourceKey(target) ||
+      persistablePlaybackIdentity(active.src.meta.id) !== target.src.meta.id ||
+      active.src.episode?.season !== target.src.episode?.season ||
+      active.src.episode?.episode !== target.src.episode?.episode
+    ) {
+      throw new Error("Another playback is active. Return to the player first.");
+    }
+    await active.resume({ restart: options.restart === true });
+    return "returned";
+  }
+  const continuation = continuationFor(target, actor, options.restart);
+  const prepared = (src: PlayerSrc): PlayerSrc => {
+    const subtitle = continuation.subtitle;
+    const restored =
+      src.homeServer && subtitle?.homeServerSubtitleId
+        ? {
+            ...continuation,
+            subtitle: {
+              ...subtitle,
+              // Server subtitle URLs are authenticated transport, not saved identity.
+              source: src.subtitles?.find((track) => track.id === subtitle.homeServerSubtitleId)
+                ?.url,
+            },
+          }
+        : continuation;
+    return {
+      ...src,
+      continuation: restored,
+      resume: true,
+      startPositionMs: continuation.positionMs,
+      startFromZero: options.restart === true,
+      startPaused: false,
+    };
+  };
+  const pick = () => {
+    valid();
+    services.openPicker(target.src.meta, target.src.episode, {
+      autoPlay: false,
+      resume: true,
+      continuation,
+    });
+    return "picker-opened" as const;
+  };
+  if (isLocalUrl(target.src.url)) {
+    const exists = await services.localFileExists(target.src.url);
+    valid();
+    if (!exists) {
+      if (/^(tt|tmdb:|kitsu:|mal:|anilist:|anidb:)/.test(target.src.meta.id)) return pick();
+      throw new Error("The last video file is missing or unavailable.");
+    }
+    services.openPlayer(prepared(target.src));
+    return "player-opened";
+  }
+  if (target.src.homeServer) {
+    const src = await services.prepareServer(target.src, continuation.positionMs);
+    valid();
+    services.openPlayer(prepared(src));
+    return "player-opened";
+  }
+  if (target.src.meta.id.startsWith("playback-private:"))
+    throw new Error(
+      "Open this video from its source or enter the link again. Its network address was not saved.",
+    );
+  if (target.requiresSourceRefresh || target.src.streamRef?.infoHash) return pick();
+  if (!/^https?:\/\//i.test(target.src.url))
+    throw new Error("The last playback source is no longer available.");
+  services.openPlayer(prepared(target.src));
+  return "player-opened";
+}

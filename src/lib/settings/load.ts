@@ -1,0 +1,680 @@
+import {
+  DEFAULT_THEME,
+  FONT_PAIRS,
+  isKnownPreset,
+  type CustomColors,
+  type ThemeSettings,
+} from "@/lib/theme";
+import { languageName } from "@/lib/subtitles/language";
+import { ORIGINAL_AUDIO_LANG } from "@/lib/player/audio-language";
+import { sanitizeHalfSpeedRate, sanitizeSeekStep, sanitizeSpeedStep } from "@/lib/seek-step";
+import { migrateModelId, providerTabFor } from "@/lib/ai-models";
+import {
+  sanitizeFullscreenClockFormat,
+  sanitizeFullscreenClockSize,
+  sanitizeFullscreenClockStyle,
+} from "@/lib/local-time";
+import { normalizePosterCardSettings } from "@/lib/poster-backdrop-expansion";
+import { normalizeLibraryGroups, normalizeLibraryGroupSections } from "@/lib/library-groups";
+import {
+  sanitizeSubtitleOffsetPosition,
+  sanitizeSubtitleOffsetSize,
+} from "@/lib/player/subtitle-offset";
+import { sanitizeBufferSize } from "@/lib/player/buffer-profile";
+import { sanitizeScreensaverMedia } from "@/lib/screensaver/media";
+import {
+  sanitizeControllerCursor,
+  sanitizeControllerCursorHideMs,
+  sanitizeControllerCursorImage,
+  sanitizeControllerCursorSize,
+} from "@/lib/gamepad/cursor";
+
+const RETIRED_GEMINI = new Set([
+  "gemini-2.0-flash",
+  "gemini-2.0-flash-lite",
+  "gemini-2.0-flash-exp",
+  "gemini-1.5-flash",
+  "gemini-1.5-flash-8b",
+  "gemini-1.5-pro",
+  "gemini-pro",
+  "gemini-3-pro-preview",
+]);
+import { DEFAULT, HARBOR_CURSOR_SCALE, STORAGE_KEY } from "./defaults";
+import type { Settings } from "./types";
+import { adoptLegacyPlaylists, readPlaylists } from "@/lib/iptv/playlists-store";
+import { sanitizeDisplaySelection } from "@/lib/monitors";
+import { migratePublicRelayUrl } from "@/lib/together/relay-version";
+
+const HEX_RE = /^#[0-9a-f]{6}$/i;
+
+export function sanitizeHarborCursorScale(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT.harborCursorScale;
+  const { min, max, step } = HARBOR_CURSOR_SCALE;
+  const bounded = Math.min(max, Math.max(min, value));
+  const stepsPerUnit = 1 / step;
+  return Math.round(bounded * stepsPerUnit) / stepsPerUnit;
+}
+
+function sanitizePosterDockTransition(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT.posterDockTransitionMs;
+  }
+  return Math.min(1500, Math.max(250, Math.round(value)));
+}
+
+function sanitizeCardAwardDisplay(
+  value: unknown,
+  legacyAwardTabs: unknown,
+  legacyCardBadges: unknown,
+): Settings["cardAwardDisplay"] {
+  if (value === "tabs" || value === "badge" || value === "none") return value;
+  if (legacyAwardTabs === true) return "tabs";
+  return legacyCardBadges === false ? "none" : "badge";
+}
+
+const MAX_END_SCREEN_LEAD_SEC = 30 * 60;
+
+function sanitizeEndScreenLead(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT.endScreenLeadSec;
+  }
+  if (value < 0) return -1;
+  return Math.min(MAX_END_SCREEN_LEAD_SEC, Math.round(value));
+}
+
+function sanitizeEndScreenCountdown(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT.endScreenCountdownSec;
+  }
+  return Math.min(60, Math.max(0, Math.round(value)));
+}
+
+function sanitizeTopbarAppearance(
+  value: unknown,
+  transparent: unknown,
+  glassControls: unknown,
+): Settings["topbarAppearance"] {
+  if (value === "transparent" || value === "glass" || value === "filled") return value;
+  if (glassControls === true) return "glass";
+  return transparent === false ? "filled" : "transparent";
+}
+
+function legacySeekStep(direction: "back" | "forward"): number | undefined {
+  try {
+    const raw = localStorage.getItem(`harbor.seek-step.${direction}`);
+    if (!raw) return undefined;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function sanitizeCustomColors(c: unknown): CustomColors | null {
+  if (!c || typeof c !== "object") return null;
+  const obj = c as Partial<CustomColors>;
+  const keys: Array<keyof CustomColors> = [
+    "canvas",
+    "surface",
+    "elevated",
+    "raised",
+    "ink",
+    "inkMuted",
+    "inkSubtle",
+    "edge",
+    "accent",
+    "danger",
+  ];
+  const out = {} as CustomColors;
+  for (const k of keys) {
+    const v = obj[k];
+    if (typeof v !== "string" || !HEX_RE.test(v)) return null;
+    out[k] = v;
+  }
+  return out;
+}
+
+export function sanitizeTheme(t: Partial<ThemeSettings> | undefined): ThemeSettings {
+  if (!t) return DEFAULT_THEME;
+  const isBuiltIn =
+    typeof t.preset === "string" && t.preset !== "custom" && isKnownPreset(t.preset);
+  const isUserPreset = typeof t.preset === "string" && t.preset.startsWith("user:");
+  const isPreset = isBuiltIn || isUserPreset;
+  const isCustom = t.preset === "custom";
+  const fontOk = typeof t.fontPair === "string" && t.fontPair in FONT_PAIRS;
+  const dimOk = typeof t.backgroundDim === "number" && t.backgroundDim >= 0 && t.backgroundDim <= 1;
+  const imgOk =
+    t.backgroundImage == null ||
+    (typeof t.backgroundImage === "string" && t.backgroundImage.length < 3_000_000);
+  const customColors = sanitizeCustomColors(t.customColors);
+  const preset: ThemeSettings["preset"] = isPreset
+    ? (t.preset as ThemeSettings["preset"])
+    : isCustom && customColors
+      ? "custom"
+      : DEFAULT_THEME.preset;
+  return {
+    preset,
+    fontPair: fontOk ? (t.fontPair as ThemeSettings["fontPair"]) : DEFAULT_THEME.fontPair,
+    backgroundDim: dimOk ? (t.backgroundDim as number) : DEFAULT_THEME.backgroundDim,
+    backgroundImage: imgOk ? (t.backgroundImage ?? null) : null,
+    customColors,
+    customFontId: typeof t.customFontId === "string" ? t.customFontId : null,
+  };
+}
+
+let cachedKey: string | null = null;
+let cachedRaw: string | null = null;
+let cachedSettings: Settings | null = null;
+
+export function loadStoredSettings(rawKey: string = STORAGE_KEY): Settings {
+  const raw = localStorage.getItem(rawKey);
+  if (cachedSettings && cachedKey === rawKey && cachedRaw === raw) return cachedSettings;
+  const { settings, cacheable } = parseStoredSettings(raw);
+  cachedKey = rawKey;
+  cachedRaw = raw;
+  cachedSettings = cacheable ? settings : null;
+  return settings;
+}
+
+export function parseStoredSettings(raw: string | null): {
+  settings: Settings;
+  cacheable: boolean;
+} {
+  if (!raw) {
+    return {
+      settings: {
+        ...DEFAULT,
+        seekBackStepSec: sanitizeSeekStep(legacySeekStep("back"), DEFAULT.seekBackStepSec),
+        seekForwardStepSec: sanitizeSeekStep(legacySeekStep("forward"), DEFAULT.seekForwardStepSec),
+      },
+      cacheable: false,
+    };
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<Settings> & {
+      topbarGlassControls?: boolean;
+      _subStyleV2?: boolean;
+      _subAssForceV1?: boolean;
+      _subAssRespectV2?: boolean;
+      _mpvEmbedV2?: boolean;
+      _mpvEmbedV3?: boolean;
+      _mpvEmbedV4?: boolean;
+      _mpvBufferSizeV1?: boolean;
+      _anime4kIndicatorOffV1?: boolean;
+      _pickerLayoutStremio?: boolean;
+      _pickerLayoutStremioV2?: boolean;
+      _stremioDeeplinkOnByDefault?: boolean;
+      _anilistSyncOnV1?: boolean;
+      /** Legacy shared toggle, now split per tracker. */
+      syncIndicator?: boolean;
+      _animeTitleLanguageV1?: boolean;
+      /** Legacy: the preference used to live in the Simkl panel. */
+      simklAnimeTitleLanguage?: "english" | "romaji" | "native";
+      _musicSeekThumbV1?: boolean;
+      _streamSortAddonV1?: boolean;
+      scrapers?: unknown;
+      scrapersAcknowledged?: boolean;
+      _scrapersV2?: boolean;
+      _animeRowsV1?: boolean;
+      _tennisWtaV1?: boolean;
+      _liquidGlassOptIn?: boolean;
+      _navThemeRepairV1?: boolean;
+      _navHideMigrateV1?: boolean;
+      _playlistsTabV1?: boolean;
+      _smoothScrollOptIn?: boolean;
+      _streamCacheCapV1?: boolean;
+      _playbackSourcePreferenceV1?: boolean;
+      _playbackSourcePreferenceV2?: boolean;
+      /** Legacy: the high-quality toggle was split into a quality choice. */
+      mangaBestEnabled?: boolean;
+      /** Legacy: folded into cardAwardDisplay. */
+      awardTabs?: boolean;
+      /** Legacy: folded into topbarAppearance. */
+      transparentTopBar?: boolean;
+    };
+    // Legacy defaults and playlist adoption depend on other stores. Re-read them
+    // until a self-contained settings blob has been persisted by the normal flow.
+    const cacheable =
+      parsed.seekBackStepSec != null &&
+      parsed.seekForwardStepSec != null &&
+      parsed._playlistsTabV1 === true &&
+      (!Array.isArray(parsed.iptvPlaylists) || parsed.iptvPlaylists.length === 0);
+    if (!parsed._playbackSourcePreferenceV1) {
+      parsed.playbackSourcePreference = parsed.localPlaybackMode === "local" ? "local" : "online";
+      parsed.preferredMediaServerId = null;
+      parsed._playbackSourcePreferenceV1 = true;
+    }
+    if (!parsed._playbackSourcePreferenceV2) {
+      if (parsed.playbackSourcePreference === "ask") {
+        parsed.playbackSourcePreference = "online";
+      }
+      parsed._playbackSourcePreferenceV2 = true;
+    }
+    if (!parsed._animeRowsV1) {
+      const prev = (parsed.animeRows ?? {}) as Partial<Settings["animeRows"]>;
+      const hiddenSet = new Set<string>(Array.isArray(prev.hidden) ? prev.hidden : []);
+      const anilist = Array.isArray(parsed.animeAnilistRowsHidden)
+        ? parsed.animeAnilistRowsHidden
+        : [];
+      const mal = Array.isArray(parsed.animeMalRowsHidden) ? parsed.animeMalRowsHidden : [];
+      if (anilist.includes("yourLists")) hiddenSet.add("yourAnilistLists");
+      if (anilist.includes("trending")) hiddenSet.add("anilistTrending");
+      if (anilist.includes("top100")) hiddenSet.add("anilistTop100");
+      if (mal.includes("yourMalLists")) hiddenSet.add("yourMalLists");
+      parsed.animeRows = {
+        order: Array.isArray(prev.order) ? prev.order : [],
+        hidden: [...hiddenSet],
+        renamed: prev.renamed && typeof prev.renamed === "object" ? prev.renamed : {},
+      };
+      parsed._animeRowsV1 = true;
+    }
+    if (!parsed._pickerLayoutStremioV2) {
+      if (parsed.pickerLayout === "condensed") parsed.pickerLayout = "stremio";
+      parsed._pickerLayoutStremio = true;
+      parsed._pickerLayoutStremioV2 = true;
+    }
+    if (!parsed._stremioDeeplinkOnByDefault) {
+      parsed.stremioDeeplinkInstall = true;
+      parsed._stremioDeeplinkOnByDefault = true;
+    }
+    parsed.contentAdvisoryToast = parsed.contentAdvisoryToast === true;
+    if (parsed.contentAdvisoryTheme !== "monochrome" && parsed.contentAdvisoryTheme !== "colored") {
+      parsed.contentAdvisoryTheme = DEFAULT.contentAdvisoryTheme;
+    }
+    if (typeof parsed.contentAdvisoryShowIgnore !== "boolean") {
+      parsed.contentAdvisoryShowIgnore = true;
+    }
+    if (!parsed._anilistSyncOnV1) {
+      parsed.anilistAutoSync = true;
+      parsed._anilistSyncOnV1 = true;
+    }
+    if (!parsed._musicSeekThumbV1) {
+      parsed.musicSeekThumb = true;
+      parsed.musicSeekThumbHover = true;
+      parsed._musicSeekThumbV1 = true;
+    }
+    if (!parsed._streamSortAddonV1) {
+      if (parsed.streamSort === "harbor") parsed.streamSort = "addon";
+      parsed._streamSortAddonV1 = true;
+    }
+    if (!parsed._tennisWtaV1) {
+      if (Array.isArray(parsed.sportsLeagues) && parsed.sportsLeagues.includes("TENNIS")) {
+        if (!parsed.sportsLeagues.includes("TENNIS_WTA")) parsed.sportsLeagues.push("TENNIS_WTA");
+      }
+      parsed._tennisWtaV1 = true;
+    }
+    if (
+      typeof parsed.songIdAiModel === "string" &&
+      RETIRED_GEMINI.has(parsed.songIdAiModel.trim())
+    ) {
+      parsed.songIdAiModel = DEFAULT.songIdAiModel;
+    }
+    if (parsed.aiSearchModel) parsed.aiSearchModel = migrateModelId(parsed.aiSearchModel);
+    if (typeof parsed.steamSearchShortcut !== "boolean")
+      parsed.steamSearchShortcut = DEFAULT.steamSearchShortcut;
+    if (!["first", "random", "manual"].includes(parsed.gameArtworkSelection as string))
+      parsed.gameArtworkSelection = DEFAULT.gameArtworkSelection;
+    if (typeof parsed.gameArtworkScreenshots !== "boolean")
+      parsed.gameArtworkScreenshots = DEFAULT.gameArtworkScreenshots;
+    if (typeof parsed.gameArtworkCoverIcon !== "boolean")
+      parsed.gameArtworkCoverIcon = DEFAULT.gameArtworkCoverIcon;
+    if (parsed.gameAgeRatingAgency !== "ESRB" && parsed.gameAgeRatingAgency !== "PEGI")
+      parsed.gameAgeRatingAgency = DEFAULT.gameAgeRatingAgency;
+    if (parsed.aiSearchProvider !== "groq" && parsed.aiSearchProvider !== "openrouter") {
+      parsed.aiSearchProvider = parsed.aiSearchModel
+        ? providerTabFor(parsed.aiSearchModel)
+        : "openrouter";
+    }
+    if (!parsed._mpvEmbedV3) {
+      parsed.playerMpvEmbed = true;
+      parsed._mpvEmbedV3 = true;
+    }
+    if (!parsed._mpvEmbedV4) {
+      parsed.playerMpvEmbed = true;
+      parsed._mpvEmbedV4 = true;
+    }
+    if (!parsed._mpvBufferSizeV1) {
+      if (parsed.mpvBufferBoost) parsed.mpvBufferSize = "large";
+      parsed._mpvBufferSizeV1 = true;
+    }
+    parsed.mpvBufferSize = sanitizeBufferSize(parsed.mpvBufferSize);
+    if (!parsed._anime4kIndicatorOffV1) {
+      parsed.playerAnime4kIndicator = false;
+      parsed._anime4kIndicatorOffV1 = true;
+    }
+    if (!parsed._animeTitleLanguageV1) {
+      // The anime title language preference used to live in the Simkl panel and
+      // only there, so a user without Simkl could never reach it. It governs
+      // cards, the picker and presence, so it moved to Language → App.
+      if (parsed.simklAnimeTitleLanguage) {
+        parsed.animeTitleLanguage = parsed.simklAnimeTitleLanguage;
+      }
+      delete parsed.simklAnimeTitleLanguage;
+      parsed._animeTitleLanguageV1 = true;
+    }
+    if (!parsed._subStyleV2) {
+      if (parsed.subFontSize === 55) parsed.subFontSize = DEFAULT.subFontSize;
+      if (parsed.subBorderSize === 3) parsed.subBorderSize = DEFAULT.subBorderSize;
+      if (parsed.subMarginY === 22) parsed.subMarginY = DEFAULT.subMarginY;
+      parsed._subStyleV2 = true;
+    }
+    delete parsed.scrapers;
+    delete parsed.scrapersAcknowledged;
+    delete parsed._scrapersV2;
+    if (!parsed._liquidGlassOptIn) {
+      parsed.liquidGlass = false;
+      parsed.experimentalLiquidGlassEnabled = false;
+      parsed._liquidGlassOptIn = true;
+    }
+    if (!parsed._smoothScrollOptIn) {
+      parsed.smoothScroll = false;
+      parsed._smoothScrollOptIn = true;
+    }
+    if (!parsed._streamCacheCapV1) {
+      if (parsed.streamCacheMaxGb === 0 || parsed.streamCacheMaxGb == null) {
+        parsed.streamCacheMaxGb = DEFAULT.streamCacheMaxGb;
+      }
+      if (parsed.streamCacheRetentionHours === 24 || parsed.streamCacheRetentionHours == null) {
+        parsed.streamCacheRetentionHours = DEFAULT.streamCacheRetentionHours;
+      }
+      parsed._streamCacheCapV1 = true;
+    }
+    if (!parsed._playlistsTabV1) {
+      const lists = readPlaylists();
+      const hasVodSource = Array.isArray(lists) && lists.some((l) => l?.kind !== "epg");
+      if (hasVodSource) parsed.showPlaylistsTab = true;
+      parsed._playlistsTabV1 = true;
+    }
+    // Playlists now live in their own store; adopt any stranded legacy field and
+    // only drop it once it has been persisted, so a failed write never loses data.
+    if ("iptvPlaylists" in parsed) {
+      if (adoptLegacyPlaylists(Array.isArray(parsed.iptvPlaylists) ? parsed.iptvPlaylists : [])) {
+        delete parsed.iptvPlaylists;
+      }
+    }
+    if (!parsed._navThemeRepairV1) {
+      parsed._navThemeRepairV1 = true;
+    }
+    if (!parsed._navHideMigrateV1) {
+      const legacy = (parsed.hideContent ?? {}) as Record<string, unknown>;
+      const carry: string[] = [];
+      if (legacy.manga === true) carry.push("manga");
+      if (legacy.liveTv === true) carry.push("live");
+      if (carry.length > 0) {
+        const prevNav = (parsed.navCustomization ?? {}) as { hidden?: unknown };
+        const prev = Array.isArray(prevNav.hidden)
+          ? prevNav.hidden.filter((x): x is string => typeof x === "string")
+          : [];
+        parsed.navCustomization = {
+          ...parsed.navCustomization,
+          hidden: [...prev, ...carry.filter((c) => !prev.includes(c))],
+        } as Settings["navCustomization"];
+      }
+      delete legacy.manga;
+      delete legacy.liveTv;
+      parsed._navHideMigrateV1 = true;
+    }
+    if (parsed.cwSources == null) {
+      const ext = parsed.externalContinueWatching === true;
+      parsed.cwSources = {
+        library: true,
+        trakt: ext,
+        simkl: ext,
+        local: true,
+        publicmetadb: false,
+      };
+    }
+    const posterCards = normalizePosterCardSettings(parsed);
+    if (parsed.mangaBestEnabled === true) parsed.mangaUpscaleQuality = "best";
+    delete parsed.mangaBestEnabled;
+    const legacySyncIndicator =
+      typeof parsed.syncIndicator === "boolean" ? parsed.syncIndicator : undefined;
+    delete parsed.syncIndicator;
+    const settings: Settings = {
+      ...DEFAULT,
+      ...parsed,
+      harborCursor: parsed.harborCursor === true,
+      harborCursorScale: sanitizeHarborCursorScale(parsed.harborCursorScale),
+      anilistSyncIndicator:
+        typeof parsed.anilistSyncIndicator === "boolean"
+          ? parsed.anilistSyncIndicator
+          : (legacySyncIndicator ?? DEFAULT.anilistSyncIndicator),
+      malSyncIndicator:
+        typeof parsed.malSyncIndicator === "boolean"
+          ? parsed.malSyncIndicator
+          : (legacySyncIndicator ?? DEFAULT.malSyncIndicator),
+      searchTmdbTopMatch: parsed.searchTmdbTopMatch !== false,
+      metadataAddonOrder: Array.isArray(parsed.metadataAddonOrder)
+        ? [
+            ...new Set(
+              parsed.metadataAddonOrder.filter(
+                (key): key is string => typeof key === "string" && key.length <= 256,
+              ),
+            ),
+          ]
+        : [],
+      cardAwardDisplay: sanitizeCardAwardDisplay(
+        parsed.cardAwardDisplay,
+        parsed.awardTabs,
+        parsed.showCardBadges,
+      ),
+      tvCardOptions: {
+        ...DEFAULT.tvCardOptions,
+        ...parsed.tvCardOptions,
+      },
+      libraryGroups: normalizeLibraryGroups(parsed.libraryGroups),
+      libraryGroupSections: normalizeLibraryGroupSections(parsed.libraryGroupSections),
+      spooktoberBanner: ["disabled", "small", "below-hero"].includes(parsed.spooktoberBanner ?? "")
+        ? parsed.spooktoberBanner
+        : undefined,
+      togetherRelayUrl: migratePublicRelayUrl(
+        typeof parsed.togetherRelayUrl === "string"
+          ? parsed.togetherRelayUrl
+          : DEFAULT.togetherRelayUrl,
+      ),
+      ...posterCards,
+      animePreferImdbStreams: parsed.animePreferImdbStreams !== false,
+      showQuickGameLibrary: parsed.showQuickGameLibrary === true,
+      topbarAppearance: sanitizeTopbarAppearance(
+        parsed.topbarAppearance,
+        parsed.transparentTopBar,
+        parsed.topbarGlassControls,
+      ),
+      posterDockTransitionMs: sanitizePosterDockTransition(parsed.posterDockTransitionMs),
+      endScreenLeadSec: sanitizeEndScreenLead(parsed.endScreenLeadSec),
+      endScreenCountdownSec: sanitizeEndScreenCountdown(parsed.endScreenCountdownSec),
+      endScreenOnZero: parsed.endScreenOnZero === "play" ? "play" : "close",
+      bigPictureDisplay: sanitizeDisplaySelection(parsed.bigPictureDisplay),
+      playerSeparateDisplay: sanitizeDisplaySelection(parsed.playerSeparateDisplay),
+      playerSeparateCoverTaskbar:
+        typeof parsed.playerSeparateCoverTaskbar === "boolean"
+          ? parsed.playerSeparateCoverTaskbar
+          : DEFAULT.playerSeparateCoverTaskbar,
+      fullscreenClockEnabled:
+        typeof parsed.fullscreenClockEnabled === "boolean"
+          ? parsed.fullscreenClockEnabled
+          : DEFAULT.fullscreenClockEnabled,
+      controllerCursor: sanitizeControllerCursor(parsed.controllerCursor),
+      screensaverStyle:
+        parsed.screensaverStyle === "catBoat" ||
+        parsed.screensaverStyle === "halloween" ||
+        parsed.screensaverStyle === "custom"
+          ? parsed.screensaverStyle
+          : "ambient",
+      screensaverMedia: sanitizeScreensaverMedia(parsed.screensaverMedia),
+      screensaverMediaId:
+        typeof parsed.screensaverMediaId === "string" ? parsed.screensaverMediaId : null,
+      controllerCursorImage: sanitizeControllerCursorImage(parsed.controllerCursorImage),
+      controllerCursorSize: sanitizeControllerCursorSize(parsed.controllerCursorSize),
+      controllerCursorEnabled:
+        typeof parsed.controllerCursorEnabled === "boolean"
+          ? parsed.controllerCursorEnabled
+          : DEFAULT.controllerCursorEnabled,
+      controllerCursorHideMs: sanitizeControllerCursorHideMs(parsed.controllerCursorHideMs),
+      fullscreenClockFormat: sanitizeFullscreenClockFormat(parsed.fullscreenClockFormat),
+      fullscreenClockStyle: sanitizeFullscreenClockStyle(parsed.fullscreenClockStyle),
+      fullscreenClockShowSeconds:
+        typeof parsed.fullscreenClockShowSeconds === "boolean"
+          ? parsed.fullscreenClockShowSeconds
+          : DEFAULT.fullscreenClockShowSeconds,
+      fullscreenClockShowEndTime:
+        typeof parsed.fullscreenClockShowEndTime === "boolean"
+          ? parsed.fullscreenClockShowEndTime
+          : DEFAULT.fullscreenClockShowEndTime,
+      fullscreenClockSizePx: sanitizeFullscreenClockSize(parsed.fullscreenClockSizePx),
+      streaming: { ...DEFAULT.streaming, ...parsed.streaming },
+      subOffsetIndicatorEnabled:
+        typeof parsed.subOffsetIndicatorEnabled === "boolean"
+          ? parsed.subOffsetIndicatorEnabled
+          : DEFAULT.subOffsetIndicatorEnabled,
+      subOffsetIndicatorPosition: sanitizeSubtitleOffsetPosition(parsed.subOffsetIndicatorPosition),
+      subOffsetIndicatorSize: sanitizeSubtitleOffsetSize(parsed.subOffsetIndicatorSize),
+      cwSources: {
+        ...DEFAULT.cwSources,
+        ...parsed.cwSources,
+      },
+      cwClearProviderProgress: parsed.cwClearProviderProgress === true,
+      subProvidersEnabled: {
+        ...DEFAULT.subProvidersEnabled,
+        ...parsed.subProvidersEnabled,
+      },
+      hideContent: {
+        ...DEFAULT.hideContent,
+        ...parsed.hideContent,
+      },
+      homeRows: {
+        ...DEFAULT.homeRows,
+        ...parsed.homeRows,
+      },
+      navCustomization: {
+        ...DEFAULT.navCustomization,
+        ...parsed.navCustomization,
+      },
+      animeRows: {
+        ...DEFAULT.animeRows,
+        ...parsed.animeRows,
+      },
+      letterboxd: {
+        ...DEFAULT.letterboxd,
+        ...parsed.letterboxd,
+      },
+      preferredSubLangs: (parsed.preferredSubLangs ?? DEFAULT.preferredSubLangs).map(languageName),
+      preferredAudioLangs: (parsed.preferredAudioLangs ?? DEFAULT.preferredAudioLangs).map((lang) =>
+        lang === ORIGINAL_AUDIO_LANG ? lang : languageName(lang),
+      ),
+      castAlwaysTranscode: parsed.castAlwaysTranscode ?? DEFAULT.castAlwaysTranscode,
+      mangaUpscaleQuality: parsed.mangaUpscaleQuality === "best" ? "best" : "fast",
+      mangaUpscaleAutoDownload: parsed.mangaUpscaleAutoDownload !== false,
+      showMalBadge: parsed.showMalBadge ?? DEFAULT.showMalBadge,
+      badgePlacement:
+        parsed.badgePlacement === "top" || parsed.badgePlacement === "bottom"
+          ? parsed.badgePlacement
+          : DEFAULT.badgePlacement,
+      harborColor:
+        typeof parsed.harborColor === "string" && HEX_RE.test(parsed.harborColor)
+          ? parsed.harborColor
+          : DEFAULT.harborColor,
+      traktClientId: parsed.traktClientId ?? DEFAULT.traktClientId,
+      traktClientSecret: parsed.traktClientSecret ?? DEFAULT.traktClientSecret,
+      traktAccessToken: parsed.traktAccessToken ?? DEFAULT.traktAccessToken,
+      traktRefreshToken: parsed.traktRefreshToken ?? DEFAULT.traktRefreshToken,
+      traktExpiresAt: parsed.traktExpiresAt ?? DEFAULT.traktExpiresAt,
+      traktUsername: parsed.traktUsername ?? DEFAULT.traktUsername,
+      seekBackStepSec: sanitizeSeekStep(
+        parsed.seekBackStepSec ?? legacySeekStep("back"),
+        DEFAULT.seekBackStepSec,
+      ),
+      seekForwardStepSec: sanitizeSeekStep(
+        parsed.seekForwardStepSec ?? legacySeekStep("forward"),
+        DEFAULT.seekForwardStepSec,
+      ),
+      seekBackStepShortSec: sanitizeSeekStep(
+        parsed.seekBackStepShortSec,
+        DEFAULT.seekBackStepShortSec,
+      ),
+      seekForwardStepShortSec: sanitizeSeekStep(
+        parsed.seekForwardStepShortSec,
+        DEFAULT.seekForwardStepShortSec,
+      ),
+      seekBackStepLongSec: sanitizeSeekStep(
+        parsed.seekBackStepLongSec,
+        DEFAULT.seekBackStepLongSec,
+      ),
+      seekForwardStepLongSec: sanitizeSeekStep(
+        parsed.seekForwardStepLongSec,
+        DEFAULT.seekForwardStepLongSec,
+      ),
+      halfSpeedRate: sanitizeHalfSpeedRate(parsed.halfSpeedRate, DEFAULT.halfSpeedRate),
+      speedDownStep: sanitizeSpeedStep(parsed.speedDownStep, DEFAULT.speedDownStep),
+      speedUpStep: sanitizeSpeedStep(parsed.speedUpStep, DEFAULT.speedUpStep),
+      theme: sanitizeTheme(parsed.theme),
+      animeTitleLanguage:
+        parsed.animeTitleLanguage === "romaji" || parsed.animeTitleLanguage === "native"
+          ? parsed.animeTitleLanguage
+          : DEFAULT.animeTitleLanguage,
+      webhooks: {
+        ...DEFAULT.webhooks,
+        ...parsed.webhooks,
+        sources: {
+          ...DEFAULT.webhooks.sources,
+          ...parsed.webhooks?.sources,
+        },
+      },
+      customCalendar: {
+        ...DEFAULT.customCalendar,
+        ...parsed.customCalendar,
+        trackedPeople: Array.isArray(parsed.customCalendar?.trackedPeople)
+          ? parsed.customCalendar.trackedPeople
+          : [],
+        genres: Array.isArray(parsed.customCalendar?.genres) ? parsed.customCalendar.genres : [],
+        watchProviders: Array.isArray(parsed.customCalendar?.watchProviders)
+          ? parsed.customCalendar.watchProviders
+          : [],
+        originCountries: Array.isArray(parsed.customCalendar?.originCountries)
+          ? parsed.customCalendar.originCountries
+          : [],
+        mediaTypes: {
+          movie: parsed.customCalendar?.mediaTypes?.movie !== false,
+          tv: parsed.customCalendar?.mediaTypes?.tv !== false,
+          anime: parsed.customCalendar?.mediaTypes?.anime !== false,
+        },
+      },
+      webhookRules: Array.isArray(parsed.webhookRules)
+        ? parsed.webhookRules.map((r) => ({
+            ...r,
+            channels: {
+              discord: r.channels?.discord ?? false,
+              telegram: r.channels?.telegram ?? false,
+              desktop: r.channels?.desktop ?? false,
+            },
+          }))
+        : [],
+      customStreamFilters: Array.isArray(parsed.customStreamFilters)
+        ? parsed.customStreamFilters
+        : DEFAULT.customStreamFilters,
+      streamPriority: Array.isArray(parsed.streamPriority)
+        ? parsed.streamPriority
+        : DEFAULT.streamPriority,
+      animeFavoriteGenres: Array.isArray(parsed.animeFavoriteGenres)
+        ? parsed.animeFavoriteGenres.filter((g): g is number => typeof g === "number")
+        : DEFAULT.animeFavoriteGenres,
+      animePicksDismissedAt:
+        typeof parsed.animePicksDismissedAt === "number"
+          ? parsed.animePicksDismissedAt
+          : DEFAULT.animePicksDismissedAt,
+      localReviewDismissedCount:
+        typeof parsed.localReviewDismissedCount === "number"
+          ? parsed.localReviewDismissedCount
+          : DEFAULT.localReviewDismissedCount,
+      animeAnilistRowsHidden: Array.isArray(parsed.animeAnilistRowsHidden)
+        ? parsed.animeAnilistRowsHidden.filter((k): k is string => typeof k === "string")
+        : DEFAULT.animeAnilistRowsHidden,
+      tmdbImageLangs: Array.isArray(parsed.tmdbImageLangs)
+        ? parsed.tmdbImageLangs.filter((l): l is string => typeof l === "string")
+        : DEFAULT.tmdbImageLangs,
+    };
+    return { settings, cacheable };
+  } catch {
+    return { settings: DEFAULT, cacheable: false };
+  }
+}

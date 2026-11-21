@@ -1,0 +1,463 @@
+// @ts-expect-error Node test types are intentionally outside the browser-only tsconfig.
+import assert from "node:assert/strict";
+// @ts-expect-error Node test types are intentionally outside the browser-only tsconfig.
+import { readFileSync } from "node:fs";
+// @ts-expect-error Node test types are intentionally outside the browser-only tsconfig.
+import test from "node:test";
+import ts from "typescript";
+
+// The harness swaps ./client and ./session but keeps the real id helpers, since
+// the session gate matches on their exact key spellings.
+const idsModule = (() => {
+  const code = ts.transpileModule(
+    readFileSync(new URL("../src/lib/simkl/ids.ts", import.meta.url), "utf8"),
+    {
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+    },
+  ).outputText;
+  const module = { exports: {} as Record<string, unknown> };
+  new Function("require", "module", "exports", code)(
+    () => ({
+      anidbToMal: async () => null,
+      anilistToMal: async () => null,
+      kitsuToMal: async () => null,
+    }),
+    module,
+    module.exports,
+  );
+  return module.exports;
+})();
+
+class StubSimklApiError extends Error {
+  status: number;
+  constructor(status: number, body = "") {
+    super(`Simkl HTTP ${status}: ${body}`);
+    this.status = status;
+  }
+}
+
+function playback(
+  sessions: unknown[],
+  existing?: { ms: number; t: number },
+  options: { storage?: Map<string, string> } = {},
+) {
+  const writes: unknown[][] = [];
+  const requests: string[] = [];
+  let failure: Error | null = null;
+  let session = {};
+  let onRequest: (() => void) | null = null;
+  const storage = options.storage ?? new Map<string, string>();
+  const storageApi = {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+    removeItem: (key: string) => storage.delete(key),
+    key: (index: number) => [...storage.keys()][index] ?? null,
+    get length() {
+      return storage.size;
+    },
+  };
+  const source = readFileSync(new URL("../src/lib/simkl/playback.ts", import.meta.url), "utf8");
+  const mocks: Record<string, unknown> = {
+    "./session": { getSession: () => session },
+    "./ids": idsModule,
+    "./client": {
+      simklRequest: async (path: string) => {
+        requests.push(path);
+        if (failure) throw failure;
+        onRequest?.();
+        return sessions;
+      },
+      SimklApiError: StubSimklApiError,
+    },
+    "@/lib/cw-dismiss": { isCwDismissed: () => false },
+    "@/lib/resume": {
+      readResumeEntry: () => existing,
+      saveResumeBatch: (entries: unknown[]) => writes.push(entries),
+    },
+    "./list-status": {
+      loadSimklProgress: async () => ({ completedSeries: [] }),
+    },
+  };
+  const module = { exports: {} };
+  const output = ts.transpileModule(source, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText;
+  new Function("require", "module", "exports", "window", "localStorage", output)(
+    (name: string) => {
+      assert.ok(Object.hasOwn(mocks, name), `Unexpected dependency: ${name}`);
+      return mocks[name];
+    },
+    module,
+    module.exports,
+    options.storage ? {} : undefined,
+    storageApi,
+  );
+  return {
+    api: module.exports as typeof import("../src/lib/simkl/playback"),
+    writes,
+    requests,
+    storage,
+    StubSimklApiError,
+    failRequests: (error: Error | null) => {
+      failure = error;
+    },
+    setSession: (next: unknown) => {
+      session = next;
+    },
+    setOnRequest: (fn: (() => void) | null) => {
+      onRequest = fn;
+    },
+  };
+}
+
+test("Simkl paused episodes retain timestamp, episode identity and resume progress", async () => {
+  // Simkl's response example uses episode.episode; its item guide uses number.
+  const pausedAt = "2026-09-29T10:30:00.000Z";
+  const h = playback([
+    {
+      progress: 45.5,
+      paused_at: pausedAt,
+      show: { title: "Fixture show", ids: { imdb: "tt1234567", tmdb: 1234 } },
+      episode: { season: 1, episode: 5 },
+    },
+    {
+      progress: 20,
+      paused_at: pausedAt,
+      show: { title: "Fixture show", ids: { imdb: "tt1234567" } },
+      episode: { season: 1, number: 6 },
+    },
+  ]);
+  const items = (await h.api.fetchSimklPlaybackItems()).items;
+  assert.equal(items.length, 2, "distinct episodes must not collapse into one session");
+  assert.deepEqual(
+    items.map((item) => item.state?.video_id),
+    ["tt1234567:1:5", "tt1234567:1:6"],
+  );
+  assert.deepEqual(items[0].altIds, ["tmdb:tv:1234"]);
+  assert.equal(items[0].state?.lastWatched, pausedAt);
+  assert.equal(items[0]._mtime, pausedAt);
+  assert.equal(items[0].state?.timeOffset, 1_201_200);
+  assert.deepEqual(h.writes[0], [
+    {
+      id: "tt1234567",
+      ms: 1_201_200,
+      season: 1,
+      episode: 5,
+      pct: 0.455,
+      source: "simkl",
+      t: Date.parse(pausedAt),
+    },
+  ]);
+});
+
+test("anime progress uses a season-scoped ID or an explicit franchise episode mapping", async () => {
+  const h = playback([
+    {
+      progress: 45,
+      anime: { title: "Season two", ids: { imdb: "tt100", kitsu: 42 } },
+      episode: { number: 3, tvdb_season: 2, tvdb_number: 3 },
+    },
+    {
+      progress: 50,
+      anime: { title: "Mapped only", ids: { imdb: "tt200" } },
+      episode: { number: 4, tvdb_season: 2, tvdb_number: 4 },
+    },
+    { progress: 40, anime: { title: "Unmapped", ids: { imdb: "tt300" } }, episode: { number: 5 } },
+  ]);
+  const items = (await h.api.fetchSimklPlaybackItems()).items;
+  assert.deepEqual(
+    items.map((i) => i.state?.video_id),
+    ["kitsu:42:1:3", "tt200:2:4"],
+  );
+});
+
+test("a remote pause does not overwrite more recent local progress", async () => {
+  const h = playback(
+    [{ progress: 45, paused_at: "2026-09-29T10:00:00Z", movie: { ids: { imdb: "tt100" } } }],
+    { ms: 100, t: Date.parse("2026-09-29T10:01:00Z") },
+  );
+  await h.api.fetchSimklPlaybackItems();
+  assert.deepEqual(h.writes, []);
+});
+
+test("Simkl prefers paused_at while retaining legacy watched_at compatibility", async () => {
+  const pausedAt = "2026-09-29T10:30:00.000Z";
+  const watchedAt = "2026-09-28T10:30:00.000Z";
+  const h = playback([
+    {
+      progress: 25,
+      paused_at: pausedAt,
+      watched_at: watchedAt,
+      movie: { ids: { imdb: "tt1234567" } },
+    },
+    { progress: 30, watched_at: watchedAt, movie: { ids: { imdb: "tt2345678" } } },
+  ]);
+  const items = (await h.api.fetchSimklPlaybackItems()).items;
+  assert.deepEqual(
+    items.map((item) => item.state?.lastWatched),
+    [pausedAt, watchedAt],
+  );
+});
+
+test("Simkl still excludes unstarted and finished sessions", async () => {
+  const h = playback(
+    [0, 45, 99, 100].map((progress, index) => ({
+      progress,
+      paused_at: "2026-09-29T10:30:00.000Z",
+      movie: { ids: { imdb: `tt123456${index}` } },
+    })),
+  );
+  const items = (await h.api.fetchSimklPlaybackItems()).items;
+  assert.deepEqual(
+    items.map((item) => item._id),
+    ["tt1234561"],
+  );
+  assert.equal(h.writes.length, 1);
+});
+
+test("Simkl keeps the anime-native id and entry-relative coords for a mal-only node", async () => {
+  const h = playback([
+    {
+      progress: 30,
+      paused_at: "2026-09-29T10:30:00.000Z",
+      anime: { title: "Fixture anime", ids: { mal: 51715 } },
+      episode: { season: 1, number: 6 },
+    },
+  ]);
+  const items = (await h.api.fetchSimklPlaybackItems()).items;
+  assert.equal(items[0]._id, "mal:51715");
+  assert.equal(items[0].isAnime, true);
+  assert.deepEqual(items[0].state?.video_id, "mal:51715:1:6");
+});
+
+test("an active session for the same episode is detected for the replay gate", async () => {
+  const h = playback([
+    {
+      progress: 40,
+      paused_at: "2026-09-29T10:30:00.000Z",
+      show: { ids: { imdb: "tt1234567" } },
+      episode: { season: 1, number: 5 },
+    },
+  ]);
+  assert.equal(await h.api.hasActiveSimklPlayback("tt1234567", { season: 1, episode: 5 }), true);
+  assert.equal(await h.api.hasActiveSimklPlayback("tt1234567", { season: 1, episode: 6 }), false);
+  assert.equal(await h.api.hasActiveSimklPlayback("tt7654321", { season: 1, episode: 5 }), false);
+});
+
+test("anime sessions match entry-relative or provider episode spellings", async () => {
+  const h = playback([
+    {
+      progress: 40,
+      paused_at: "2026-09-29T10:30:00.000Z",
+      anime: { ids: { mal: 51715 } },
+      episode: { season: 1, number: 2 },
+    },
+  ]);
+  assert.equal(await h.api.hasActiveSimklPlayback("mal:51715", { season: 1, episode: 2 }), true);
+  assert.equal(
+    await h.api.hasActiveSimklPlayback("mal:51715", {
+      season: 2,
+      episode: 2,
+      imdbSeason: 1,
+      imdbEpisode: 2,
+    }),
+    true,
+  );
+  assert.equal(
+    await h.api.hasActiveSimklPlayback("mal:51715", {
+      season: 2,
+      episode: 2,
+      imdbSeason: 2,
+      imdbEpisode: 2,
+    }),
+    false,
+  );
+});
+
+test("a watch without episode coordinates matches any session for its item", async () => {
+  const h = playback([
+    { progress: 40, paused_at: "2026-09-29T10:30:00.000Z", movie: { ids: { imdb: "tt1234567" } } },
+  ]);
+  assert.equal(await h.api.hasActiveSimklPlayback("tt1234567", undefined), true);
+  assert.equal(await h.api.hasActiveSimklPlayback("tt7654321", undefined), false);
+});
+
+test("a missing sessions endpoint reports no active playback", async () => {
+  const h = playback([]);
+  h.failRequests(new h.StubSimklApiError(404, "no sessions"));
+  assert.equal(await h.api.hasActiveSimklPlayback("tt1234567", { season: 1, episode: 5 }), false);
+});
+
+test("the deletion snapshot requests the unfiltered list", async () => {
+  const h = playback([
+    {
+      progress: 45,
+      paused_at: "2026-09-29T10:30:00.000Z",
+      show: { title: "Fixture show", ids: { imdb: "tt1234567" } },
+      episode: { season: 1, episode: 5 },
+    },
+  ]);
+
+  const snapshot = await h.api.fetchSimklPlaybackSnapshot();
+
+  assert.equal(snapshot.complete, true);
+  assert.equal(snapshot.items.length, 1);
+  assert.match(h.requests[0], /hide_watched=false/);
+});
+
+test("the deletion snapshot fails closed at the page limit", async () => {
+  const h = playback(
+    Array.from({ length: 40 }, (_, index) => ({
+      progress: 45,
+      paused_at: "2026-09-29T10:30:00.000Z",
+      show: { title: "Fixture show", ids: { imdb: "tt1234567" } },
+      episode: { season: 1, number: index + 1 },
+    })),
+  );
+
+  const snapshot = await h.api.fetchSimklPlaybackSnapshot();
+
+  assert.equal(snapshot.complete, false);
+  assert.equal(snapshot.items.length, 40);
+});
+
+test("the deletion snapshot treats a list 404 as a failed read", async () => {
+  const h = playback([]);
+  h.failRequests(new h.StubSimklApiError(404, "no sessions"));
+
+  await assert.rejects(() => h.api.fetchSimklPlaybackSnapshot());
+});
+
+test("the deletion snapshot reports a session change", async () => {
+  const h = playback([]);
+  h.setOnRequest(() => h.setSession({}));
+
+  await assert.rejects(() => h.api.fetchSimklPlaybackSnapshot(), /session changed/);
+});
+
+test("the deletion snapshot keeps distinct playback ids for the same episode", async () => {
+  const h = playback([
+    {
+      id: 1,
+      progress: 45,
+      paused_at: "2026-09-29T10:30:00.000Z",
+      show: { title: "Fixture show", ids: { imdb: "tt1234567" } },
+      episode: { season: 1, number: 5 },
+    },
+    {
+      id: 2,
+      progress: 45,
+      paused_at: "2026-09-29T10:30:00.000Z",
+      show: { title: "Fixture show", ids: { imdb: "tt1234567" } },
+      episode: { season: 1, number: 5 },
+    },
+  ]);
+
+  const snapshot = await h.api.fetchSimklPlaybackSnapshot();
+
+  assert.equal(snapshot.items.length, 2);
+  assert.deepEqual(snapshot.items.map((entry) => entry.providerPlaybackIds?.simkl).sort(), [
+    "1",
+    "2",
+  ]);
+});
+
+test("Simkl playback cache is account-scoped and never leaks across accounts", async () => {
+  const storage = new Map<string, string>();
+  const h = playback(
+    [
+      {
+        progress: 45,
+        paused_at: "2026-09-29T10:30:00.000Z",
+        show: { title: "Fixture show", ids: { imdb: "tt1234567" } },
+        episode: { season: 1, episode: 5 },
+      },
+    ],
+    undefined,
+    { storage },
+  );
+  h.setSession({ username: "acct-a", accessToken: "a" });
+  const first = await h.api.fetchSimklPlaybackItems();
+  assert.equal(first.fresh, true);
+  assert.equal(first.items.length, 1);
+  const keyA = [...storage.keys()].find((key) => key.includes("acct-a"));
+  assert.ok(keyA, "account A cache key was not written");
+
+  h.setSession({ username: "acct-b", accessToken: "b" });
+  h.failRequests(new Error("offline"));
+  await assert.rejects(
+    () => h.api.fetchSimklPlaybackItems(),
+    /offline/,
+    "account B must not receive account A's cache",
+  );
+  assert.equal(storage.has(keyA), true);
+
+  h.setSession({ username: "acct-a", accessToken: "a" });
+  const fallback = await h.api.fetchSimklPlaybackItems();
+  assert.equal(fallback.fresh, false);
+  assert.equal(fallback.items.length, 1);
+  assert.equal(fallback.items[0]._id, "tt1234567");
+});
+
+test("Simkl cached old Watching anchors are filtered", () => {
+  const storage = new Map<string, string>();
+  const base = {
+    type: "series",
+    name: "Fixture",
+    external: "simkl",
+    removed: false,
+    temp: false,
+    _ctime: "2022-01-01T00:00:00.000Z",
+    _mtime: "2022-01-01T00:00:00.000Z",
+    upNext: true,
+  };
+  storage.set(
+    "harbor.simkl.playback_items.v2.acct-a",
+    JSON.stringify([
+      {
+        ...base,
+        _id: "mal:1",
+        state: {
+          timeOffset: 0,
+          duration: 0,
+          lastWatched: "2022-09-08T00:00:00.000Z",
+        },
+      },
+      {
+        ...base,
+        _id: "mal:2",
+        state: {
+          timeOffset: 0,
+          duration: 0,
+          lastWatched: new Date().toISOString(),
+        },
+      },
+    ]),
+  );
+  const h = playback([], undefined, { storage });
+  h.setSession({ username: "acct-a", accessToken: "a" });
+  assert.deepEqual(
+    h.api.readCachedSimklPlaybackItems().map((item) => item._id),
+    ["mal:2"],
+  );
+});
+
+test("clearing one Simkl account cache leaves another account cache intact", () => {
+  const storage = new Map<string, string>();
+  storage.set("harbor.simkl.playback_items.v2.acct-a", "[]");
+  storage.set("harbor.simkl.playback_items.v2.acct-b", "[]");
+  const h = playback([], undefined, { storage });
+  h.api.clearCachedSimklPlaybackItems("acct-a");
+  assert.equal(storage.has("harbor.simkl.playback_items.v2.acct-a"), false);
+  assert.equal(storage.has("harbor.simkl.playback_items.v2.acct-b"), true);
+});
+
+test("reading the account cache drops the unattributable legacy cache", () => {
+  const storage = new Map<string, string>();
+  storage.set("harbor.simkl.playback_items", JSON.stringify([{ _id: "legacy" }]));
+  const h = playback([], undefined, { storage });
+  h.setSession({ username: "acct-a", accessToken: "a" });
+
+  assert.deepEqual(h.api.readCachedSimklPlaybackItems(), []);
+  assert.equal(storage.has("harbor.simkl.playback_items"), false);
+});

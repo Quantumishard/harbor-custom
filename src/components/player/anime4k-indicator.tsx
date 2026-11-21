@@ -1,0 +1,78 @@
+import { Sparkles } from "lucide-react";
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { useSettings } from "@/lib/settings";
+import type { Anime4kMode } from "@/lib/player/anime4k-modes";
+import type { Anime4kChoice } from "@/views/player/hooks/use-anime4k";
+
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+export function Anime4kIndicator({
+  engine,
+  chromeVisible,
+  suppressed = false,
+}: {
+  engine: "html5" | "mpv";
+  chromeVisible: boolean;
+  suppressed?: boolean;
+}) {
+  const { settings } = useSettings();
+  // `vo-passes` is a large node map. Reading it every two seconds on an idle
+  // badge competes with playback on slow GPUs, so poll only when Anime4K can
+  // actually be running and the badge is on screen. The badge is hidden with
+  // the rest of the chrome, so there is nothing to probe until it is shown.
+  const enabled =
+    settings.playerAnime4kIndicator &&
+    settings.playerAnime4k === true &&
+    !!settings.playerAnime4kFolder &&
+    chromeVisible &&
+    engine === "mpv" &&
+    isTauri;
+  const [active, setActive] = useState(false);
+
+  useEffect(() => {
+    if (!enabled) {
+      setActive(false);
+      return;
+    }
+    let cancelled = false;
+    // `glsl-shaders` only echoes the request back, so a chain that failed to
+    // compile still looked active there. `vo-passes` describes what the video
+    // output actually ran, and mpv names Anime4K's own passes `Anime4K-v...`,
+    // which is what the badge should key off.
+    const tick = async () => {
+      const passes = await invoke<string[]>("mpv_vo_passes").catch(() => null);
+      if (!cancelled) {
+        setActive(Array.isArray(passes) && passes.some((p) => p.includes("Anime4K")));
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [enabled]);
+
+  if (!active) return null;
+
+  const choice = (settings.playerAnime4kOverride as Anime4kChoice) || "auto";
+  const isAuto = choice === "auto";
+  const autoActive = isAuto && settings.playerAnime4k && settings.playerAnime4kFolder;
+  const effectiveMode =
+    isAuto && autoActive
+      ? (settings.playerAnime4kMode as Anime4kMode)
+      : choice === "off"
+        ? "Off"
+        : choice;
+
+  return (
+    <div
+      className={`pointer-events-none absolute left-1/2 top-[3.25rem] z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border border-edge-soft bg-canvas/85 px-3 py-1.5 text-[11px] font-semibold tracking-wide text-ink/85 shadow-[0_8px_24px_-12px_rgba(0,0,0,0.6)] backdrop-blur-md transition-opacity duration-300 ${chromeVisible && !suppressed ? "opacity-100" : "opacity-0"}`}
+    >
+      <Sparkles size={13} className="text-accent" />
+      <span>Anime4K</span>
+      {effectiveMode && <span className="text-ink-subtle">{effectiveMode}</span>}
+    </div>
+  );
+}

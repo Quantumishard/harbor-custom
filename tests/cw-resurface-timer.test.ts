@@ -1,0 +1,783 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import test from "node:test";
+import ts from "typescript";
+import * as cwDedupe from "../src/lib/cw-dedupe.ts";
+
+function harness(
+  opts: {
+    nextEp?: { season: number; episode: number; airDate?: string } | null;
+    relatedIds?: (id: string) => string[];
+    owner?: string;
+  } = {},
+) {
+  const relatedCalls: string[] = [];
+  const state = { adjacentCalls: 0 };
+  const data = new Map<string, string>();
+  const storage = {
+    getItem: (k: string) => data.get(k) ?? null,
+    setItem: (k: string, v: string) => data.set(k, v),
+    removeItem: (k: string) => data.delete(k),
+  };
+  const window = { addEventListener: () => {} };
+  const cache = new Map<string, any>();
+  const load = (path: string): any => {
+    const full = resolve(path);
+    if (cache.has(full)) return cache.get(full);
+    const exports = {};
+    cache.set(full, exports);
+    const compiled = ts.transpileModule(readFileSync(full, "utf8"), {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    new Function("require", "exports", "localStorage", "window", compiled)(
+      (name: string) => {
+        if (name.endsWith("/stremio")) {
+          return {
+            isCwMember: (i: any) => i.state?.timeOffset > 0,
+            isAnimeCwItem: (i: any) =>
+              i.isAnime === true || /^(kitsu|mal|anilist|anidb):/.test(i._id),
+            libraryMetaType: () => "series",
+            episodeFromVideoId: (id: string) => {
+              const p = id?.split(":");
+              return p?.length === 3 ? { season: +p[1], episode: +p[2] } : null;
+            },
+          };
+        }
+        if (name.endsWith("/series-episodes")) {
+          return {
+            fetchAdjacentEpisodes: async () => {
+              state.adjacentCalls++;
+              return {
+                next:
+                  opts.nextEp !== undefined
+                    ? opts.nextEp
+                    : { season: 1, episode: 5, airDate: "2099-01-01" },
+              };
+            },
+            fetchEpisodeList: async () => [],
+            nextUnwatchedAfter: () => null,
+          };
+        }
+        if (name.endsWith("/providers/anime-mapping")) {
+          return {
+            relatedLibraryIds: async (id: string) => {
+              relatedCalls.push(id);
+              return opts.relatedIds?.(id) ?? [];
+            },
+          };
+        }
+        if (name.endsWith("/cw-dismiss")) {
+          return { isCwDismissed: () => false };
+        }
+        if (name.endsWith("/cw-derived-caches")) {
+          return { cwCacheOwnerKey: () => opts.owner ?? "profile-1" };
+        }
+        if (name.endsWith("/cw-dedupe")) return cwDedupe;
+        return {};
+      },
+      exports,
+      storage,
+      window,
+    );
+    return exports;
+  };
+  return {
+    load,
+    data,
+    relatedCalls,
+    adjacentCalls: () => state.adjacentCalls,
+    opts,
+  };
+}
+
+test("resurfaceCandidates keeps unaired episode with waitingForAir and airDate when animeCwEnd is timer", async () => {
+  const futureAir = new Date(Date.now() + 86400000).toISOString();
+  const h = harness({ nextEp: { season: 1, episode: 5, airDate: futureAir } });
+  const resurface = h.load("src/lib/cw-resurface.ts");
+
+  const item = {
+    _id: "tt_vision_quest",
+    type: "series",
+    name: "Vision Quest",
+    state: {
+      season: 1,
+      episode: 4,
+      timeOffset: 0,
+      duration: 3600000,
+      flaggedWatched: 1,
+      lastWatched: new Date().toISOString(),
+    },
+  };
+
+  const timerResult = await resurface.resurfaceCandidates([item], new Set(), {
+    tmdbKey: "",
+    animeMode: "all",
+    animeCwEnd: "timer",
+  });
+
+  const candidate = timerResult.get("tt_vision_quest");
+  assert.ok(candidate, "Candidate should resurface when timer mode is enabled");
+  assert.equal(candidate.season, 1);
+  assert.equal(candidate.episode, 5);
+  assert.equal(candidate.waitingForAir, true);
+  assert.equal(candidate.airDate, futureAir);
+});
+
+test("resurfaceCandidates drops unaired episode when animeCwEnd is hide", async () => {
+  const futureAir = new Date(Date.now() + 86400000).toISOString();
+  const h = harness({ nextEp: { season: 1, episode: 5, airDate: futureAir } });
+  const resurface = h.load("src/lib/cw-resurface.ts");
+
+  const item = {
+    _id: "tt_vision_quest_hide",
+    type: "series",
+    name: "Vision Quest",
+    state: {
+      season: 1,
+      episode: 4,
+      timeOffset: 0,
+      duration: 3600000,
+      flaggedWatched: 1,
+      lastWatched: new Date().toISOString(),
+    },
+  };
+
+  const hideResult = await resurface.resurfaceCandidates([item], new Set(), {
+    tmdbKey: "",
+    animeMode: "all",
+    animeCwEnd: "hide",
+  });
+
+  assert.equal(
+    hideResult.get("tt_vision_quest_hide"),
+    undefined,
+    "Should not resurface when set to hide",
+  );
+});
+
+test("resurfaceCandidates keeps a caught-up series as a neutral card when timer mode is on", async () => {
+  const h = harness({ nextEp: null }); // Show is caught up (e.g. Tulsa King latest released ep 2 watched)
+  const resurface = h.load("src/lib/cw-resurface.ts");
+
+  const item = {
+    _id: "tt_tulsa_king",
+    type: "series",
+    name: "Tulsa King",
+    state: {
+      season: 2,
+      episode: 2,
+      timeOffset: 0,
+      duration: 3600000,
+      flaggedWatched: 1,
+      lastWatched: new Date().toISOString(),
+    },
+  };
+
+  const timerResult = await resurface.resurfaceCandidates([item], new Set(), {
+    tmdbKey: "",
+    animeMode: "all",
+    animeCwEnd: "timer",
+  });
+
+  const candidate = timerResult.get("tt_tulsa_king");
+  assert.ok(candidate, "Caught-up series should be retained with timer");
+  assert.equal(candidate.season, 2);
+  assert.equal(candidate.episode, 2);
+  assert.equal(candidate.caughtUp, true);
+  assert.equal(candidate.waitingForAir, undefined);
+});
+
+test("resurfaceCandidates drops caught-up series when hideCaughtUp is true", async () => {
+  const h = harness({ nextEp: null });
+  const resurface = h.load("src/lib/cw-resurface.ts");
+
+  const item = {
+    _id: "tt_tulsa_king_hide",
+    type: "series",
+    name: "Tulsa King",
+    state: {
+      season: 2,
+      episode: 2,
+      timeOffset: 0,
+      duration: 3600000,
+      flaggedWatched: 1,
+      lastWatched: new Date().toISOString(),
+    },
+  };
+
+  const result = await resurface.resurfaceCandidates([item], new Set(), {
+    tmdbKey: "",
+    animeMode: "all",
+    animeCwEnd: "timer",
+    hideCaughtUp: true,
+  });
+
+  assert.equal(
+    result.get("tt_tulsa_king_hide"),
+    undefined,
+    "Should drop caught up series when hideCaughtUp is true",
+  );
+});
+
+test("resurfaceCandidates drops a future season placeholder with no air date in timer mode", async () => {
+  const h = harness({ nextEp: { season: 5, episode: 1 } });
+  const resurface = h.load("src/lib/cw-resurface.ts");
+
+  const item = {
+    _id: "tt_from",
+    type: "series",
+    name: "FROM",
+    state: {
+      season: 4,
+      episode: 10,
+      timeOffset: 0,
+      duration: 3600000,
+      flaggedWatched: 1,
+      lastWatched: new Date().toISOString(),
+    },
+  };
+
+  const result = await resurface.resurfaceCandidates([item], new Set(), {
+    tmdbKey: "",
+    animeMode: "all",
+    animeCwEnd: "timer",
+    hideCaughtUp: true,
+  });
+
+  assert.equal(result.get("tt_from"), undefined);
+});
+
+test("resurfaceCandidates keeps a same-season episode with no air date as caught up, not a countdown", async () => {
+  const h = harness({ nextEp: { season: 1, episode: 5 } });
+  const resurface = h.load("src/lib/cw-resurface.ts");
+
+  const item = {
+    _id: "tt_same_season",
+    type: "series",
+    name: "Same Season",
+    state: {
+      season: 1,
+      episode: 4,
+      timeOffset: 0,
+      duration: 3600000,
+      flaggedWatched: 1,
+      lastWatched: new Date().toISOString(),
+    },
+  };
+
+  const result = await resurface.resurfaceCandidates([item], new Set(), {
+    tmdbKey: "",
+    animeMode: "all",
+    animeCwEnd: "timer",
+  });
+
+  const candidate = result.get("tt_same_season");
+  assert.ok(candidate);
+  assert.equal(candidate.caughtUp, true);
+  assert.equal(candidate.waitingForAir, undefined);
+});
+
+test("resurfaceCandidates isolates cache between timer and hide modes", async () => {
+  const futureAir = new Date(Date.now() + 86400000).toISOString();
+  const h = harness({ nextEp: { season: 1, episode: 5, airDate: futureAir } });
+  const resurface = h.load("src/lib/cw-resurface.ts");
+
+  const item = {
+    _id: "tt_cache_test",
+    type: "series",
+    name: "Test Cache",
+    state: {
+      season: 1,
+      episode: 4,
+      timeOffset: 0,
+      duration: 3600000,
+      flaggedWatched: 1,
+      lastWatched: new Date().toISOString(),
+    },
+  };
+
+  // Run in timer mode -> cached as timer
+  const timerRes = await resurface.resurfaceCandidates([item], new Set(), {
+    tmdbKey: "",
+    animeMode: "all",
+    animeCwEnd: "timer",
+  });
+  assert.ok(timerRes.get("tt_cache_test"));
+  assert.equal(timerRes.get("tt_cache_test").waitingForAir, true);
+
+  // Run in hide mode -> must NOT return cached timer entry
+  const hideRes = await resurface.resurfaceCandidates([item], new Set(), {
+    tmdbKey: "",
+    animeMode: "all",
+    animeCwEnd: "hide",
+  });
+  assert.equal(hideRes.get("tt_cache_test"), undefined);
+});
+
+test("resurfaceCandidates recognizes non-anime TV series with manualWatched or watchedFor when flaggedWatched is 0", async () => {
+  const futureAir = new Date(Date.now() + 86400000).toISOString();
+  const h = harness({ nextEp: { season: 4, episode: 3, airDate: futureAir } });
+  const resurface = h.load("src/lib/cw-resurface.ts");
+
+  const nuvioItem = {
+    _id: "tt16358384",
+    type: "series",
+    name: "Tulsa King",
+    external: "nuvio",
+    state: {
+      season: 4,
+      episode: 2,
+      timeOffset: 0,
+      duration: 3600000,
+      flaggedWatched: 0,
+      lastWatched: new Date().toISOString(),
+    },
+  };
+
+  const timerResult = await resurface.resurfaceCandidates(
+    [nuvioItem],
+    new Set(),
+    { tmdbKey: "", animeMode: "all", animeCwEnd: "timer" },
+    () => (s: number, e: number) => s === 4 && e === 2,
+  );
+
+  const candidate = timerResult.get("tt16358384");
+  assert.ok(candidate, "Tulsa King should be recognized and retained with timer");
+  assert.equal(candidate.season, 4);
+  assert.equal(candidate.episode, 3);
+  assert.equal(candidate.waitingForAir, true);
+  assert.equal(candidate.airDate, futureAir);
+});
+
+test("staleCwIds hides an older copy when another source has newer playback", async () => {
+  const h = harness();
+  const resurface = h.load("src/lib/cw-resurface.ts");
+  const stale = {
+    _id: "tt-wild",
+    type: "series",
+    name: "A Wild Last Boss Appeared!",
+    isAnime: true,
+    state: {
+      season: 2,
+      episode: 2,
+      timeOffset: 300000,
+      duration: 1440000,
+      lastWatched: "2026-10-01T00:00:00Z",
+    },
+  };
+  const current = {
+    _id: "kitsu:999",
+    type: "series",
+    name: "A Wild Last Boss Appeared!",
+    isAnime: true,
+    state: {
+      season: 1,
+      episode: 6,
+      timeOffset: 0,
+      duration: 1440000,
+      lastWatched: "2026-11-08T00:00:00Z",
+    },
+  };
+  assert.deepEqual(
+    [...(await resurface.staleCwIds([stale, current], [stale, current]))],
+    ["tt-wild"],
+  );
+  assert.deepEqual(
+    [...(await resurface.staleCwIds([stale], [stale, current]))],
+    [],
+    "a newer copy from a hidden source must not remove the visible card",
+  );
+});
+
+test("staleCwIds keeps an older season that was watched after the newer one", async () => {
+  const h = harness();
+  const resurface = h.load("src/lib/cw-resurface.ts");
+  const older = {
+    _id: "kitsu:1",
+    type: "series",
+    name: "Frieren: Beyond Journey's End",
+    isAnime: true,
+    state: {
+      season: 1,
+      episode: 22,
+      timeOffset: 100,
+      duration: 1000,
+      lastWatched: "2026-11-09T00:00:00Z",
+    },
+  };
+  const newer = {
+    _id: "kitsu:2",
+    type: "series",
+    name: "Frieren: Beyond Journey's End",
+    isAnime: true,
+    state: {
+      season: 2,
+      episode: 7,
+      timeOffset: 400,
+      duration: 1000,
+      lastWatched: "2026-11-01T00:00:00Z",
+    },
+  };
+  assert.equal((await resurface.staleCwIds([older], [older, newer])).size, 0);
+});
+
+test("resurfaceCandidates resurfaces newly aired episode when airDate has passed in hide mode", async () => {
+  const pastAir = new Date(Date.now() - 3600000).toISOString(); // Aired 1 hour ago
+  const h = harness({ nextEp: { season: 4, episode: 3, airDate: pastAir } });
+  const resurface = h.load("src/lib/cw-resurface.ts");
+
+  const item = {
+    _id: "tt16358384_aired",
+    type: "series",
+    name: "Tulsa King",
+    external: "nuvio",
+    state: {
+      season: 4,
+      episode: 2,
+      timeOffset: 0,
+      duration: 3600000,
+      flaggedWatched: 0,
+      lastWatched: new Date().toISOString(),
+    },
+  };
+
+  const hideResult = await resurface.resurfaceCandidates(
+    [item],
+    new Set(),
+    { tmdbKey: "", animeMode: "all", animeCwEnd: "hide" },
+    () => (s: number, e: number) => s === 4 && e === 2,
+  );
+
+  const candidate = hideResult.get("tt16358384_aired");
+  assert.ok(candidate, "Should resurface aired episode in hide mode");
+  assert.equal(candidate.season, 4);
+  assert.equal(candidate.episode, 3);
+  assert.equal(candidate.waitingForAir, false);
+});
+
+test("stale removal keeps the newer episode when a stale copy shares its id", async () => {
+  const h = harness();
+  const resurface = h.load("src/lib/cw-resurface.ts");
+  const older = {
+    _id: "tt_same_source",
+    type: "series",
+    name: "Same Source",
+    state: {
+      season: 1,
+      episode: 1,
+      timeOffset: 100,
+      duration: 1000,
+      lastWatched: "2026-01-01T00:00:00Z",
+    },
+  };
+  const newer = {
+    ...older,
+    state: { ...older.state, episode: 2, lastWatched: "2026-02-01T00:00:00Z" },
+  };
+
+  const stale = await resurface.staleCwIds([older, newer], [older, newer]);
+
+  assert.deepEqual(
+    [...stale],
+    [],
+    "an id is not removed while a newer record with that id is visible",
+  );
+  const afterRemoval = [older, newer].filter((item) => !stale.has(item._id));
+  const row = cwDedupe.dedupeCwItems(afterRemoval, Infinity);
+  assert.deepEqual(
+    row.map((item) => [item._id, item.state?.episode]),
+    [["tt_same_source", 2]],
+    "the row still shows the newer episode",
+  );
+});
+
+test("staleCwIds recognizes a newer visible copy held as a separate object", async () => {
+  const h = harness();
+  const resurface = h.load("src/lib/cw-resurface.ts");
+  const older = {
+    _id: "tt_old_object",
+    type: "series",
+    name: "Object Show",
+    altIds: ["tt_new_object"],
+    state: {
+      season: 1,
+      episode: 1,
+      timeOffset: 100,
+      duration: 1000,
+      lastWatched: "2026-01-01T00:00:00Z",
+    },
+  };
+  const newerVisible = {
+    _id: "tt_new_object",
+    type: "series",
+    name: "Object Show",
+    state: {
+      season: 1,
+      episode: 2,
+      timeOffset: 100,
+      duration: 1000,
+      lastWatched: "2026-02-01T00:00:00Z",
+    },
+  };
+  const newerPoolCopy = { ...newerVisible };
+
+  const stale = await resurface.staleCwIds([older, newerVisible], [older, newerPoolCopy]);
+
+  assert.deepEqual([...stale], ["tt_old_object"]);
+});
+
+test("staleCwIds does not look up identities for live-action cards", async () => {
+  const h = harness();
+  const resurface = h.load("src/lib/cw-resurface.ts");
+  const item = {
+    _id: "tt_live_action_only",
+    type: "series",
+    name: "Live Action",
+    state: { season: 1, episode: 1, timeOffset: 100, duration: 1000 },
+  };
+
+  await resurface.staleCwIds([item], [item]);
+
+  assert.deepEqual(h.relatedCalls, []);
+});
+
+test("staleCwIds runs the identity fallback when only the card itself is related", async () => {
+  const h = harness({ relatedIds: (id) => (id === "kitsu:41" ? ["kitsu:42"] : []) });
+  const resurface = h.load("src/lib/cw-resurface.ts");
+  const stale = {
+    _id: "kitsu:41",
+    type: "series",
+    isAnime: true,
+    name: "Fallback A",
+    state: {
+      season: 1,
+      episode: 1,
+      timeOffset: 100,
+      duration: 1000,
+      lastWatched: "2026-01-01T00:00:00Z",
+    },
+  };
+  const current = {
+    _id: "kitsu:42",
+    type: "series",
+    isAnime: true,
+    name: "Fallback B",
+    state: {
+      season: 1,
+      episode: 2,
+      timeOffset: 100,
+      duration: 1000,
+      lastWatched: "2026-02-01T00:00:00Z",
+    },
+  };
+
+  const result = await resurface.staleCwIds([stale, current], [{ ...stale }, current]);
+
+  assert.deepEqual([...result], ["kitsu:41"]);
+  assert.ok(h.relatedCalls.includes("kitsu:41"));
+});
+
+test("resurfaceCandidates only looks up identities for anime", async () => {
+  const h = harness();
+  const resurface = h.load("src/lib/cw-resurface.ts");
+  const live = {
+    _id: "tt_resurface_live",
+    type: "series",
+    name: "Live Resurface",
+    state: {
+      season: 1,
+      episode: 1,
+      timeOffset: 0,
+      duration: 3600000,
+      flaggedWatched: 1,
+      lastWatched: new Date().toISOString(),
+    },
+  };
+  const anime = {
+    ...live,
+    _id: "kitsu:77",
+    isAnime: true,
+    name: "Anime Resurface",
+  };
+
+  const liveResult = await resurface.resurfaceCandidates([live], new Set(), {
+    tmdbKey: "",
+    animeMode: "all",
+    animeCwEnd: "timer",
+  });
+  assert.ok(liveResult.get("tt_resurface_live"));
+  assert.deepEqual(h.relatedCalls, [], "live-action skips the identity lookup");
+
+  await resurface.resurfaceCandidates([anime], new Set(), {
+    tmdbKey: "",
+    animeMode: "all",
+    animeCwEnd: "timer",
+  });
+  assert.ok(h.relatedCalls.includes("kitsu:77"), "anime still checks its aliases");
+});
+
+test("staleCwIds keeps same-name shows with different IMDb ids", async () => {
+  const h = harness();
+  const resurface = h.load("src/lib/cw-resurface.ts");
+  const us = {
+    _id: "tt0386676",
+    type: "series",
+    isAnime: true,
+    name: "Same Name",
+    state: {
+      season: 1,
+      episode: 1,
+      timeOffset: 100,
+      duration: 1000,
+      lastWatched: "2026-01-01T00:00:00Z",
+    },
+  };
+  const uk = {
+    ...us,
+    _id: "tt0290978",
+    state: { ...us.state, episode: 2, lastWatched: "2026-02-01T00:00:00Z" },
+  };
+
+  const stale = await resurface.staleCwIds([us, uk], [us, uk]);
+
+  assert.deepEqual([...stale], [], "a shared title cannot hide a different IMDb title");
+});
+
+test("resurfaceCandidates isolates cache between hideCaughtUp values", async () => {
+  const h = harness({ nextEp: null });
+  const resurface = h.load("src/lib/cw-resurface.ts");
+  const item = {
+    _id: "tt_hide_switch",
+    type: "series",
+    name: "Hide Switch",
+    state: {
+      season: 1,
+      episode: 4,
+      timeOffset: 0,
+      duration: 3600000,
+      flaggedWatched: 1,
+      lastWatched: new Date().toISOString(),
+    },
+  };
+
+  const keep = await resurface.resurfaceCandidates([item], new Set(), {
+    tmdbKey: "",
+    animeMode: "all",
+    animeCwEnd: "timer",
+    hideCaughtUp: false,
+  });
+  assert.equal(keep.get(item._id)?.caughtUp, true);
+
+  const hide = await resurface.resurfaceCandidates([item], new Set(), {
+    tmdbKey: "",
+    animeMode: "all",
+    animeCwEnd: "timer",
+    hideCaughtUp: true,
+  });
+  assert.equal(
+    hide.get(item._id),
+    undefined,
+    "a caught-up decision made with Hide Caught Up off must not be reused when it is on",
+  );
+});
+
+test("resurfaceCandidates does not reuse a cached decision across account owners", async () => {
+  const h = harness({ nextEp: null, owner: "owner-a" });
+  const resurface = h.load("src/lib/cw-resurface.ts");
+  const item = {
+    _id: "tt_owner_switch",
+    type: "series",
+    name: "Owner Switch",
+    state: {
+      season: 1,
+      episode: 4,
+      timeOffset: 0,
+      duration: 3600000,
+      flaggedWatched: 1,
+      lastWatched: new Date().toISOString(),
+    },
+  };
+
+  await resurface.resurfaceCandidates([item], new Set(), {
+    tmdbKey: "",
+    animeMode: "all",
+    animeCwEnd: "timer",
+    hideCaughtUp: true,
+  });
+  assert.equal(h.adjacentCalls(), 1);
+
+  h.opts.owner = "owner-b";
+  h.opts.nextEp = {
+    season: 1,
+    episode: 5,
+    airDate: new Date(Date.now() - 1000).toISOString(),
+  };
+  const next = await resurface.resurfaceCandidates([item], new Set(), {
+    tmdbKey: "",
+    animeMode: "all",
+    animeCwEnd: "timer",
+    hideCaughtUp: true,
+  });
+  assert.equal(h.adjacentCalls(), 2, "a different owner must not reuse the cached negative");
+  assert.equal(next.get(item._id)?.episode, 5);
+});
+
+test("resurfaceCandidates retries a negative result after the short TTL", async () => {
+  const h = harness({ nextEp: null });
+  const resurface = h.load("src/lib/cw-resurface.ts");
+  const realNow = Date.now;
+  let fake = realNow();
+  Date.now = () => fake;
+  try {
+    const item = {
+      _id: "tt_negative_ttl",
+      type: "series",
+      name: "Negative TTL",
+      state: {
+        season: 1,
+        episode: 4,
+        timeOffset: 0,
+        duration: 3600000,
+        flaggedWatched: 1,
+        lastWatched: new Date(fake).toISOString(),
+      },
+    };
+    const options = {
+      tmdbKey: "",
+      animeMode: "all" as const,
+      animeCwEnd: "timer" as const,
+      hideCaughtUp: true,
+    };
+
+    await resurface.resurfaceCandidates([item], new Set(), options);
+    assert.equal(h.adjacentCalls(), 1);
+
+    h.opts.nextEp = {
+      season: 1,
+      episode: 5,
+      airDate: new Date(fake - 1000).toISOString(),
+    };
+    fake += 60_000;
+    const cached = await resurface.resurfaceCandidates([item], new Set(), options);
+    assert.equal(cached.get(item._id), undefined);
+    assert.equal(h.adjacentCalls(), 1, "a negative result is cached for about a minute");
+
+    fake += 6 * 60_000;
+    const retried = await resurface.resurfaceCandidates([item], new Set(), options);
+    assert.equal(h.adjacentCalls(), 2, "the negative result expires on the short TTL");
+    assert.equal(retried.get(item._id)?.episode, 5);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("changing timer or metadata settings clears the resurface cache", () => {
+  const advance = readFileSync(resolve("src/views/home/hooks/use-cw-advance.ts"), "utf8");
+
+  assert.match(advance, /clearResurfaceCache/);
+  assert.match(advance, /resurfaceCacheKey = \[/);
+  assert.match(advance, /\[resurfaceCacheKey\]/);
+  assert.match(advance, /settings\.animeCwEnd/);
+  assert.match(advance, /settings\.metadataSources\?\.episodes/);
+});

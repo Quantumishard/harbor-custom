@@ -1,0 +1,38 @@
+.context-menu-brand-footer {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-height: 16px;
+  padding: 3px 8px 1px;
+  color: #eba018;
+  opacity: 0.68;
+  pointer-events: none;
+  user-select: none;
+}
+
+.context-menu-brand-mark {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 10px;
+  object-fit: contain;
+}
+
+.context-menu-brand-wordmark {
+  max-width: 56px;
+  height: 9px;
+  object-fit: contain;
+}
+
+.context-menu-brand-filter {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+/* Keep the menu's mark monochrome even when the kid theme colors its sails. */
+.context-menu-brand-footer > svg.context-menu-brand-mark path {
+  fill: currentColor;
+}

@@ -1,0 +1,205 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+import ts from "typescript";
+
+type Meta = { genres?: string[]; country?: string; originalLanguage?: string };
+
+function fixture(initial: Record<string, string> = {}) {
+  const storage = new Map(Object.entries(initial));
+  const metaCalls: string[] = [];
+  const mappingCalls: string[] = [];
+  const metadata = new Map<string, Meta>();
+  const mapping = new Map<string, number>();
+  const tmdbMapping = new Map<number, number>();
+  const tmdbCalls: number[] = [];
+  const timers: Array<() => void> = [];
+  const pageListeners = new Map<string, () => void>();
+  const writes: string[] = [];
+  const io = { failWrites: false };
+  const mocks: Record<string, unknown> = {
+    react: { useSyncExternalStore: () => {} },
+    "@/lib/cinemeta": {
+      meta: async (_type: string, id: string) => {
+        metaCalls.push(id);
+        return metadata.get(id) ?? null;
+      },
+    },
+    "@/lib/providers/anime-mapping": {
+      imdbToKitsu: async (id: string) => {
+        mappingCalls.push(id);
+        return mapping.get(id) ?? null;
+      },
+      tmdbTvToKitsu: async (id: number) => {
+        tmdbCalls.push(id);
+        return tmdbMapping.get(id) ?? null;
+      },
+    },
+    "@/lib/providers/tmdb/tmdb-imdb-resolve": {
+      tmdbImdbCached: () => undefined,
+      tmdbImdbId: async () => null,
+    },
+    "@/lib/publicmetadb/mappings": { getImdbForTmdb: async () => null },
+    "@/lib/providers/kitsu": { kitsuAnime: async () => null },
+    "@/lib/storage-recovery": {
+      setItemWithRecovery: (key: string, value: string) => {
+        writes.push(key);
+        if (io.failWrites) return false;
+        storage.set(key, value);
+        return true;
+      },
+    },
+    "@/lib/render-cause": { noteNotify: () => {} },
+  };
+  const compiled = ts.transpileModule(
+    readFileSync(new URL("../src/lib/anime-detect.ts", import.meta.url), "utf8"),
+    {
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+    },
+  ).outputText;
+  const api = {} as typeof import("../src/lib/anime-detect");
+  new Function(
+    "require",
+    "exports",
+    "localStorage",
+    "setTimeout",
+    "clearTimeout",
+    "window",
+    compiled,
+  )(
+    (id: string) => {
+      assert.ok(id in mocks, id);
+      return mocks[id];
+    },
+    api,
+    {
+      getItem: (key: string) => storage.get(key) ?? null,
+      removeItem: (key: string) => storage.delete(key),
+    },
+    (fn: () => void) => {
+      timers.push(fn);
+      return timers.length;
+    },
+    (id: number) => {
+      timers[id - 1] = () => {};
+    },
+    { addEventListener: (type: string, fn: () => void) => pageListeners.set(type, fn) },
+  );
+  return {
+    api,
+    metadata,
+    mapping,
+    metaCalls,
+    mappingCalls,
+    tmdbMapping,
+    tmdbCalls,
+    storage,
+    timers,
+    pageListeners,
+    writes,
+    io,
+  };
+}
+
+test("non-Japanese animation with an exact anime mapping is recognized for CW filtering", async () => {
+  const h = fixture();
+  h.metadata.set("tt101", { genres: ["Animation", "Drama"], country: "China" });
+  h.mapping.set("tt101", 501);
+  await h.api.detectAnimeForCw([{ _id: "tt101", type: "series" }]);
+  assert.equal(h.api.isDetectedAnime("tt101"), true);
+  assert.deepEqual(h.mappingCalls, ["tt101"]);
+});
+
+test("unmapped animation and known live action are not classified by country or name alone", async () => {
+  const h = fixture();
+  h.metadata.set("tt102", { genres: ["Animation"], country: "United States" });
+  h.metadata.set("tt103", { genres: ["Drama"], country: "China" });
+  h.mapping.set("tt103", 502);
+  await h.api.detectAnimeForCw([
+    { _id: "tt102", type: "series" },
+    { _id: "tt103", type: "series" },
+  ]);
+  assert.equal(h.api.isDetectedAnime("tt102"), false);
+  assert.equal(h.api.isDetectedAnime("tt103"), false);
+  assert.deepEqual(h.mappingCalls, ["tt102"]);
+});
+
+test("Japanese animation needs no mapping request and repeated concurrent IDs share detection", async () => {
+  const h = fixture();
+  h.metadata.set("tt104", { genres: ["Animation"], country: "Japan" });
+  const items = [
+    { _id: "tt104", type: "series" },
+    { _id: "tt104", type: "series" },
+  ];
+  await Promise.all([h.api.detectAnimeForCw(items), h.api.detectAnimeForCw(items)]);
+  assert.equal(h.api.isDetectedAnime("tt104"), true);
+  assert.deepEqual(h.metaCalls, ["tt104"]);
+  assert.deepEqual(h.mappingCalls, []);
+});
+
+test("old negative classifications cannot suppress the corrected mapping check", async () => {
+  const h = fixture({
+    "harbor.anime.notanime.v1": JSON.stringify({ t: Date.now(), ids: ["tt105"] }),
+  });
+  h.metadata.set("tt105", { genres: ["Animation"], country: "China" });
+  h.mapping.set("tt105", 505);
+  await h.api.detectAnimeForCw([{ _id: "tt105", type: "series" }]);
+  assert.equal(h.api.isDetectedAnime("tt105"), true);
+});
+
+test("TMDB anime rows are detected without a Cinemeta lookup", async () => {
+  const h = fixture();
+  h.tmdbMapping.set(73223, 13209);
+  await h.api.detectAnimeForCw([{ _id: "tmdb:tv:73223", type: "series" }]);
+  assert.equal(h.api.isDetectedAnime("tmdb:tv:73223"), true);
+  assert.deepEqual(h.tmdbCalls, [73223]);
+  assert.deepEqual(h.metaCalls, []);
+});
+
+test("an unmapped TMDB row is not classified as anime", async () => {
+  const h = fixture();
+  await h.api.detectAnimeForCw([{ _id: "tmdb:tv:99999", type: "series" }]);
+  assert.equal(h.api.isDetectedAnime("tmdb:tv:99999"), false);
+  assert.deepEqual(h.tmdbCalls, [99999]);
+});
+
+test("catalog TMDB metas start anime detection", async () => {
+  const h = fixture();
+  h.tmdbMapping.set(73223, 13209);
+  h.api.detectAnimeForMetas([{ id: "tmdb:tv:73223", type: "series" }]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.api.isDetectedAnime("tmdb:tv:73223"), true);
+});
+
+test("detected anime are written in one batch and flushed when the page goes away", async () => {
+  const h = fixture();
+  h.metadata.set("tt201", { genres: ["Animation"], country: "Japan" });
+  h.metadata.set("tt202", { genres: ["Animation"], country: "Japan" });
+  await h.api.detectAnimeForCw([
+    { _id: "tt201", type: "series" },
+    { _id: "tt202", type: "series" },
+  ]);
+  assert.equal(h.storage.has("harbor.anime.detected.v2"), false);
+  h.pageListeners.get("pagehide")?.();
+  assert.deepEqual(JSON.parse(h.storage.get("harbor.anime.detected.v2") ?? "[]").sort(), [
+    "tt201",
+    "tt202",
+  ]);
+  assert.equal(h.writes.filter((k) => k === "harbor.anime.detected.v2").length, 1);
+});
+
+test("a failed batch write of detected anime is retried when the page goes away", async () => {
+  const h = fixture();
+  h.metadata.set("tt301", { genres: ["Animation"], country: "Japan" });
+  await h.api.detectAnimeForCw([{ _id: "tt301", type: "series" }]);
+  h.io.failWrites = true;
+  for (const run of h.timers.splice(0)) run();
+  assert.equal(h.storage.has("harbor.anime.detected.v2"), false);
+  h.io.failWrites = false;
+  h.pageListeners.get("pagehide")?.();
+  assert.deepEqual(JSON.parse(h.storage.get("harbor.anime.detected.v2") ?? "[]"), ["tt301"]);
+  // Once written, a later pagehide has nothing left to write.
+  const count = h.writes.length;
+  h.pageListeners.get("pagehide")?.();
+  assert.equal(h.writes.length, count);
+});

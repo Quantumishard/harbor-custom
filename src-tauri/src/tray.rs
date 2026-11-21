@@ -1,0 +1,395 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+
+use serde::{Deserialize, Serialize};
+use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Emitter, Manager, Wry};
+
+static CLOSE_TO_TRAY: AtomicBool = AtomicBool::new(false);
+static ALWAYS_ON_TOP: AtomicBool = AtomicBool::new(false);
+static PAUSE_MINIMIZED: AtomicBool = AtomicBool::new(true);
+static PAUSE_UNFOCUSED: AtomicBool = AtomicBool::new(false);
+
+pub fn close_to_tray() -> bool {
+    CLOSE_TO_TRAY.load(Ordering::Relaxed)
+}
+
+pub fn always_on_top_pref() -> bool {
+    ALWAYS_ON_TOP.load(Ordering::Relaxed)
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub struct TrayPrefs {
+    pub close_to_tray: bool,
+    pub always_on_top: bool,
+    pub pause_minimized: bool,
+    pub pause_unfocused: bool,
+}
+
+#[derive(Clone, Copy)]
+enum Pref {
+    CloseToTray,
+    AlwaysOnTop,
+    PauseMinimized,
+    PauseUnfocused,
+}
+
+struct TrayItems {
+    always_on_top: CheckMenuItem<Wry>,
+    pause_minimized: CheckMenuItem<Wry>,
+    pause_unfocused: CheckMenuItem<Wry>,
+    close_to_tray: CheckMenuItem<Wry>,
+}
+
+struct ThemeMenu {
+    submenu: Submenu<Wry>,
+    custom: Mutex<Option<Submenu<Wry>>>,
+}
+
+#[derive(Deserialize)]
+pub struct CustomThemeEntry {
+    pub id: String,
+    pub name: String,
+}
+
+pub(crate) fn current_prefs() -> TrayPrefs {
+    TrayPrefs {
+        close_to_tray: CLOSE_TO_TRAY.load(Ordering::Relaxed),
+        always_on_top: ALWAYS_ON_TOP.load(Ordering::Relaxed),
+        pause_minimized: PAUSE_MINIMIZED.load(Ordering::Relaxed),
+        pause_unfocused: PAUSE_UNFOCUSED.load(Ordering::Relaxed),
+    }
+}
+
+fn show_main(app: &AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or("main window unavailable")?;
+    window
+        .show()
+        .map_err(|error| format!("show Harbor: {error}"))?;
+    window
+        .unminimize()
+        .map_err(|error| format!("restore Harbor: {error}"))?;
+    window
+        .set_focus()
+        .map_err(|error| format!("focus Harbor: {error}"))?;
+    #[cfg(windows)]
+    crate::force_show_foreground(&window);
+    Ok(())
+}
+
+fn apply_always_on_top(app: &AppHandle, on: bool) -> Result<(), String> {
+    if !on && crate::pip::window_pip_is_active(app) {
+        return Ok(());
+    }
+    app.get_webview_window("main")
+        .ok_or_else(|| "main window unavailable".to_string())?
+        .set_always_on_top(on)
+        .map_err(|error| format!("always on top: {error}"))
+}
+
+fn toggle(app: &AppHandle, pref: Pref) -> Result<(), String> {
+    let flag = match pref {
+        Pref::CloseToTray => &CLOSE_TO_TRAY,
+        Pref::AlwaysOnTop => &ALWAYS_ON_TOP,
+        Pref::PauseMinimized => &PAUSE_MINIMIZED,
+        Pref::PauseUnfocused => &PAUSE_UNFOCUSED,
+    };
+    let next = !flag.load(Ordering::Relaxed);
+    if let Some(items) = app.try_state::<TrayItems>() {
+        let item = match pref {
+            Pref::CloseToTray => &items.close_to_tray,
+            Pref::AlwaysOnTop => &items.always_on_top,
+            Pref::PauseMinimized => &items.pause_minimized,
+            Pref::PauseUnfocused => &items.pause_unfocused,
+        };
+        item.set_checked(next).map_err(|error| error.to_string())?;
+    }
+    if matches!(pref, Pref::AlwaysOnTop) {
+        if let Err(error) = apply_always_on_top(app, next) {
+            if let Some(items) = app.try_state::<TrayItems>() {
+                if let Err(rollback) = items.always_on_top.set_checked(!next) {
+                    eprintln!("[harbor::tray] restore checkmark: {rollback}");
+                }
+            }
+            return Err(error);
+        }
+    }
+    flag.store(next, Ordering::Relaxed);
+    // Emit only the value that changed. The frontend owns the other three, and
+    // these statics start at the defaults rather than at the user's saved
+    // values, so echoing the whole set used to be able to turn a setting the
+    // user had switched off back on.
+    let patch = match pref {
+        Pref::CloseToTray => serde_json::json!({ "closeToTray": next }),
+        Pref::AlwaysOnTop => serde_json::json!({ "alwaysOnTop": next }),
+        Pref::PauseMinimized => serde_json::json!({ "pauseMinimized": next }),
+        Pref::PauseUnfocused => serde_json::json!({ "pauseUnfocused": next }),
+    };
+    app.emit("harbor://tray-prefs", patch)
+        .map_err(|error| error.to_string())?;
+    #[cfg(windows)]
+    crate::tray_popup::prefs_changed(app)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn tray_set_prefs(app: AppHandle, prefs: TrayPrefs) -> Result<(), String> {
+    apply_always_on_top(&app, prefs.always_on_top)?;
+    CLOSE_TO_TRAY.store(prefs.close_to_tray, Ordering::Relaxed);
+    ALWAYS_ON_TOP.store(prefs.always_on_top, Ordering::Relaxed);
+    PAUSE_MINIMIZED.store(prefs.pause_minimized, Ordering::Relaxed);
+    PAUSE_UNFOCUSED.store(prefs.pause_unfocused, Ordering::Relaxed);
+    if let Some(items) = app.try_state::<TrayItems>() {
+        let _ = items.close_to_tray.set_checked(prefs.close_to_tray);
+        let _ = items.always_on_top.set_checked(prefs.always_on_top);
+        let _ = items.pause_minimized.set_checked(prefs.pause_minimized);
+        let _ = items.pause_unfocused.set_checked(prefs.pause_unfocused);
+    }
+    #[cfg(windows)]
+    crate::tray_popup::prefs_changed(&app)?;
+    Ok(())
+}
+
+pub(crate) fn dispatch(app: &AppHandle, id: &str) -> Result<(), String> {
+    match id {
+        "tray_show" => return show_main(app),
+        "tray_aot" => return toggle(app, Pref::AlwaysOnTop),
+        "tray_pmin" => return toggle(app, Pref::PauseMinimized),
+        "tray_punf" => return toggle(app, Pref::PauseUnfocused),
+        "tray_ctt" => return toggle(app, Pref::CloseToTray),
+        _ if id.starts_with("tray_theme_") => {
+            let theme = id.strip_prefix("tray_theme_").unwrap_or_default();
+            app.emit("harbor://set-theme", theme)
+                .map_err(|error| error.to_string())?;
+        }
+        "tray_quit" => {
+            if let Some(w) = app.get_webview_window("main") {
+                crate::CLOSE_FLUSH_DONE.store(false, Ordering::SeqCst);
+                w.emit("harbor://app-closing", ())
+                    .map_err(|error| error.to_string())?;
+                for _ in 0..16 {
+                    if crate::CLOSE_FLUSH_DONE.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }
+            app.exit(0);
+        }
+        _ => return Err("unknown tray action".into()),
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn tray_set_custom_themes(app: AppHandle, themes: Vec<CustomThemeEntry>) {
+    let Some(tm) = app.try_state::<ThemeMenu>() else {
+        return;
+    };
+    let Ok(mut guard) = tm.custom.lock() else {
+        return;
+    };
+    if let Some(old) = guard.take() {
+        let _ = tm.submenu.remove(&old);
+    }
+    if themes.is_empty() {
+        return;
+    }
+    let mut items: Vec<MenuItem<Wry>> = Vec::new();
+    for th in &themes {
+        if let Ok(mi) = MenuItem::with_id(
+            &app,
+            format!("tray_theme_{}", th.id),
+            th.name.as_str(),
+            true,
+            None::<&str>,
+        ) {
+            items.push(mi);
+        }
+    }
+    if items.is_empty() {
+        return;
+    }
+    let refs: Vec<&dyn IsMenuItem<Wry>> = items.iter().map(|i| i as &dyn IsMenuItem<Wry>).collect();
+    if let Ok(sub) = Submenu::with_items(&app, "Custom", true, &refs) {
+        let _ = tm.submenu.append(&sub);
+        *guard = Some(sub);
+    }
+}
+
+pub fn build(app: &AppHandle) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "tray_show", "Show Harbor", true, None::<&str>)?;
+    let themes: [(&str, &str); 14] = [
+        ("cool-grey", "Harbor default"),
+        ("nord", "Nord"),
+        ("stremio", "Stremio"),
+        ("crunch", "Crunchy"),
+        ("tokyo-night", "Royal"),
+        ("dracula", "Dracula"),
+        ("forest", "Forest"),
+        ("noir", "Noir"),
+        ("kawaii", "Kawaii"),
+        ("elegantfin", "ElegantFin"),
+        ("feishin", "Feishin"),
+        ("aurora", "Aurora"),
+        ("minui", "MinUI"),
+        ("velvet", "Velvet"),
+    ];
+    let mut theme_items: Vec<MenuItem<Wry>> = Vec::with_capacity(themes.len());
+    for (id, name) in themes.iter() {
+        theme_items.push(MenuItem::with_id(
+            app,
+            format!("tray_theme_{id}"),
+            *name,
+            true,
+            None::<&str>,
+        )?);
+    }
+    let theme_refs: Vec<&dyn IsMenuItem<Wry>> = theme_items
+        .iter()
+        .map(|i| i as &dyn IsMenuItem<Wry>)
+        .collect();
+    let theme_menu = Submenu::with_items(app, "Theme", true, &theme_refs)?;
+    app.manage(ThemeMenu {
+        submenu: theme_menu.clone(),
+        custom: Mutex::new(None),
+    });
+    let always_on_top = CheckMenuItem::with_id(
+        app,
+        "tray_aot",
+        "Always on Top",
+        true,
+        ALWAYS_ON_TOP.load(Ordering::Relaxed),
+        None::<&str>,
+    )?;
+    let pause_minimized = CheckMenuItem::with_id(
+        app,
+        "tray_pmin",
+        "Pause When Minimized",
+        true,
+        PAUSE_MINIMIZED.load(Ordering::Relaxed),
+        None::<&str>,
+    )?;
+    let pause_unfocused = CheckMenuItem::with_id(
+        app,
+        "tray_punf",
+        "Pause When Unfocused",
+        true,
+        PAUSE_UNFOCUSED.load(Ordering::Relaxed),
+        None::<&str>,
+    )?;
+    let close_to_tray = CheckMenuItem::with_id(
+        app,
+        "tray_ctt",
+        "Close to Tray",
+        true,
+        CLOSE_TO_TRAY.load(Ordering::Relaxed),
+        None::<&str>,
+    )?;
+    let sep = PredefinedMenuItem::separator(app)?;
+    let quit = MenuItem::with_id(app, "tray_quit", "Quit Harbor", true, None::<&str>)?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &show,
+            &theme_menu,
+            &always_on_top,
+            &pause_minimized,
+            &pause_unfocused,
+            &close_to_tray,
+            &sep,
+            &quit,
+        ],
+    )?;
+
+    app.manage(TrayItems {
+        always_on_top: always_on_top.clone(),
+        pause_minimized: pause_minimized.clone(),
+        pause_unfocused: pause_unfocused.clone(),
+        close_to_tray: close_to_tray.clone(),
+    });
+
+    let mut builder = TrayIconBuilder::with_id("harbor-tray")
+        .tooltip("Harbor")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| {
+            if let Err(error) = dispatch(app, event.id.as_ref()) {
+                eprintln!("[harbor::tray] action failed: {error}");
+            }
+        })
+        .on_tray_icon_event(|tray, event| {
+            #[cfg(windows)]
+            if let TrayIconEvent::Click {
+                button: MouseButton::Right,
+                button_state: MouseButtonState::Up,
+                rect,
+                ..
+            } = &event
+            {
+                crate::tray_popup::request_open(tray.app_handle(), *rect);
+                return;
+            }
+            let restore = matches!(
+                event,
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } | TrayIconEvent::DoubleClick {
+                    button: MouseButton::Left,
+                    ..
+                }
+            );
+            if restore {
+                if let Err(error) = show_main(tray.app_handle()) {
+                    eprintln!("[harbor::tray] restore failed: {error}");
+                }
+            }
+        });
+
+    // The Linux AppIndicator backend exports the icon as an image file that
+    // the host desktop must be able to read. Its default XDG_RUNTIME_DIR/tray-icon
+    // path is isolated inside Flatpak, leaving an invisible KDE tray entry.
+    // Use Tauri's recommended app cache directory instead; this is accessible
+    // to the host without an additional Flatpak filesystem permission.
+    #[cfg(target_os = "linux")]
+    match app.path().app_cache_dir() {
+        Ok(cache_dir) => {
+            let icon_dir = cache_dir.join("tray-icon");
+            match std::fs::create_dir_all(&icon_dir) {
+                Ok(()) => {
+                    builder = builder.temp_dir_path(&icon_dir);
+                }
+                Err(error) => {
+                    eprintln!(
+                        "[harbor::tray] could not create host-readable Linux tray icon directory {}: {error}",
+                        icon_dir.display()
+                    );
+                }
+            }
+        }
+        Err(error) => {
+            eprintln!("[harbor::tray] could not resolve Linux tray icon cache directory: {error}");
+        }
+    }
+
+    if let Some(icon) = app.default_window_icon().cloned() {
+        builder = builder.icon(icon);
+    } else {
+        eprintln!("[harbor::tray] default window icon missing; tray may be invisible");
+    }
+
+    let tray = builder.build(app)?;
+    #[cfg(windows)]
+    if let Err(error) = crate::tray_popup::initialize(app, &tray) {
+        eprintln!("[harbor::tray] custom menu unavailable: {error}");
+    }
+    #[cfg(not(windows))]
+    let _ = tray;
+    Ok(())
+}

@@ -1,0 +1,473 @@
+use super::*;
+
+#[tokio::test]
+async fn youtube_playback_verification_rejects_cdn_errors_and_empty_media() {
+    use std::io::{Read, Write};
+    for (status, body, accepted) in [
+        ("403 Forbidden", "", false),
+        ("206 Partial Content", "", false),
+        ("206 Partial Content", "video bytes", true),
+    ] {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = [0u8; 4096];
+            let count = socket.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..count]).to_lowercase();
+            assert!(request.contains("range: bytes=0-"));
+            assert!(request.contains("user-agent: fixture"));
+            write!(socket, "HTTP/1.1 {status}\r\nContent-Type: video/mp4\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        });
+        let stream = YoutubeStream {
+            url: format!("http://{address}/video"),
+            audio_url: None,
+            headers: [("User-Agent".to_string(), "fixture".to_string())].into(),
+            transcode: false,
+        };
+        assert_eq!(verify_youtube_stream(&stream).await.is_ok(), accepted);
+        server.join().unwrap();
+    }
+}
+
+#[tokio::test]
+async fn youtube_playback_verification_checks_video_and_audio() {
+    use std::io::{Read, Write};
+    fn serve(body: &'static str) -> (String, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = [0u8; 4096];
+            let _ = socket.read(&mut request).unwrap();
+            write!(socket, "HTTP/1.1 206 Partial Content\r\nContent-Type: video/mp4\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        });
+        (format!("http://{address}/media"), handle)
+    }
+
+    let (video, video_server) = serve("video bytes");
+    let (audio, audio_server) = serve("audio bytes");
+    let stream = YoutubeStream {
+        url: video,
+        audio_url: Some(audio),
+        headers: [("User-Agent".to_string(), "fixture".to_string())].into(),
+        transcode: true,
+    };
+    assert!(verify_youtube_stream(&stream).await.is_ok());
+    video_server.join().unwrap();
+    audio_server.join().unwrap();
+}
+
+#[test]
+fn maps_the_quality_setting_to_a_height_cap() {
+    assert_eq!(requested_height(Some("360p")), Some(360));
+    assert_eq!(requested_height(Some("720p")), Some(720));
+    assert_eq!(requested_height(Some("1080p")), Some(1080));
+    assert_eq!(requested_height(Some("best")), None);
+    assert_eq!(requested_height(None), None);
+}
+
+#[test]
+fn selects_the_highest_hls_variant_at_or_below_the_requested_quality() {
+    let formats = vec![
+        serde_json::json!({"protocol":"m3u8_native","vcodec":"avc1.4D401E","acodec":"none","height":360,"url":"https://video/360"}),
+        serde_json::json!({"protocol":"m3u8_native","vcodec":"avc1.4D401F","acodec":"none","height":720,"url":"https://video/720"}),
+        serde_json::json!({"protocol":"m3u8_native","vcodec":"avc1.640028","acodec":"none","height":1080,"url":"https://video/1080"}),
+        serde_json::json!({"protocol":"m3u8_native","vcodec":"avc1.640032","acodec":"none","height":1440,"url":"https://video/1440"}),
+    ];
+    assert_eq!(select_hls_video(&formats, Some(360)).unwrap()["url"], "https://video/360");
+    assert_eq!(select_hls_video(&formats, Some(720)).unwrap()["url"], "https://video/720");
+    assert_eq!(select_hls_video(&formats, Some(1080)).unwrap()["url"], "https://video/1080");
+    assert_eq!(select_hls_video(&formats, None).unwrap()["url"], "https://video/1440");
+}
+
+#[test]
+fn prefers_the_original_hls_audio_track() {
+    let formats = vec![
+        serde_json::json!({"protocol":"m3u8_native","vcodec":"none","format_id":"233-0","language":"de-DE","url":"https://audio/233-0"}),
+        serde_json::json!({"protocol":"m3u8_native","vcodec":"none","format_id":"234-0","language":"de-DE","url":"https://audio/234-0"}),
+        serde_json::json!({"protocol":"m3u8_native","vcodec":"none","format_id":"233-7","language":"en-US","language_preference":10,"url":"https://audio/233-7"}),
+        serde_json::json!({"protocol":"m3u8_native","vcodec":"none","format_id":"234-7","language":"en-US","language_preference":10,"url":"https://audio/234-7"}),
+    ];
+    assert_eq!(select_hls_audio(&formats).as_deref(), Some("https://audio/234-7"));
+}
+
+#[test]
+fn separate_audio_is_only_needed_for_video_only_hls() {
+    let muxed = serde_json::json!({"vcodec":"avc1.640028","acodec":"mp4a.40.2"});
+    let video_only = serde_json::json!({"vcodec":"avc1.640028","acodec":"none"});
+    let unknown = serde_json::json!({"vcodec":"avc1.640028"});
+    assert!(format_has_audio(&muxed));
+    assert!(!format_has_audio(&video_only));
+    assert!(!format_has_audio(&unknown));
+}
+
+#[test]
+fn best_quality_detects_a_higher_rendition() {
+    let formats = vec![
+        serde_json::json!({"protocol":"m3u8_native","vcodec":"avc1.640028","acodec":"none","height":1080,"url":"https://video/1080"}),
+        serde_json::json!({"protocol":"m3u8_native","vcodec":"vp09.00.50.08","acodec":"none","height":2160,"url":"https://video/2160"}),
+        serde_json::json!({"protocol":"https","vcodec":"vp09.00.50.08","acodec":"none","height":1440,"url":"https://video/1440"}),
+    ];
+    assert_eq!(highest_video_height(&formats), 2160);
+}
+
+#[test]
+fn progressive_fallback_requires_a_muxed_format() {
+    let formats = vec![
+        serde_json::json!({"protocol":"m3u8_native","vcodec":"avc1.640028","acodec":"mp4a.40.2","height":1080,"url":"https://hls/1080"}),
+        serde_json::json!({"protocol":"https","vcodec":"avc1.640028","acodec":"none","height":1080,"url":"https://video/1080"}),
+        serde_json::json!({"protocol":"https","vcodec":"avc1.4D401F","acodec":"mp4a.40.2","height":720,"url":"https://muxed/720"}),
+        serde_json::json!({"protocol":"https","vcodec":"avc1.4D401E","acodec":"mp4a.40.2","height":360,"url":"https://muxed/360"}),
+    ];
+    assert_eq!(
+        select_muxed(&formats, Some(1080)).unwrap()["url"],
+        "https://muxed/720"
+    );
+}
+
+const YT_DLP_EXTRACTION: &[&str] = &[
+    "PYZ.pyz",
+    "base_library.zip",
+    "Cryptodome",
+    "certifi",
+    "curl_cffi",
+    "python3.14",
+    "setuptools",
+    "websockets",
+    "yt_dlp_ejs",
+];
+
+const FOREIGN_EXTRACTION: &[&str] = &[
+    "PYZ.pyz",
+    "base_library.zip",
+    "Cryptodome",
+    "certifi",
+    "python3.14",
+    "setuptools",
+];
+
+const AN_HOUR: Duration = Duration::from_secs(3600);
+
+fn now() -> SystemTime {
+    SystemTime::now()
+}
+
+fn an_hour_later() -> SystemTime {
+    SystemTime::now() + AN_HOUR + Duration::from_secs(1)
+}
+
+fn fixture() -> PathBuf {
+    let root = std::env::temp_dir().join(format!("harbor-ytdlp-sweep-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    root
+}
+
+fn extraction(root: &Path, name: &str, contents: &[&str]) -> PathBuf {
+    let dir = root.join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    for entry in contents {
+        std::fs::write(dir.join(entry), b"payload").unwrap();
+    }
+    dir
+}
+
+#[test]
+fn only_prefixed_directories_are_swept() {
+    let root = fixture();
+    let cache = extraction(&root, "harbor-trailers", YT_DLP_EXTRACTION);
+    let unprefixed = extraction(&root, "MEI42", YT_DLP_EXTRACTION);
+    let infixed = extraction(&root, "tmp_MEI42", YT_DLP_EXTRACTION);
+    let orphan = extraction(&root, "_MEI42", YT_DLP_EXTRACTION);
+
+    assert_eq!(purge_extractions(&root, AN_HOUR, true, an_hour_later()), 1);
+    assert!(cache.is_dir());
+    assert!(unprefixed.is_dir());
+    assert!(infixed.is_dir());
+    assert!(!orphan.exists());
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn attribution_spares_an_extraction_that_is_not_yt_dlp() {
+    let root = fixture();
+    let foreign = extraction(&root, "_MEIfmpeg", FOREIGN_EXTRACTION);
+    let empty = extraction(&root, "_MEIempty", &[]);
+    let ours = extraction(&root, "_MEIours", YT_DLP_EXTRACTION);
+
+    assert_eq!(purge_extractions(&root, AN_HOUR, true, an_hour_later()), 1);
+    assert!(foreign.is_dir());
+    assert!(empty.is_dir());
+    assert!(!ours.exists());
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn attribution_reads_only_the_names_a_real_bundle_leaves_at_the_top_level() {
+    let root = fixture();
+    let ours = extraction(&root, "_MEIours", YT_DLP_EXTRACTION);
+    let foreign = extraction(&root, "_MEIfmpeg", FOREIGN_EXTRACTION);
+    let buried = extraction(&root, "_MEIburied", FOREIGN_EXTRACTION);
+    extraction(&buried, "nested", &["yt_dlp_ejs"]);
+
+    assert!(is_ytdlp_extraction(&ours));
+    assert!(!is_ytdlp_extraction(&foreign));
+    assert!(!is_ytdlp_extraction(&buried));
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn harbors_own_directory_is_swept_without_attribution() {
+    let root = fixture();
+    let foreign = extraction(&root, "_MEIfmpeg", FOREIGN_EXTRACTION);
+    let ours = extraction(&root, "_MEIours", YT_DLP_EXTRACTION);
+
+    assert_eq!(purge_extractions(&root, AN_HOUR, false, an_hour_later()), 2);
+    assert!(!foreign.exists());
+    assert!(!ours.exists());
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn the_age_threshold_is_honoured() {
+    let root = fixture();
+    let orphan = extraction(&root, "_MEIfresh", YT_DLP_EXTRACTION);
+
+    assert_eq!(purge_extractions(&root, AN_HOUR, true, now()), 0);
+    assert!(orphan.is_dir());
+    let just_short = SystemTime::now() + AN_HOUR - Duration::from_secs(5);
+    assert_eq!(purge_extractions(&root, AN_HOUR, true, just_short), 0);
+    assert!(orphan.is_dir());
+    assert_eq!(purge_extractions(&root, AN_HOUR, true, an_hour_later()), 1);
+    assert!(!orphan.exists());
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn a_file_named_like_an_extraction_is_left_alone() {
+    let root = fixture();
+    let decoy = root.join("_MEI42");
+    std::fs::write(&decoy, b"yt_dlp_ejs").unwrap();
+
+    assert_eq!(purge_extractions(&root, AN_HOUR, false, an_hour_later()), 0);
+    assert!(decoy.is_file());
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn a_directory_that_cannot_be_read_removes_nothing() {
+    let root = fixture();
+    let absent = root.join("absent");
+
+    assert_eq!(
+        purge_extractions(&absent, AN_HOUR, true, an_hour_later()),
+        0
+    );
+    assert_eq!(
+        purge_extractions(&absent, Duration::ZERO, false, an_hour_later()),
+        0
+    );
+    assert!(!is_ytdlp_extraction(&absent));
+    std::fs::remove_dir_all(&root).unwrap();
+    assert_eq!(purge_extractions(&root, AN_HOUR, true, an_hour_later()), 0);
+}
+
+#[test]
+fn a_clock_behind_the_directory_spares_it() {
+    let root = fixture();
+    let orphan = extraction(&root, "_MEIskewed", YT_DLP_EXTRACTION);
+
+    assert_eq!(
+        purge_extractions(&root, AN_HOUR, true, SystemTime::UNIX_EPOCH),
+        0
+    );
+    assert!(orphan.is_dir());
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn the_shared_sweep_is_confined_to_the_darwin_user_temp_directory() {
+    assert!(is_darwin_user_temp(Path::new(
+        "/var/folders/p4/fj12jx0d7633vkdyjr438sww0000gn/T/"
+    )));
+    assert!(is_darwin_user_temp(Path::new(
+        "/private/var/folders/p4/fj12jx0d7633vkdyjr438sww0000gn/T"
+    )));
+    assert!(!is_darwin_user_temp(Path::new("/tmp")));
+    assert!(!is_darwin_user_temp(Path::new("/var/tmp")));
+    assert!(!is_darwin_user_temp(Path::new("/var/foldersnope")));
+    assert!(!is_darwin_user_temp(Path::new("/Users/js/scratch")));
+    assert!(!is_darwin_user_temp(Path::new("")));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_extraction_is_neither_followed_nor_removed() {
+    let root = fixture();
+    let outside = fixture();
+    let bait = extraction(&outside, "_MEIbait", YT_DLP_EXTRACTION);
+    let keepsake = outside.join("keep.txt");
+    std::fs::write(&keepsake, b"payload").unwrap();
+    let link = root.join("_MEIlink");
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+
+    assert_eq!(purge_extractions(&root, AN_HOUR, false, an_hour_later()), 0);
+    assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+    assert!(keepsake.is_file());
+    assert!(bait.is_dir());
+    std::fs::remove_file(&link).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    std::fs::remove_dir_all(&outside).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_sweep_root_is_refused() {
+    let real = fixture();
+    let victim = extraction(&real, "_MEIvictim", YT_DLP_EXTRACTION);
+    let link = std::env::temp_dir().join(format!("harbor-ytdlp-root-{}", uuid::Uuid::new_v4()));
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    assert_eq!(purge_extractions(&link, AN_HOUR, false, an_hour_later()), 0);
+    assert!(victim.is_dir());
+    std::fs::remove_file(&link).unwrap();
+    std::fs::remove_dir_all(&real).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_extraction_survives_attribution() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = fixture();
+    let sealed = extraction(&root, "_MEIsealed", YT_DLP_EXTRACTION);
+    std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let is_sealed = std::fs::read_dir(&sealed).is_err();
+    let removed = purge_extractions(&root, AN_HOUR, true, an_hour_later());
+    std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755)).ok();
+
+    assert!(is_sealed, "chmod 000 left the directory readable");
+    assert_eq!(removed, 0);
+    assert!(sealed.is_dir());
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn an_extraction_that_cannot_be_removed_is_not_counted() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let root = fixture();
+    let locked = extraction(&root, "_MEIlocked", YT_DLP_EXTRACTION);
+    let handle = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(locked.join("yt_dlp_ejs"))
+        .unwrap();
+
+    assert_eq!(purge_extractions(&root, AN_HOUR, true, an_hour_later()), 0);
+    assert!(locked.is_dir());
+    drop(handle);
+    assert_eq!(purge_extractions(&root, AN_HOUR, false, an_hour_later()), 1);
+    assert!(!locked.exists());
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[cfg(windows)]
+fn process_count(name: &str) -> usize {
+    let output = std::process::Command::new("tasklist")
+        .args(["/FI", &format!("IMAGENAME eq {name}"), "/FO", "CSV", "/NH"])
+        .output()
+        .expect("query process list");
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| {
+            line.to_ascii_lowercase()
+                .contains(&format!("\"{}\"", name.to_ascii_lowercase()))
+        })
+        .count()
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn timed_out_process_guard_kills_child() {
+    let baseline = process_count("ping.exe");
+    let process = std::process::Command::new("ping")
+        .args(["-n", "30", "127.0.0.1"])
+        .spawn()
+        .expect("start timeout probe");
+    let guard = KillProcessOnDrop(Some(process));
+    let run = async move {
+        let _guard = guard;
+        std::future::pending::<()>().await;
+    };
+    assert!(tokio::time::timeout(Duration::from_millis(150), run)
+        .await
+        .is_err());
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(process_count("ping.exe"), baseline);
+}
+
+#[test]
+fn ffmpeg_lookup_resolves_a_command_name_to_an_absolute_path() {
+    let root = fixture();
+    let name = "harbor-test-ffmpeg.exe";
+    let executable = root.join(name);
+    std::fs::write(&executable, b"binary").unwrap();
+    let search = std::env::join_paths([&root]).unwrap();
+    let resolved = resolve_ffmpeg_path(Path::new(name), &search).unwrap();
+    assert!(resolved.is_absolute());
+    assert_eq!(resolved, executable.canonicalize().unwrap());
+    assert!(resolve_ffmpeg_path(Path::new("missing-harbor-ffmpeg"), &search).is_none());
+    assert_eq!(resolve_ffmpeg_path(&root, &search), None);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn completed_metadata_reports_actual_resolution_instead_of_requested_quality() {
+    let output = YtDlpOutput {
+        success: true,
+        exit_code: Some(0),
+        stdout: b"other output\nHARBOR_TRAILER:{\"title\":\"Trailer\",\"duration\":123.5,\"height\":360}\n".to_vec(),
+        stderr: vec![],
+    };
+    let metadata = download_metadata(&output).unwrap();
+    let info = cached_info(Path::new("trailer.mp4"), 2048, None, &metadata);
+    assert_eq!(info.quality, "360p");
+    assert_eq!(info.duration_seconds, 123);
+    assert_eq!(info.title, "Trailer");
+    assert!(download_metadata(&YtDlpOutput {
+        stdout: vec![],
+        ..output
+    })
+    .is_err());
+}
+
+#[test]
+fn adaptive_selection_and_cache_version_do_not_reuse_legacy_720p_files() {
+    assert_eq!(format_for("360p", true), FORMAT_LOW_MERGED);
+    assert_eq!(format_for("720p", true), FORMAT_HIGH_MERGED);
+    assert_eq!(format_for("720p", false), FORMAT_HIGH);
+    assert_eq!(
+        fallback_format("360p", true, true),
+        Some((FORMAT_LOW, false))
+    );
+    assert!(quality_path("example", "720p").ends_with("v2-example-720p.mp4"));
+    let args = download_args(
+        FORMAT_HIGH_MERGED,
+        "output.mp4",
+        "video-url",
+        Some(Path::new("/tools/ffmpeg")),
+    );
+    assert!(args
+        .iter()
+        .any(|arg| arg.starts_with("after_move:HARBOR_TRAILER:")));
+    assert!(args.iter().any(|arg| arg == "--no-simulate"));
+    assert!(!args.iter().any(|arg| arg == "--skip-download"));
+}
+#[test]
+fn addon_youtube_stream_preserves_url_and_headers_without_downloading() {
+    let stream = parse_youtube_stream(br#"{"url":"https://media.example/video.mp4","http_headers":{"User-Agent":"resolver"}}"#).unwrap();
+    assert_eq!(stream.url, "https://media.example/video.mp4");
+    assert_eq!(stream.headers.get("User-Agent").map(String::as_str), Some("resolver"));
+    assert!(parse_youtube_stream(br#"{"url":"file:///private"}"#).is_err());
+    assert!(parse_youtube_stream(br#"{"requested_formats":[]}"#).is_err());
+}

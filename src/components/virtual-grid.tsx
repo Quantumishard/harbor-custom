@@ -1,0 +1,163 @@
+import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
+import { observeWithin } from "@/lib/visibility";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from "react";
+
+/**
+ * Multi-column CSS-grid style virtualizer for large poster grids.
+ * Only mounts visible rows (+ overscan) for smooth scroll on big catalogs.
+ */
+export function VirtualGrid<T>({
+  items,
+  scrollRef,
+  estimateRowHeight = 280,
+  minColumnWidth = 150,
+  gapX = 16,
+  gapY = 32,
+  overscan = 3,
+  paused = false,
+  renderItem,
+  className = "",
+  getKey,
+}: {
+  items: T[];
+  scrollRef: RefObject<HTMLElement | null>;
+  estimateRowHeight?: number;
+  minColumnWidth?: number;
+  gapX?: number;
+  gapY?: number;
+  overscan?: number;
+  /** Skip scroll measurement while the grid is hidden but kept mounted. */
+  paused?: boolean;
+  renderItem: (item: T, index: number) => ReactNode;
+  className?: string;
+  getKey?: (item: T, index: number) => string | number;
+}) {
+  "use no memo";
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [cols, setCols] = useState(1);
+  const [near, setNear] = useState(false);
+  useEffect(() => {
+    const el = containerRef.current;
+    const scroller = scrollRef.current;
+    if (!el || !scroller || paused) return;
+    return observeWithin(el, "1200px 0px", (entry) => setNear(entry.isIntersecting), scroller);
+  }, [scrollRef, paused]);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const measure = () => {
+      const w = el.clientWidth;
+      if (w <= 0) return;
+      const next = Math.max(1, Math.floor((w + gapX) / (minColumnWidth + gapX)));
+      setCols(next);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [gapX, minColumnWidth]);
+
+  // A grid rarely starts at the top of its scroller: a page can stack one per date group,
+  // and all of them share the one scroll element. Without its own distance from the top,
+  // a grid reads the raw scrollTop as its own and renders rows nowhere near the viewport.
+  const [scrollMargin, setScrollMargin] = useState(0);
+  const readMargin = useCallback(() => {
+    if (paused) return;
+    const el = containerRef.current;
+    const scroller = scrollRef.current;
+    if (!el || !scroller) return;
+    const offset =
+      el.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+    setScrollMargin((previous) => (Math.abs(previous - offset) > 0.5 ? offset : previous));
+  }, [scrollRef, paused]);
+
+  const rowCount = Math.max(1, Math.ceil(items.length / cols));
+  const rowVirtualizer = useVirtualizer({
+    enabled: !paused,
+    // Several date groups share one scroller. Flushing each grid synchronously
+    // from its scroll listener interleaves React commits with layout reads.
+    useFlushSync: false,
+    count: items.length === 0 ? 0 : rowCount,
+    // Each date group has its own virtualizer. A scroller outside a group's bounds
+    // still selects its first/last row plus overscan; do not mount those distant cards.
+    rangeExtractor: near && !paused ? defaultRangeExtractor : () => [],
+    getScrollElement: () => scrollRef.current,
+    scrollMargin,
+    estimateSize: () => estimateRowHeight + gapY,
+    // Each virtual item contains exactly one CSS-grid row, so `rowGap` would
+    // not create spacing between virtual rows. Include the gap in measurement
+    // as well as the estimate, otherwise measured rows stack flush together.
+    measureElement: (element, entry) =>
+      (entry?.borderBoxSize?.[0]?.blockSize ?? element.getBoundingClientRect().height) + gapY,
+    overscan,
+  });
+
+  const totalSize = rowVirtualizer.getTotalSize();
+  useLayoutEffect(readMargin, [readMargin, cols, items.length, totalSize]);
+  useEffect(() => {
+    const el = containerRef.current;
+    const scroller = scrollRef.current;
+    if (!el || !scroller) return;
+    let frame = 0;
+    const schedule = () => {
+      if (!frame)
+        frame = requestAnimationFrame(() => {
+          frame = 0;
+          readMargin();
+        });
+    };
+    const observer = new ResizeObserver(schedule);
+    // Rows above settle from estimate to measured height, which slides this grid down
+    // without resizing it. Every box up to the scroller does grow, so watching the chain
+    // catches a sibling's reflow without reading layout on each scrolled frame.
+    for (let node: HTMLElement | null = el; node && node !== scroller; node = node.parentElement)
+      observer.observe(node);
+    observer.observe(scroller);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [readMargin, scrollRef]);
+
+  if (items.length === 0) return null;
+
+  return (
+    <div ref={containerRef} className={className}>
+      <div className="relative w-full" style={{ height: rowVirtualizer.getTotalSize() }}>
+        {rowVirtualizer.getVirtualItems().map((row) => {
+          const start = row.index * cols;
+          const slice = items.slice(start, start + cols);
+          return (
+            <div
+              key={row.key}
+              data-index={row.index}
+              ref={rowVirtualizer.measureElement}
+              className="absolute start-0 grid w-full"
+              style={{
+                transform: `translateY(${row.start - scrollMargin}px)`,
+                gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+                columnGap: gapX,
+              }}
+            >
+              {slice.map((item, i) => {
+                const index = start + i;
+                const key = getKey ? getKey(item, index) : index;
+                return <div key={key}>{renderItem(item, index)}</div>;
+              })}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}

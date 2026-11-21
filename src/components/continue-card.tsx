@@ -1,0 +1,1278 @@
+import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  isPlaybackRedirectCandidate,
+  resolvePlaybackRedirect,
+} from "@/lib/streams/playback-redirect";
+import { Check, X, ListVideo } from "lucide-react";
+import { Play } from "@/components/icons/play-filled";
+import simklLogo from "@/assets/simkl.png";
+import traktLogo from "@/assets/trakt.svg";
+import publicmetadbLogo from "@/assets/publicmetadb.svg";
+import { narrowMediaType, type Meta } from "@/lib/cinemeta";
+import { resolveMeta } from "@/lib/meta-resource";
+import { animeKitsuMeta, type AnimeKitsuVideo } from "@/lib/providers/anime-kitsu-addon";
+import { tmdbLiteMeta } from "@/lib/providers/tmdb/tmdb-lite";
+import { tmdbIdFromImdb } from "@/lib/providers/tmdb";
+import { useContextMenu } from "@/lib/context-menu";
+import { useT } from "@/lib/i18n";
+import { readSnapshot, useSnapshotVersion } from "@/lib/snapshots";
+import {
+  episodeFromVideoId,
+  isAnimeCwItem,
+  libraryMetaType,
+  type LibraryItem,
+} from "@/lib/stremio";
+import { useHasNewEpisode } from "@/lib/new-episodes";
+import { Tooltip } from "@/views/detail/tooltip";
+import { useProfiles, sharesStremioStorage } from "@/lib/profiles";
+import { useAuth } from "@/lib/auth";
+import { useSettings } from "@/lib/settings";
+import { useView, type PlayEpisode } from "@/lib/view";
+import { getWatchedBy } from "@/lib/watched-by";
+import { resolveLocalPlayVersions } from "@/lib/local-library/playback";
+import { localPlayerSrc } from "@/lib/local-library/player-src";
+import { openLocalVersions } from "@/lib/player/local-versions-modal";
+import { mediaServerConnections } from "@/lib/media-server/connections";
+import { mediaServerItems } from "@/lib/media-server/index-store";
+import { matchingServerItems, serverPlayableCopies } from "@/lib/media-server/selectors";
+import { createMediaServerPlayerSrc, decidePlaybackSource } from "@/lib/media-server/playback";
+import { fetchSeasonEpisodes } from "@/lib/series-episodes";
+import { aniZipByAnidb, aniZipByAnilist, aniZipByKitsu, aniZipByMal } from "@/lib/providers/anizip";
+import { peekCachedLogo, resolveLogo } from "@/lib/logo";
+import { resolvePreferredAnimeTitle } from "@/lib/anime-title";
+import { stripFranchiseSuffix } from "@/lib/providers/jikan";
+import {
+  animeCwIdsVersion,
+  getAnimeCwId,
+  notifyAnimeCwIds,
+  subscribeAnimeCwIds,
+} from "@/lib/anime-cw-ids";
+import { rememberCardCoords } from "@/lib/cw-card-coords";
+import { provenCwAnimeIdentity } from "@/lib/cw-anime-identity";
+import { useDetectedAnimeVersion } from "@/lib/anime-detect";
+import {
+  aniZipLookupKey,
+  applyAniZipEpisode,
+  needsAniZipSyncIds,
+  providerMappedEpisode,
+} from "@/lib/cw-anime-episode";
+import { resolveCwAnimePlayEpisode } from "@/lib/cw-anime-play";
+import { matchCwAnimeVideo, resolveCwAnimeVideo } from "@/lib/cw-anime-video";
+import { isSplitFranchiseKitsu } from "@/lib/providers/anime-franchise-root";
+import { parseKitsuId } from "@/lib/providers/kitsu";
+import {
+  isForeignSplitSeason,
+  splitFranchiseDisplaySeason,
+} from "@/lib/streams/anime-identity-core";
+import { classifyAnimeNumbering } from "@/lib/subtitles/anime-numbering";
+import { ThreeLiquidGlassSurface } from "@/components/ThreeLiquidGlassSurface";
+import { emitListToast } from "@/components/lists/list-toast";
+import {
+  continueCardIdentity,
+  createContinueCardActions,
+  type ContinueDismiss,
+} from "@/lib/continue-card-actions";
+import {
+  capturePlaybackActor,
+  isPlaybackActorCurrent,
+  readActualPlaybackForTarget,
+} from "@/lib/playback-history";
+import { continuationFor, canReuseRecentRemotePlayback } from "@/lib/player/continue-playback";
+import { readResumeEntry } from "@/lib/resume";
+import { isCwDismissed } from "@/lib/cw-dismiss";
+import { localCwEntry } from "@/lib/local-cw";
+import { isManualWatchedDismissed } from "@/lib/manual-watched";
+import { isNuvioProviderActive } from "@/lib/active-profile-id";
+
+// Bleach: Thousand-Year Blood War is split across four cours that carry their
+// own arc name appended to the title (e.g. "... - The Separation"). Keep the
+// TYBW title but drop the per-cour subtitle. This is a closed set of the four
+// cour subtitles; do not add anime names here.
+const ANIME_ARC_STRIP: ReadonlyArray<{ matcher: string; replace: string }> = [
+  { matcher: "The Blood Warfare", replace: "" },
+  { matcher: "The Separation", replace: "" },
+  { matcher: "The Conflict", replace: "" },
+  { matcher: "The Calamity", replace: "" },
+];
+
+function stripAnimeArcSuffix(name: string): string {
+  let t = name;
+  for (const { matcher, replace } of ANIME_ARC_STRIP) {
+    t = t.replace(new RegExp(`(?:\\s*[-:—]\\s*|\\s)${escapeRegExp(matcher)}$`, "i"), replace);
+  }
+  return t.replace(/[\s°'."’˚_:-]+$/g, "").trim();
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+type Props = {
+  item: LibraryItem;
+  watched?: boolean;
+  onDismiss?: ContinueDismiss;
+  /**
+   * Overrides the default play behaviour. The local library row passes this
+   * because it already knows the file on disk and can handle a `local:` id.
+   */
+  onPlayOverride?: (
+    episode: PlayEpisode | undefined,
+    assertCurrent: () => void,
+  ) => void | Promise<void>;
+};
+
+export const ContinueCard = memo(function ContinueCard({
+  item,
+  watched = false,
+  onDismiss,
+  onPlayOverride,
+}: Props) {
+  const { openMeta, openPicker, openPlayer } = useView();
+  const t = useT();
+  const { settings } = useSettings();
+  const { authKey } = useAuth();
+  const { profiles, activeProfile } = useProfiles();
+  const watcherId = getWatchedBy(item._id);
+  const watcher = watcherId ? profiles.find((p) => p.id === watcherId) : null;
+  const showWatcher =
+    !!watcher &&
+    !!activeProfile &&
+    watcher.id !== activeProfile.id &&
+    sharesStremioStorage(activeProfile, watcher, profiles);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const { open: openContextMenu } = useContextMenu();
+  useSnapshotVersion();
+  const newEpisode = useHasNewEpisode(item);
+  const snapshot = readSnapshot(item._id);
+  const isExternal = !!item.external && item.external !== "nuvio";
+  const externalLogo =
+    item.external === "trakt"
+      ? traktLogo
+      : item.external === "publicmetadb"
+        ? publicmetadbLogo
+        : simklLogo;
+  const externalLabel =
+    item.external === "trakt"
+      ? t("Paused on Trakt")
+      : item.external === "publicmetadb"
+        ? t("Paused on PublicMetaDB")
+        : t("Paused on Simkl");
+  const dur = item.state?.duration ?? 0;
+  const off = item.state?.timeOffset ?? 0;
+  const progress = dur > 0 ? Math.min(1, off / dur) : 0;
+  const remaining = dur > 0 && !isExternal ? formatRemaining(t, dur - off) : "";
+  const upNext = item.upNext === true;
+  const caughtUp = item.caughtUp === true;
+  const waitingForAir = (item as Record<string, unknown>).waitingForAir === true;
+  const nextAirDate = waitingForAir
+    ? ((item as Record<string, unknown>).nextAirDate as string | undefined)
+    : undefined;
+  const [now, setNow] = useState(Date.now());
+  const [epAirDate, setEpAirDate] = useState<string | null>(null);
+  const isUnairedDate = epAirDate ? Date.parse(epAirDate) > now : false;
+  const isWaiting = waitingForAir || (isUnairedDate && (settings.animeCwEnd === "timer" || upNext));
+  // The countdown stays even when the user allows playback; it just stops blocking the controls.
+  const playbackBlocked = isWaiting && !settings.cwPlayUnreleased;
+  const effectiveAirDate = nextAirDate || (isUnairedDate ? epAirDate : undefined);
+
+  useEffect(() => {
+    if (!isWaiting || !effectiveAirDate) return;
+    const id = window.setInterval(() => setNow(Date.now()), 60000);
+    return () => window.clearInterval(id);
+  }, [isWaiting, effectiveAirDate]);
+  const countdown = useMemo(() => {
+    if (!effectiveAirDate) {
+      return isWaiting ? t("Airing soon") : "";
+    }
+    const diff = Date.parse(effectiveAirDate) - now;
+    if (diff <= 0) return t("Airing now");
+    const days = Math.floor(diff / 86400000);
+    const hours = Math.floor((diff % 86400000) / 3600000);
+    const minutes = Math.floor((diff % 3600000) / 60000);
+    if (days > 0) return t("in {days}d {hours}h", { days: String(days), hours: String(hours) });
+    if (hours > 0)
+      return t("in {hours}h {minutes}m", { hours: String(hours), minutes: String(minutes) });
+    return t("in {minutes}m", { minutes: String(Math.max(1, minutes)) });
+  }, [effectiveAirDate, now, t, isWaiting]);
+  const kitsuThreeSeg =
+    /^(kitsu|mal|anilist|anidb):/.test(item._id) &&
+    (item.state?.video_id ?? "").split(":").length === 3;
+  const ep =
+    item.state?.season && item.state?.episode
+      ? { season: item.state.season, episode: item.state.episode }
+      : kitsuThreeSeg
+        ? null
+        : episodeFromVideoId(item.state?.video_id);
+  const animeEp = kitsuThreeSeg
+    ? Number((item.state?.video_id ?? "").split(":")[2])
+    : isAnimeCwItem(item) && ep
+      ? ep.episode
+      : null;
+  const [logo, setLogo] = useState<string | undefined>();
+  const [metaBg, setMetaBg] = useState<string | undefined>();
+  const [hydratedMeta, setHydratedMeta] = useState<Meta | null>(null);
+  const [resolvedCour, setResolvedCour] = useState<{
+    key: string;
+    video: AnimeKitsuVideo;
+  } | null>(null);
+  const [observedKey, setObservedKey] = useState<string | null>(null);
+  const [absoluteNumber, setAbsoluteNumber] = useState<number | null>(null);
+  const [epTitle, setEpTitle] = useState<string | null>(null);
+  const [epStill, setEpStill] = useState<string | null>(null);
+  const [translated, setTranslated] = useState<{
+    key: string;
+    value: string | null;
+  } | null>(null);
+  const [imgIdx, setImgIdx] = useState(0);
+  const cardRef = useRef<HTMLButtonElement>(null);
+  const itemRef = useRef(item);
+  itemRef.current = item;
+  const mountedRef = useRef(true);
+  const attemptRef = useRef<{ successKey: string; cancel: () => void } | null>(null);
+  const inFlightRef = useRef<{ successKey: string } | null>(null);
+  const animeIdsVersion = useSyncExternalStore(subscribeAnimeCwIds, animeCwIdsVersion);
+  const detectedVersion = useDetectedAnimeVersion();
+  const nativeRow = /^(kitsu|mal|anilist|anidb):/.test(item._id);
+  const requestKey = [
+    item._id,
+    item.state?.video_id ?? "",
+    item.state?.season ?? "",
+    item.state?.episode ?? "",
+    authKey ?? "",
+  ].join("|");
+  const nativeKey = `native|${requestKey}`;
+  const playedStream = /^(kitsu|mal|anilist|anidb):([1-9]\d*):[1-9]\d*$/.exec(
+    item.state?.video_id ?? "",
+  );
+  const sourceIdentity = nativeRow
+    ? item._id
+    : playedStream
+      ? `${playedStream[1]}:${playedStream[2]}`
+      : (provenCwAnimeIdentity(item) ?? getAnimeCwId(item._id) ?? "");
+  const successKey = `${requestKey}|${sourceIdentity}`;
+  const currentCourKey = nativeRow ? nativeKey : successKey;
+  const effectiveKitsuVideo = resolvedCour?.key === currentCourKey ? resolvedCour.video : null;
+  const titleKey = [
+    item._id,
+    sourceIdentity,
+    effectiveKitsuVideo?.id ?? item.state?.video_id ?? "",
+    settings.animeTitleLanguage,
+    item.state?.season ?? "",
+    item.state?.episode ?? "",
+  ].join("|");
+  const translatedTitle = translated?.key === titleKey ? translated.value : null;
+  const requestKeyRef = useRef("");
+  const successKeyRef = useRef("");
+  requestKeyRef.current = requestKey;
+  successKeyRef.current = successKey;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      attemptRef.current?.cancel();
+      attemptRef.current = null;
+      inFlightRef.current = null;
+    };
+  }, []);
+
+  const candidates = useMemo(() => {
+    const thumb = upNext ? undefined : snapshot;
+    const still =
+      upNext || !settings.cwPreferEpisodeStill ? undefined : hiResStill(epStill ?? undefined);
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const u of [thumb, metaBg, item.background, item.poster]) {
+      if (!u) continue;
+      const d = downscaleTmdb(u)!;
+      if (seen.has(d)) continue;
+      seen.add(d);
+      out.push(d);
+    }
+    if (still && !seen.has(still)) out.unshift(still);
+    return out;
+  }, [
+    snapshot,
+    epStill,
+    settings.cwPreferEpisodeStill,
+    metaBg,
+    item.background,
+    item.poster,
+    upNext,
+  ]);
+
+  const src = candidates[imgIdx];
+
+  useEffect(() => {
+    setImgIdx(0);
+  }, [candidates]);
+
+  useEffect(() => {
+    setLogo(undefined);
+    setMetaBg(undefined);
+    setHydratedMeta(null);
+    setResolvedCour(null);
+    setObservedKey(null);
+    setAbsoluteNumber(null);
+    setTranslated(null);
+    setImgIdx(0);
+    const el = cardRef.current;
+    if (!el) return;
+    let cancelled = false;
+    let started = false;
+    const start = () => {
+      if (started) return;
+      started = true;
+      if (nativeRow) {
+        animeKitsuMeta(item._id)
+          .then((m) => {
+            if (cancelled || !m) return;
+            setHydratedMeta({
+              id: item._id,
+              type: libraryMetaType(item.type),
+              name: m.name?.trim() ? m.name : item.name,
+              poster: m.poster,
+              background: m.background,
+              logo: m.logo,
+            });
+            if (m.logo) setLogo(m.logo);
+            else
+              resolveLogo(settingsRef.current.tmdbKey, {
+                id: item._id,
+                type: libraryMetaType(item.type),
+                name: m.name || item.name,
+              })
+                .then((l) => {
+                  if (!cancelled && l) setLogo(l);
+                })
+                .catch(() => {});
+            const bg = m.background || (item.background ? undefined : m.poster);
+            if (bg) setMetaBg(bg);
+            if (animeEp != null && Number.isFinite(animeEp)) {
+              const vid = matchCwAnimeVideo(m.videos, item.state?.video_id, {
+                season: ep?.season ?? 1,
+                episode: ep?.episode ?? animeEp,
+              });
+              if (vid) setResolvedCour({ key: nativeKey, video: vid });
+            }
+            const key = aniZipLookupKey(item._id);
+            if (key && animeEp != null && Number.isFinite(animeEp) && animeEp > 0) {
+              const lookup =
+                key.scheme === "mal"
+                  ? aniZipByMal
+                  : key.scheme === "anilist"
+                    ? aniZipByAnilist
+                    : key.scheme === "anidb"
+                      ? aniZipByAnidb
+                      : aniZipByKitsu;
+              lookup(key.id)
+                .then((az) => {
+                  if (cancelled || !az?.episodes) return;
+                  if (classifyAnimeNumbering(az) !== "longRunning") return;
+                  // For continuous long-running entries, the entry-relative number
+                  // IS the absolute number (AniZip keys them 1..N across the whole
+                  // run, and only populates absoluteEpisodeNumber sparsely).
+                  const azEp = az.episodes[String(animeEp)];
+                  const abs = azEp?.absoluteEpisodeNumber ?? animeEp;
+                  if (abs != null && Number.isFinite(abs) && abs > 0) setAbsoluteNumber(abs);
+                })
+                .catch(() => {});
+            }
+          })
+          .catch(() => {});
+        return;
+      }
+      if (item._id.startsWith("tmdb:")) {
+        tmdbLiteMeta(settingsRef.current.tmdbKey, item._id)
+          .then((m) => {
+            if (cancelled || !m) return;
+            setHydratedMeta({
+              id: item._id,
+              type: libraryMetaType(item.type),
+              name: m.name?.trim() ? m.name : item.name,
+              poster: m.poster ?? item.poster,
+              background: m.background ?? item.background,
+            });
+            const bg = m.background || (item.background ? undefined : m.poster);
+            if (bg) setMetaBg(bg);
+          })
+          .catch(() => {});
+        return;
+      }
+      const looksEpisodic = item.type === "movie" && episodeFromVideoId(item.state?.video_id);
+      // resolveMeta honours a custom metadata addon before Cinemeta, so disabling the Cinemeta
+      // toggle (to use another addon) no longer leaves this card with a blank/stretched thumbnail.
+      resolveMeta(authKey, looksEpisodic ? "series" : narrowMediaType(item.type), item._id)
+        .then((full) => {
+          if (cancelled || !full) return;
+          setHydratedMeta(full);
+          const key = settingsRef.current.tmdbKey;
+          const cachedLogo = peekCachedLogo(key, full);
+          if (cachedLogo) setLogo(cachedLogo);
+          else
+            void resolveLogo(key, full)
+              .then((l) => {
+                if (!cancelled && l) setLogo(l);
+              })
+              .catch(() => {});
+          const bg = full.background || (item.background ? undefined : full.poster);
+          if (bg) setMetaBg(bg);
+          if (!full.background && key && item._id.startsWith("tt")) {
+            void resolveTmdbBackdrop(key, item._id, full.type)
+              .then((b) => {
+                if (!cancelled && b) setMetaBg(b);
+              })
+              .catch(() => {});
+          }
+        })
+        .catch(() => {});
+    };
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          setObservedKey(requestKey);
+          start();
+          io.disconnect();
+        }
+      },
+      { rootMargin: "200px 0px" },
+    );
+    io.observe(el);
+    return () => {
+      cancelled = true;
+      io.disconnect();
+    };
+  }, [
+    item._id,
+    item.type,
+    item.state?.video_id,
+    item.state?.season,
+    item.state?.episode,
+    authKey,
+    requestKey,
+    nativeKey,
+    nativeRow,
+  ]);
+
+  // Resolve the exact Kitsu cour for catalog anime rows once the card is
+  // visible. Detection and mapping live in separate stores, so both versions
+  // participate; successful work is cached by the source identity, not by the
+  // global counters.
+  useEffect(() => {
+    if (nativeRow) return;
+    if (!observedKey || observedKey !== requestKey) return;
+    if (!ep) return;
+    if (!sourceIdentity) return;
+    if (resolvedCour?.key === successKey) return;
+    if (inFlightRef.current?.successKey === successKey) return;
+
+    const startedRequestKey = requestKey;
+    const startedSuccessKey = successKey;
+    let cancelled = false;
+    const attempt = {
+      successKey: startedSuccessKey,
+      cancel: () => {
+        cancelled = true;
+      },
+    };
+    inFlightRef.current = attempt;
+    attemptRef.current = attempt;
+
+    void resolveCwAnimeVideo(itemRef.current, ep)
+      .then((video) => {
+        if (!video || cancelled || !mountedRef.current) return;
+        if (
+          requestKeyRef.current !== startedRequestKey ||
+          successKeyRef.current !== startedSuccessKey
+        ) {
+          return;
+        }
+        setResolvedCour({ key: startedSuccessKey, video });
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (inFlightRef.current === attempt) {
+          inFlightRef.current = null;
+          attemptRef.current = null;
+        }
+      });
+
+    return () => {
+      // A global version bump keeps the lookup alive; a changed checkpoint or
+      // identity invalidates it. Unmount is handled by the mount effect.
+      if (
+        requestKeyRef.current !== startedRequestKey ||
+        successKeyRef.current !== startedSuccessKey
+      ) {
+        cancelled = true;
+        if (inFlightRef.current === attempt) {
+          inFlightRef.current = null;
+          attemptRef.current = null;
+        }
+      }
+    };
+  }, [
+    nativeRow,
+    observedKey,
+    requestKey,
+    successKey,
+    sourceIdentity,
+    ep?.season,
+    ep?.episode,
+    authKey,
+    animeIdsVersion,
+    detectedVersion,
+    resolvedCour?.key,
+    effectiveKitsuVideo?.id,
+  ]);
+
+  // The preferred title is a display preference the user can change at any time,
+  // so it resolves in its own effect: a language change must not tear down the
+  // card's artwork hydration above.
+  useEffect(() => {
+    // Any anime row qualifies: native anime ids, detected Cinemeta rows, and
+    // Cinemeta rows whose detail page recorded an anime mapping or a checkpoint
+    // proof.
+    if (!isAnimeCwItem(item) && getAnimeCwId(item._id) == null && !sourceIdentity) return;
+    let cancelled = false;
+    const key = titleKey;
+    // Once the episode resolves to its exact Kitsu cour, use that entry for the
+    // title too. A base Bleach row with TYBW progress must display TYBW, not the
+    // 2004 series it shares a provider id with.
+    const titleVideoId = effectiveKitsuVideo?.id ?? item.state?.video_id;
+    resolvePreferredAnimeTitle(item._id, settings.animeTitleLanguage, {
+      videoId: titleVideoId,
+      season: item.state?.season,
+      episode: item.state?.episode,
+      imdbId:
+        item.altIds?.find((id) => /^tt\d+$/.test(id)) ??
+        (/^tt\d+$/.test(item._id) ? item._id : undefined),
+    })
+      .then((tt) => {
+        if (!cancelled) setTranslated({ key, value: tt?.trim() || null });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    item._id,
+    item.state?.video_id,
+    item.state?.season,
+    item.state?.episode,
+    settings.animeTitleLanguage,
+    animeIdsVersion,
+    detectedVersion,
+    effectiveKitsuVideo?.id,
+    titleKey,
+    sourceIdentity,
+  ]);
+
+  useEffect(() => {
+    setEpTitle(null);
+    setEpStill(null);
+    setEpAirDate(null);
+    if (!ep || kitsuThreeSeg) return;
+    if (/^(kitsu|mal|anilist|anidb):/.test(item._id)) return;
+    let cancelled = false;
+    const epMeta: Meta = { id: item._id, type: "series", name: item.name };
+    fetchSeasonEpisodes(epMeta, ep.season, { tmdbKey: settingsRef.current.tmdbKey })
+      .then((eps) => {
+        if (cancelled) return;
+        const found = eps.find((e) => e.episode === ep.episode);
+        if (found?.name) setEpTitle(found.name);
+        if (found?.still) setEpStill(found.still);
+        if (found?.airDate) setEpAirDate(found.airDate);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item._id, ep?.season, ep?.episode, kitsuThreeSeg]);
+
+  const episodeTitle = epTitle ?? effectiveKitsuVideo?.title ?? null;
+
+  const isAnimeItem = /^(kitsu|mal|anilist|anidb):/.test(item._id);
+  const cardKitsuId =
+    parseKitsuId(item._id) ??
+    parseKitsuId(effectiveKitsuVideo?.id ?? "") ??
+    parseKitsuId(getAnimeCwId(item._id) ?? "");
+  const seasonForeignCard = isForeignSplitSeason(
+    isSplitFranchiseKitsu(cardKitsuId),
+    ep?.season,
+    effectiveKitsuVideo?.imdbSeason,
+  );
+  const partSeasonCard = splitFranchiseDisplaySeason(cardKitsuId);
+  // The next-episode worker can verify the provider numbering before card
+  // metadata hydrates. Replay that display-only proof while the exact cour
+  // video is loading; the live video mapping takes precedence when available.
+  const animeSeasonMapped =
+    providerMappedEpisode(effectiveKitsuVideo, ep, seasonForeignCard) ??
+    (upNext
+      ? providerMappedEpisode(item.cwVerifiedProviderMapping, ep, seasonForeignCard)
+      : null);
+  const displaySeason = animeSeasonMapped?.season ?? partSeasonCard ?? ep?.season;
+  const displayEpisode = animeSeasonMapped?.episode ?? ep?.episode;
+  useEffect(() => {
+    if (displaySeason == null || displayEpisode == null) return;
+    if (rememberCardCoords(item, { season: displaySeason, episode: displayEpisode })) {
+      notifyAnimeCwIds();
+    }
+  }, [
+    item,
+    item.state?.video_id,
+    item.state?.season,
+    item.state?.episode,
+    displaySeason,
+    displayEpisode,
+  ]);
+  const sub =
+    isAnimeItem && absoluteNumber != null && Number.isFinite(absoluteNumber) && absoluteNumber > 0
+      ? `Ep ${absoluteNumber}`
+      : animeSeasonMapped
+        ? `S${animeSeasonMapped.season} E${animeSeasonMapped.episode}`
+        : ep
+          ? `S${partSeasonCard ?? ep.season} E${ep.episode}`
+          : animeEp && Number.isFinite(animeEp) && animeEp > 0
+            ? `Ep ${animeEp}`
+            : "";
+
+  const meta: Meta = hydratedMeta
+    ? { ...hydratedMeta, id: item._id, type: libraryMetaType(item.type) }
+    : {
+        id: item._id,
+        type: libraryMetaType(item.type),
+        name: item.name,
+        poster: item.poster,
+        background: item.background,
+      };
+
+  // Identity repair only changes the displayed work. Playback must continue
+  // reading the original source checkpoint; the episode carries the native
+  // Kitsu stream/sourceMetaId for correct picker and tracker targeting.
+  const playbackMeta: Meta = item.cwRepairSourceId
+    ? { ...meta, id: item.cwRepairSourceId }
+    : meta;
+  const rawTitle = translatedTitle || hydratedMeta?.name?.trim() || item.name;
+  const displayTitle = isAnimeCwItem(item)
+    ? stripAnimeArcSuffix(stripFranchiseSuffix(rawTitle)) || rawTitle
+    : rawTitle;
+
+  const onOpenDetails = () => {
+    const kitsuId = effectiveKitsuVideo ? parseKitsuId(effectiveKitsuVideo.id) : null;
+    const animeEntry = kitsuId != null ? `kitsu:${kitsuId}` : getAnimeCwId(item._id);
+    const detailId = animeEntry ?? meta.id;
+    const isAnime = /^(kitsu|mal|anilist|anidb):/.test(detailId);
+    // Continue Watching artwork comes from the Stremio library record and may
+    // use a different language than the current TMDB image preference. Do not
+    // let those cached assets become the detail page's stable/locked artwork;
+    // the detail loader will resolve the same localized logo and backdrop used
+    // when the title is opened from Search.
+    const detailMeta = {
+      ...meta,
+      id: detailId,
+      type: isAnime ? ("series" as const) : meta.type,
+      ...(isAnime ? {} : { background: undefined, logo: undefined }),
+    };
+    openMeta(detailMeta, ep || isAnime ? { episodeHint: ep ?? undefined } : undefined);
+  };
+
+  const resolveEpisode = async (): Promise<PlayEpisode | undefined> => {
+    // Resolve the anime identity the same way the stream picker does, so a
+    // split series (Bleach TYBW, JoJo) lands on the cour that aired the season
+    // instead of the row's base entry.
+    // The card's own video is the exact episode; hand it over so a split cour
+    // can never fall back to a sibling entry's season-1 episode.
+    const video =
+      effectiveKitsuVideo ?? (ep ? await resolveCwAnimeVideo(item, ep).catch(() => null) : null);
+    const stateStreamId = item.state?.video_id;
+    const directStreamId =
+      item.cwRepairNativeStreamId ?? video?.id ??
+      (/^kitsu:\d+:\d+$/.test(stateStreamId ?? "") ? stateStreamId : undefined);
+    const animePlay = await resolveCwAnimePlayEpisode({
+      metaId: item._id,
+      videoId: item.state?.video_id,
+      season: ep?.season,
+      episode: ep?.episode,
+      imdbSeason: video?.imdbSeason ?? undefined,
+      imdbEpisode: video?.imdbEpisode ?? undefined,
+      kitsuStreamId: directStreamId,
+      name: episodeTitle ?? video?.title ?? undefined,
+    });
+    if (animePlay) {
+      // The native Kitsu stream owns tracker progress, but the ORIGINAL
+      // catalog row's provider S/E owns resume and Stremio playback history.
+      // A split cour can have native episode 1 at provider S2E13.
+      if (item.cwRepairSourceId && item.cwRepairNativeStreamId && ep)
+        return {
+          ...animePlay,
+          season: ep.season,
+          episode: ep.episode,
+          sourceMetaId: item._id,
+          kitsuStreamId: item.cwRepairNativeStreamId,
+        };
+      return animePlay;
+    }
+    let episode: PlayEpisode | undefined = item.type === "series" && ep ? ep : undefined;
+    if (!episode && kitsuThreeSeg) {
+      if (video) {
+        episode = {
+          season: video.season || 1,
+          episode: video.episode,
+          name: video.title,
+          still: video.thumbnail,
+          overview: video.overview,
+          kitsuStreamId: video.id,
+          imdbId: video.imdb_id,
+          imdbSeason: video.imdbSeason,
+          imdbEpisode: video.imdbEpisode,
+        };
+      } else {
+        const epNum = Number((item.state?.video_id ?? "").split(":")[2]);
+        if (Number.isFinite(epNum) && epNum > 0) episode = { season: 1, episode: epNum };
+      }
+    }
+    if (needsAniZipSyncIds(item._id, episode) && episode) {
+      const key = aniZipLookupKey(item._id);
+      if (key) {
+        const lookup =
+          key.scheme === "mal"
+            ? aniZipByMal
+            : key.scheme === "anilist"
+              ? aniZipByAnilist
+              : key.scheme === "anidb"
+                ? aniZipByAnidb
+                : aniZipByKitsu;
+        episode = applyAniZipEpisode(episode, await lookup(key.id).catch(() => null));
+      }
+    }
+    if (episode && !episode.sourceMetaId && item._id.startsWith("tt")) {
+      const animeId = getAnimeCwId(item._id);
+      if (animeId) episode = { ...episode, sourceMetaId: animeId };
+    }
+    // The card already resolved this episode's title from the metadata addon.
+    // Carry it onto the episode so a row that is not anime (Simkl/Trakt and
+    // ordinary series) still gives the presence an episode name.
+    if (episode && !episode.name && episodeTitle) episode = { ...episode, name: episodeTitle };
+    if (episode && !episode.still && epStill) episode = { ...episode, still: epStill };
+    // The original checkpoint owns playback, while the verified Kitsu entry
+    // owns this stream and its AniList/MAL/Simkl episode progress.
+    if (episode && item.cwRepairSourceId && /^kitsu:[1-9]\d*$/.test(item._id)) {
+      const saved = item.cwRepairNativeStreamId ??
+        (/^kitsu:[1-9]\d*:[1-9]\d*$/.test(item.state?.video_id ?? "")
+          ? item.state?.video_id
+          : episode.kitsuStreamId);
+      if (saved?.startsWith(`${item._id}:`))
+        episode = { ...episode, sourceMetaId: item._id, kitsuStreamId: saved };
+    }
+    return episode;
+  };
+
+  const openAvailableSources = async (
+    episode: PlayEpisode | undefined,
+    chooseEveryTime: boolean,
+    assertCurrent: () => void,
+  ) => {
+    const stream = () => {
+      assertCurrent();
+      openPicker(playbackMeta, episode, { autoPlay: !chooseEveryTime, resume: !chooseEveryTime });
+    };
+    const tmdbMatch = playbackMeta.id.match(/^tmdb:(?:movie|tv):(\d+)$/);
+    const identity = {
+      tmdbId: tmdbMatch ? Number(tmdbMatch[1]) : undefined,
+      imdbId: playbackMeta.id.startsWith("tt") ? playbackMeta.id : undefined,
+    };
+    const kind = episode ? "series" : "movie";
+    const connections = mediaServerConnections();
+    const indexed = await mediaServerItems();
+    assertCurrent();
+    const serverItems = matchingServerItems(
+      indexed,
+      identity,
+      kind,
+      episode?.season,
+      episode?.episode,
+    );
+    const serverCopies = serverPlayableCopies(serverItems, connections);
+    const local = resolveLocalPlayVersions(playbackMeta, episode ?? null, identity.imdbId);
+    const playLocal = (entry: (typeof local)[number]) => {
+      assertCurrent();
+      const source = localPlayerSrc(entry, undefined, episode);
+      openPlayer({
+        ...source,
+        meta: {
+          ...source.meta,
+          id: playbackMeta.id,
+          poster: playbackMeta.poster ?? source.meta.poster,
+          background: playbackMeta.background,
+        },
+      });
+    };
+    const playServer = async (copy: (typeof serverCopies)[number]) => {
+      assertCurrent();
+      const connection = connections.find((entry) => entry.id === copy.connectionId);
+      const item = serverItems.find(
+        (entry) => entry.connectionId === copy.connectionId && entry.id === copy.itemId,
+      );
+      if (!connection || !item) return;
+      const source = await createMediaServerPlayerSrc({
+        meta: playbackMeta,
+        imdbId: identity.imdbId,
+        episode,
+        connection,
+        item,
+        versionId: copy.version.id,
+      });
+      assertCurrent();
+      openPlayer(source);
+    };
+    const showChooser = () => {
+      if (local.length === 0 && serverCopies.length === 0) {
+        stream();
+        return;
+      }
+      openLocalVersions({
+        title: meta.name,
+        poster: meta.poster,
+        entries: local,
+        onPlayLocal: playLocal,
+        serverCopies,
+        onPlayServer: (copy) => void playServer(copy).catch(reportActionError),
+        onStream: stream,
+      });
+    };
+    if (chooseEveryTime) {
+      showChooser();
+      return;
+    }
+    const decision = decidePlaybackSource(settings, local.length, serverCopies);
+    if (decision.kind === "online") stream();
+    else if (decision.kind === "local" && local[0]) playLocal(local[0]);
+    else if (decision.kind === "home-server") await playServer(decision.copy);
+    else showChooser();
+  };
+
+  const onChooseSource = async (assertCurrent: () => void) => {
+    const episode = await resolveEpisode();
+    assertCurrent();
+    if (onPlayOverride) {
+      await onPlayOverride(episode, assertCurrent);
+      return;
+    }
+    await openAvailableSources(episode, true, assertCurrent);
+  };
+
+  const playSavedSource = async (
+    episode: PlayEpisode | undefined,
+    assertCurrent: () => void,
+  ): Promise<boolean> => {
+    // Continue Watching already knows the source that played a moment ago.
+    // Opening it directly avoids waiting for the picker's source pipeline.
+    const actual = readActualPlaybackForTarget(playbackMeta.id, episode?.season, episode?.episode);
+    if (!actual) {
+      return false;
+    }
+    if (actual.completed) {
+      return false;
+    }
+    const src = actual.src;
+    if (src.homeServer) return false;
+    if (actual.requiresSourceRefresh || src.streamRef?.infoHash) {
+      assertCurrent();
+      openPicker(playbackMeta, episode, {
+        autoPlay: true,
+        resume: true,
+        continuation: continuationFor(actual, capturePlaybackActor()),
+      });
+      return true;
+    }
+    if (!canReuseRecentRemotePlayback(actual)) return false;
+    const resumeMs =
+      readResumeEntry(playbackMeta.id, episode?.season, episode?.episode)?.ms ?? actual.positionMs;
+    const actor = capturePlaybackActor();
+    const historyUrl = src.historyUrl ?? src.url;
+    const url = await resolvePlaybackRedirect({
+      url: isPlaybackRedirectCandidate(historyUrl) ? historyUrl : src.url,
+      headers: src.headers,
+      signal: new AbortController().signal,
+    });
+    assertCurrent();
+    openPlayer({
+      ...src,
+      url,
+      historyUrl,
+      continuation: continuationFor(actual, actor),
+      resume: true,
+      startPositionMs: resumeMs,
+      startFromZero: false,
+      startPaused: false,
+    });
+    return true;
+  };
+
+  const onPlay = async (assertCurrent: () => void) => {
+    const episode = await resolveEpisode();
+    assertCurrent();
+    if (onPlayOverride) {
+      await onPlayOverride(episode, assertCurrent);
+      return;
+    }
+    if (await playSavedSource(episode, assertCurrent)) return;
+    await openAvailableSources(episode, false, assertCurrent);
+  };
+
+  const reportActionError = (error: unknown) =>
+    emitListToast(
+      t(error instanceof Error ? error.message : "Could not complete this action."),
+      "error",
+    );
+  const latest = useRef({ item, authKey, onPlay, onChooseSource, onDismiss });
+  latest.current = { item, authKey, onPlay, onChooseSource, onDismiss };
+  const identity = continueCardIdentity(item);
+  const commands = useMemo(() => {
+    const actor = capturePlaybackActor();
+    let afterDismiss: HTMLButtonElement | undefined;
+    return createContinueCardActions({
+      item,
+      getItem: () => latest.current.item,
+      isCurrent: () => isPlaybackActorCurrent(actor) && latest.current.authKey === authKey,
+      isAvailable: () => {
+        const current = latest.current.item;
+        if (current.manualWatched) return !isManualWatchedDismissed(current._id);
+        if (isCwDismissed(current)) return false;
+        if (isNuvioProviderActive() || current.external === "nuvio") {
+          return true;
+        }
+        return !current.local || !!localCwEntry(current._id);
+      },
+      t,
+      allowUnreleased: settings.cwPlayUnreleased,
+      play: (assertCurrent) => latest.current.onPlay(assertCurrent),
+      chooseSource: (assertCurrent) => latest.current.onChooseSource(assertCurrent),
+      dismiss: onDismiss
+        ? () => {
+            const trigger = cardRef.current;
+            const siblings = Array.from(
+              trigger
+                ?.closest(".harbor-row-track")
+                ?.querySelectorAll<HTMLButtonElement>("[data-continue-card-trigger]") ?? [],
+            );
+            const index = trigger ? siblings.indexOf(trigger) : -1;
+            afterDismiss = index >= 0 ? (siblings[index + 1] ?? siblings[index - 1]) : undefined;
+            return latest.current.onDismiss?.(latest.current.item);
+          }
+        : undefined,
+      onDismissed: (result) => {
+        if (result?.sync === "queued")
+          emitListToast(t("Removed on this device. Stremio synchronization is pending."));
+        if (result?.providerFailures?.length)
+          emitListToast(
+            t("Removed on this device. Some provider playback progress could not be cleared."),
+          );
+        if (afterDismiss?.isConnected && !afterDismiss.disabled)
+          afterDismiss.focus({ preventScroll: true });
+      },
+      onError: reportActionError,
+      icons: {
+        sources: <ListVideo size={16} />,
+        dismiss: <X size={16} />,
+      },
+    });
+    // Item metadata and callbacks stay live; episode/provider/actor changes own a new command source.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [identity, authKey, activeProfile?.id, !!onDismiss, t, settings.cwPlayUnreleased]);
+  const pending = useSyncExternalStore(commands.subscribe, commands.isPending, commands.isPending);
+  const runControl = (event: React.MouseEvent, command: () => Promise<void>) => {
+    event.stopPropagation();
+    // Shared commands report errors for both original controls and context-menu execution.
+    void command().catch(() => {});
+  };
+  const onCardContext = (e: React.MouseEvent) =>
+    openContextMenu(e, {
+      kind: "meta",
+      meta,
+      isValid: commands.isValid,
+      watchScope: item.type === "series" ? "episode" : "title",
+      episode: effectiveKitsuVideo
+        ? {
+            season: effectiveKitsuVideo.season || 1,
+            episode: effectiveKitsuVideo.episode,
+            kitsuStreamId: effectiveKitsuVideo.id,
+            imdbId: effectiveKitsuVideo.imdb_id,
+            imdbSeason: effectiveKitsuVideo.imdbSeason,
+            imdbEpisode: effectiveKitsuVideo.imdbEpisode,
+          }
+        : (ep ?? undefined),
+      primary: commands.primary,
+    });
+
+  return (
+    <div
+      className="group relative w-full min-w-0 animate-in fade-in-50 zoom-in-[0.98] duration-300 ease-out"
+      onContextMenu={onCardContext}
+    >
+      <button
+        ref={cardRef}
+        type="button"
+        data-continue-card-trigger
+        onClick={(event) => runControl(event, commands.chooseSource)}
+        disabled={pending || playbackBlocked}
+        aria-label={`${t("Choose another source")}: ${displayTitle}`}
+        title={t("Choose another source")}
+        className="block w-full min-w-0 rounded-xl text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      >
+        <div className="harbor-poster relative aspect-[16/9] overflow-hidden rounded-xl bg-elevated shadow-[0_2px_8px_-2px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.06)] will-change-transform [transform:translate3d(0,0,0)] transition-transform duration-[220ms] ease-[cubic-bezier(0.22,0.61,0.36,1)] group-hover:scale-[1.02]">
+          <div className="absolute inset-0 bg-gradient-to-br from-raised via-elevated to-surface" />
+          {src && (
+            <img
+              key={src}
+              src={src}
+              alt=""
+              decoding="async"
+              onError={() => setImgIdx((i) => i + 1)}
+              className="absolute inset-0 h-full w-full object-cover brightness-95"
+            />
+          )}
+          <div className="absolute inset-0 shadow-[inset_0_0_100px_rgba(0,0,0,0.45)]" />
+          {watched && (
+            <span
+              className="absolute start-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-emerald-400/22 text-emerald-200 ring-1 ring-emerald-400/40 backdrop-blur-sm"
+              title={t("Watched on Trakt")}
+            >
+              <Check size={12} strokeWidth={3} />
+            </span>
+          )}
+          {newEpisode > 0 && (
+            <span className={`absolute top-2 ${watched ? "start-10" : "start-2"}`}>
+              <Tooltip
+                label={
+                  newEpisode === 1
+                    ? t("1 new episode since you last watched")
+                    : t("{n} new episodes since you last watched", { n: newEpisode })
+                }
+                side="bottom"
+              >
+                <span className="flex h-6 items-center rounded-full bg-accent/90 px-2 text-[10px] font-bold tracking-[0.1em] text-canvas">
+                  +{newEpisode}
+                </span>
+              </Tooltip>
+            </span>
+          )}
+          {logo && (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-6">
+              <img
+                src={logo}
+                alt=""
+                loading="lazy"
+                decoding="async"
+                className="max-h-[55%] w-auto max-w-[78%] object-contain opacity-80 transition-opacity duration-[220ms] ease-[cubic-bezier(0.22,0.61,0.36,1)] group-hover:opacity-25"
+              />
+            </div>
+          )}
+          <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-canvas/80 to-transparent" />
+          {(sub || remaining || isExternal || upNext || caughtUp || episodeTitle) && (
+            <div className="absolute bottom-2 start-2 flex max-w-[calc(100%-16px)] items-center gap-1.5 rounded-md bg-canvas/95 px-2 py-1 text-[11px]">
+              {isExternal ? (
+                <img
+                  src={externalLogo}
+                  alt=""
+                  className="h-3.5 w-3.5 shrink-0 rounded-sm"
+                  title={externalLabel}
+                />
+              ) : (
+                <Play size={11} fill="currentColor" className="shrink-0 text-ink" />
+              )}
+              {sub && <span className="shrink-0 font-medium text-ink">{sub}</span>}
+              {isWaiting && countdown ? (
+                <>
+                  {sub && <span className="shrink-0 text-ink-subtle">·</span>}
+                  <span className="shrink-0 font-medium text-amber-500">{countdown}</span>
+                </>
+              ) : caughtUp ? (
+                <>
+                  {sub && <span className="shrink-0 text-ink-subtle">·</span>}
+                  <span className="shrink-0 font-medium text-ink-muted">{t("Caught up")}</span>
+                </>
+              ) : upNext ? (
+                <>
+                  {sub && <span className="shrink-0 text-ink-subtle">·</span>}
+                  <span className="shrink-0 font-medium text-accent">{t("Up Next")}</span>
+                </>
+              ) : episodeTitle ? (
+                <>
+                  {sub && <span className="shrink-0 text-ink-subtle">·</span>}
+                  <span className="min-w-0 truncate text-ink-muted">{episodeTitle}</span>
+                </>
+              ) : (
+                remaining && (
+                  <>
+                    {sub && <span className="shrink-0 text-ink-subtle">·</span>}
+                    <span className="shrink-0 text-ink-muted">{remaining}</span>
+                  </>
+                )
+              )}
+            </div>
+          )}
+          {showWatcher && watcher && (
+            <div
+              className="absolute bottom-2.5 end-2 z-[1]"
+              title={t("Watched by {name}", { name: watcher.name })}
+            >
+              <span
+                className="flex h-7 w-7 items-center justify-center overflow-hidden rounded-full bg-elevated text-[11px] font-bold text-white"
+                style={{ boxShadow: `0 0 0 2px ${watcher.color}, 0 2px 8px rgba(0,0,0,0.5)` }}
+              >
+                {watcher.avatar ? (
+                  <img
+                    src={watcher.avatar}
+                    alt=""
+                    className="h-full w-full object-cover"
+                    draggable={false}
+                  />
+                ) : (
+                  (watcher.name.trim()[0]?.toUpperCase() ?? "?")
+                )}
+              </span>
+            </div>
+          )}
+          <div className="absolute inset-x-0 bottom-0 h-[3px] bg-canvas/40">
+            <div
+              className={`h-full ${isWaiting ? "bg-amber-500" : "bg-accent"}`}
+              style={{ width: `${isWaiting ? 100 : progress * 100}%` }}
+            />
+          </div>
+        </div>
+      </button>
+      {settings.liquidGlass ? (
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex aspect-[16/9] items-center justify-center">
+          <ThreeLiquidGlassSurface
+            radius="9999px"
+            shaderRadius={0.58}
+            intensity={0.9}
+            style={{
+              boxShadow: "inset 0 1px 0 rgba(255,255,255,0.10), inset 0 -1px 0 rgba(0,0,0,0.05)",
+            }}
+            className="pointer-events-none h-14 w-14 scale-95 rounded-full border border-white/[0.10] opacity-0 transition-[opacity,transform] duration-[120ms] group-hover:pointer-events-auto group-hover:scale-100 group-hover:opacity-100 focus-within:pointer-events-auto focus-within:scale-100 focus-within:opacity-100"
+            contentClassName="flex h-full w-full"
+          >
+            <button
+              type="button"
+              tabIndex={-1}
+              data-tv-skip="true"
+              onClick={(event) => runControl(event, commands.play)}
+              disabled={pending || playbackBlocked}
+              aria-label={t("Play {name}", { name: displayTitle })}
+              title={t("Play")}
+              className="flex h-full w-full items-center justify-center rounded-full bg-transparent text-ink outline-none transition-transform duration-150 active:scale-95 focus-visible:ring-2 focus-visible:ring-accent"
+            >
+              <Play size={22} fill="currentColor" className="ml-0.5 text-ink" />
+            </button>
+          </ThreeLiquidGlassSurface>
+        </div>
+      ) : (
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex aspect-[16/9] items-center justify-center opacity-0 transition-opacity duration-[220ms] group-hover:opacity-100 group-focus-within:opacity-100">
+          <button
+            type="button"
+            tabIndex={-1}
+            data-tv-skip="true"
+            onClick={(event) => runControl(event, commands.play)}
+            disabled={pending || playbackBlocked}
+            aria-label={t("Play {name}", { name: displayTitle })}
+            title={t("Play")}
+            className="pointer-events-auto flex h-14 w-14 items-center justify-center rounded-full bg-canvas ring-1 ring-white/15 shadow-[0_10px_28px_-8px_rgba(0,0,0,0.6)] transition-transform duration-150 hover:scale-[1.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            <Play size={22} fill="currentColor" className="ml-0.5 text-ink" />
+          </button>
+        </div>
+      )}
+      <button
+        type="button"
+        tabIndex={-1}
+        data-tv-skip="true"
+        onClick={onOpenDetails}
+        aria-label={`${t("Open details")}: ${displayTitle}`}
+        className="mt-2.5 block w-full truncate rounded-sm text-start text-[13px] font-medium text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      >
+        {displayTitle}
+      </button>
+      {onDismiss &&
+        (settings.liquidGlass ? (
+          <div className="absolute end-0.5 top-0.5 z-10 flex h-11 w-11 items-center justify-center">
+            <ThreeLiquidGlassSurface
+              radius="9999px"
+              shaderRadius={0.58}
+              intensity={0.9}
+              style={{
+                boxShadow: "inset 0 1px 0 rgba(255,255,255,0.10), inset 0 -1px 0 rgba(0,0,0,0.05)",
+              }}
+              className="pointer-events-none h-9 w-9 scale-95 rounded-full border border-white/[0.09] opacity-0 transition-[opacity,transform] duration-[120ms] group-hover:pointer-events-auto group-hover:scale-100 group-hover:opacity-100 focus-within:pointer-events-auto focus-within:scale-100 focus-within:opacity-100"
+              contentClassName="flex h-full w-full"
+            >
+              <button
+                type="button"
+                tabIndex={-1}
+                data-tv-skip="true"
+                onClick={(event) => runControl(event, commands.dismiss)}
+                disabled={pending}
+                aria-label={t("Remove from Continue Watching")}
+                className="flex h-full w-full items-center justify-center rounded-full bg-transparent text-ink-muted outline-none transition-colors duration-150 hover:text-ink active:scale-95"
+              >
+                <X size={20} strokeWidth={2.4} />
+              </button>
+            </ThreeLiquidGlassSurface>
+          </div>
+        ) : (
+          <button
+            type="button"
+            tabIndex={-1}
+            data-tv-skip="true"
+            onClick={(event) => runControl(event, commands.dismiss)}
+            disabled={pending}
+            aria-label={t("Remove from Continue Watching")}
+            className="group/x absolute end-0.5 top-0.5 z-10 flex h-11 w-11 items-center justify-center opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-visible:opacity-100"
+          >
+            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-canvas/85 text-ink-muted ring-1 ring-white/12 backdrop-blur-sm transition-colors group-hover/x:bg-canvas group-hover/x:text-ink">
+              <X size={20} strokeWidth={2.4} />
+            </span>
+          </button>
+        ))}
+    </div>
+  );
+});
+
+function hiResStill(url?: string): string | undefined {
+  if (!url) return url;
+  return url.replace("/t/p/w300/", "/t/p/w780/");
+}
+
+function downscaleTmdb(url?: string): string | undefined {
+  if (!url) return url;
+  return url
+    .replace(/\/t\/p\/(original|w1280|w780|w500)\//, "/t/p/w300/")
+    .replace(/(images\.metahub\.space\/background\/)(medium|large)\//i, "$1small/");
+}
+
+async function resolveTmdbBackdrop(
+  key: string,
+  imdbId: string,
+  type: string,
+): Promise<string | undefined> {
+  const tmdbId = await tmdbIdFromImdb(key, imdbId, narrowMediaType(type)).catch(() => null);
+  if (!tmdbId) return undefined;
+  const kind = type === "movie" ? "movie" : "tv";
+  const lite = await tmdbLiteMeta(key, `tmdb:${kind}:${tmdbId}`).catch(() => null);
+  return lite?.background ?? undefined;
+}
+
+function formatRemaining(
+  t: (key: string, vars?: Record<string, string | number>) => string,
+  ms: number,
+) {
+  const minutes = Math.max(0, Math.round(ms / 60000));
+  if (minutes < 60) return t("{m}m left", { m: minutes });
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m === 0 ? t("{h}h left", { h }) : t("{h}h {m}m left", { h, m });
+}

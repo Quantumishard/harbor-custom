@@ -1,0 +1,196 @@
+import { withMetaCache } from "@/lib/cinemeta-cache";
+import { addonOnlyMetadata, readMetadataSettings } from "./metadata-policy";
+import { safeFetch as fetch } from "@/lib/safe-fetch";
+export { persistableAddonOrigin } from "./addon-configuration-key";
+
+const CINEMETA = "https://v3-cinemeta.strem.io";
+
+export type MetaType = "movie" | "series" | "channel" | "tv" | "anime" | "other" | "manga";
+
+export function narrowMediaType(t: MetaType | string | undefined): "movie" | "series" {
+  return t === "series" ? "series" : "movie";
+}
+
+export type AddonOrigin = {
+  id: string;
+  name: string;
+  logo?: string;
+  base?: string;
+  configurationKey?: string;
+};
+
+/** Non-standard season metadata some addons include beside `videos`. */
+export type MetaSeason = {
+  season?: number;
+  number?: number;
+  seasonNumber?: number;
+  name?: string;
+  overview?: string;
+  description?: string;
+  overviewLanguage?: string;
+  language?: string;
+  poster?: string;
+  image?: string;
+  background?: string;
+  backdrop?: string;
+  airDate?: string;
+  released?: string;
+  episodeCount?: number;
+};
+
+export type Meta = {
+  id: string;
+  type: MetaType;
+  name: string;
+  /** Verified alternative titles from the same metadata record for stream matching. */
+  alternateTitles?: string[];
+  poster?: string;
+  background?: string;
+  logo?: string;
+  description?: string;
+  originalLanguage?: string;
+  country?: string;
+  malId?: number;
+  animeFormat?: string;
+  releaseInfo?: string;
+  releaseDate?: string;
+  inTheaters?: boolean;
+  imdbRating?: string;
+  adult?: boolean;
+  providerBadge?: { name: string; logo: string; tint: string };
+  sourceRank?: number;
+  tmdbScore?: number;
+  /** Resolution a plugin's own catalogue row claimed. A plugin row arrives as a poster with no
+   * addon meta behind it, so this is the only field its quality can be carried in. */
+  pluginQuality?: string;
+  /** What a plugin wrote on its listing line beyond the title, read back out of it and kept. A
+   * provider names a listing after everything it carries, so this is where its languages are: the
+   * title has them cut off it, and nothing else in the payload states them. */
+  /** What a plugin wrote on its listing line beyond the title, read back out of it and kept. A
+   * provider names a listing after everything it carries, so this is where its languages are: the
+   * title has them cut off it, and nothing else in the payload states them.
+   *
+   * `resolutions` is every tier the line names, best first — a line naming `2160p`, `4K` and `UHD`
+   * is one tier, not three. `hdr` is null when the line said nothing, which is not a claim that the
+   * file has none. */
+  listingExtras?: {
+    rest: string;
+    languages: string[];
+    quality: string[];
+    resolutions: string[];
+    hdr: string | null;
+  };
+  /** A year a plugin put on the listing line, when it wrote one. The addon meta carries its own
+   * `releaseInfo`; this is for rows that have no addon meta behind them. */
+  listingYear?: number;
+  runtime?: string;
+  genres?: string[];
+  cast?: string[];
+  trailers?: Array<{ source: string; type?: string }>;
+  trailerStreams?: Array<{ ytId?: string; title?: string }>;
+  links?: Array<{ name: string; category: string; url: string }>;
+  addonOrigin?: AddonOrigin;
+  isCollection?: boolean;
+  behaviorHints?: { defaultVideoId?: string | null };
+  seasons?: MetaSeason[];
+  /** Some metadata addons put season art or text in this extension instead of `seasons`. */
+  seasonPosters?: Record<string | number, string>;
+  seasonBackdrops?: Record<string | number, string>;
+  seasonOverviews?: Record<string | number, string>;
+  app_extras?: {
+    seasons?: MetaSeason[];
+    seasonPosters?: Record<string | number, string>;
+    seasonBackdrops?: Record<string | number, string>;
+    seasonOverviews?: Record<string | number, string>;
+  };
+  videos?: Array<{
+    id?: string;
+    season?: number;
+    episode?: number;
+    number?: number;
+    released?: string;
+    firstAired?: string;
+    name?: string;
+    title?: string;
+    overview?: string;
+    description?: string;
+    thumbnail?: string;
+    /** Episode length in minutes, when the source states one. */
+    runtime?: number;
+    streams?: Array<Record<string, unknown>>;
+  }>;
+};
+
+export function hasEmbeddedStreams(videos: Meta["videos"]): boolean {
+  return videos?.some((v) => Array.isArray(v.streams) && v.streams.length > 0) === true;
+}
+
+export function persistableVideos(videos: unknown): Meta["videos"] {
+  if (!Array.isArray(videos) || videos.length === 0 || videos.length > 40) return undefined;
+  const safe = videos
+    .filter(
+      (video): video is NonNullable<Meta["videos"]>[number] => !!video && typeof video === "object",
+    )
+    .map(({ streams: _streams, ...video }) => video);
+  if (safe.length === 0) return undefined;
+  try {
+    if (JSON.stringify(safe).length > 64000) return undefined;
+  } catch {
+    return undefined;
+  }
+  return safe;
+}
+
+export function isAddonNativeMeta(meta: Meta): boolean {
+  if (meta.type === "tv" || meta.type === "channel") return true;
+  if (!meta.addonOrigin) return false;
+  const id = meta.id || "";
+  const resolvable =
+    /^tt\d/.test(id) || id.startsWith("tmdb:") || id.startsWith("kitsu:") || id.startsWith("mal:");
+  return !resolvable;
+}
+
+async function catalog(path: string): Promise<Meta[]> {
+  if (addonOnlyMetadata()) return [];
+  const res = await fetch(`${CINEMETA}/catalog/${path}.json`);
+  if (!res.ok) return [];
+  const json = await res.json();
+  return json.metas ?? [];
+}
+
+function cinemetaTopPath(type: "movie" | "series", genre?: string, skip = 0): string {
+  const parts = [`${type}/top`];
+  if (genre) parts.push(`genre=${encodeURIComponent(genre)}`);
+  if (skip > 0) parts.push(`skip=${skip}`);
+  return parts.join("/");
+}
+
+export const topMovies = (genre?: string, skip = 0) =>
+  catalog(cinemetaTopPath("movie", genre, skip));
+
+export const topSeries = (genre?: string, skip = 0) =>
+  catalog(cinemetaTopPath("series", genre, skip));
+
+export function cinemetaEnabled(): boolean {
+  const settings = readMetadataSettings();
+  return settings.addonOnlyMetadata !== true && settings.cinemetaEnabled !== false;
+}
+
+export async function meta(
+  type: "movie" | "series",
+  id: string,
+  force = false,
+): Promise<Meta | null> {
+  if (addonOnlyMetadata() || (!force && !cinemetaEnabled())) return null;
+  const cleanId = id.replace(/^(series|movie):/, "");
+  if (!cleanId.startsWith("tt")) return null;
+  return withMetaCache(type, cleanId, async () => {
+    const res = await fetch(`${CINEMETA}/meta/${type}/${cleanId}.json`);
+    if (!res.ok) {
+      const definitive = res.status >= 400 && res.status < 500 && res.status !== 429;
+      return { value: null, cacheable: definitive };
+    }
+    const json = await res.json();
+    return { value: json.meta ?? null, cacheable: true };
+  });
+}

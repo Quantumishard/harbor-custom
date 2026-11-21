@@ -1,0 +1,282 @@
+mod audio;
+mod catalog_commands;
+mod commands;
+mod connector;
+mod connectors;
+mod db;
+#[cfg(not(feature = "music-sidecar"))]
+mod engine;
+#[cfg(feature = "music-sidecar")]
+#[path = "music/engine_sidecar.rs"]
+mod engine;
+mod lastfm;
+mod library;
+mod m3u;
+mod matching;
+mod migrations;
+mod model;
+mod registry;
+mod rows;
+mod spotify;
+mod store;
+mod stream_probe;
+pub(crate) mod trace;
+mod worker;
+mod worker_policy;
+
+pub use catalog_commands::*;
+pub use commands::*;
+pub use model::*;
+pub use spotify::library::*;
+// Glob-import Tauri's generated command marker modules as well as the handlers.
+pub use spotify::soloist::*;
+
+use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::Arc;
+use tauri::Manager;
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicTrack {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    explicit: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    media_kind: Option<String>,
+    id: String,
+    connector_id: Option<String>,
+    source_id: Option<String>,
+    playback_url: Option<String>,
+    title: String,
+    artist: String,
+    album: Option<String>,
+    artwork: String,
+    duration_seconds: u64,
+    duration_label: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicStream {
+    url: String,
+    mime_type: String,
+    bitrate: u64,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    http_headers: std::collections::BTreeMap<String, String>,
+}
+
+impl MusicStream {
+    fn request_headers(&self) -> Result<reqwest::header::HeaderMap, String> {
+        let invalid = || "Music source returned invalid request headers".to_string();
+        if self.http_headers.len() > 16 {
+            return Err(invalid());
+        }
+        let mut headers = reqwest::header::HeaderMap::new();
+        for (name, value) in &self.http_headers {
+            if name.len() > 128 || value.len() > 8192 {
+                return Err(invalid());
+            }
+            let name =
+                reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|_| invalid())?;
+            let value = reqwest::header::HeaderValue::from_str(value).map_err(|_| invalid())?;
+            headers.insert(name, value);
+        }
+        Ok(headers)
+    }
+}
+
+/// The video rendition of a track. `audio_url` is separate because YouTube only muxes audio
+/// into video up to 720p; above that mpv plays the video and is handed the audio alongside it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicVideoStream {
+    url: String,
+    audio_url: Option<String>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    http_headers: std::collections::BTreeMap<String, String>,
+    /// Heights this upload actually offers, so the picker never lists a ceiling it cannot serve.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    available_heights: Vec<u32>,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicSourceCandidate {
+    connector_id: String,
+    connector_name: String,
+    health: connector::ConnectorHealth,
+    track: MusicTrack,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicMigration {
+    liked_ids: Option<Vec<String>>,
+    recents: Option<Vec<MusicTrack>>,
+    queue: Option<Vec<MusicTrack>>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicBootstrap {
+    liked_ids: Vec<String>,
+    liked_tracks: Vec<MusicTrack>,
+    recents: Vec<MusicTrack>,
+    queue: Vec<MusicTrack>,
+}
+
+fn bootstrap(database: &db::MusicDb) -> Result<MusicBootstrap, String> {
+    Ok(MusicBootstrap {
+        liked_ids: store::liked_ids(database)?,
+        liked_tracks: store::liked_tracks(database)?,
+        recents: store::recents(database)?,
+        queue: store::queue(database)?,
+    })
+}
+
+const ACTIVE_NONE: u8 = 0;
+const ACTIVE_STREAM: u8 = 1;
+const ACTIVE_SPOTIFY: u8 = 2;
+const ACTIVE_MODULE: u8 = 3;
+const ACTIVE_MODULE_SPOTIFY: u8 = 4;
+const ACTIVE_SOLOIST: u8 = 5;
+
+pub struct MusicState {
+    db: db::MusicDb,
+    registry: registry::ConnectorRegistry,
+    engine: engine::MusicEngine,
+    spotify: Arc<spotify::SpotifyState>,
+    active_engine: AtomicU8,
+    external_primary: AtomicU8,
+    external_crossfade: AtomicU64,
+    external_paused_for_video: AtomicBool,
+    play_request: AtomicU64,
+    play_commit: tokio::sync::Mutex<()>,
+}
+
+impl MusicState {
+    pub fn new() -> Self {
+        let registry = registry::ConnectorRegistry::new();
+        let spotify = Arc::new(spotify::SpotifyState::new());
+        connectors::register(&registry).expect("register music connectors");
+        registry
+            .register(Box::new(spotify::connector::SpotifyConnector::new(
+                spotify.clone(),
+            )))
+            .expect("register Spotify connector");
+        registry
+            .register(Box::new(lastfm::LastFmConnector::new()))
+            .expect("register Last.fm connector");
+        Self {
+            db: db::MusicDb::new(),
+            engine: engine::MusicEngine::new(),
+            registry,
+            spotify,
+            active_engine: AtomicU8::new(ACTIVE_NONE),
+            external_primary: AtomicU8::new(0),
+            external_crossfade: AtomicU64::new((-1.0_f64).to_bits()),
+            external_paused_for_video: AtomicBool::new(false),
+            play_request: AtomicU64::new(0),
+            play_commit: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    fn set_active_engine(&self, engine: u8) {
+        self.active_engine.store(engine, Ordering::SeqCst);
+    }
+
+    fn active_engine(&self) -> u8 {
+        self.active_engine.load(Ordering::SeqCst)
+    }
+
+    fn begin_play_request(&self) -> u64 {
+        self.play_request.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    fn is_current_play_request(&self, request: u64) -> bool {
+        self.play_request.load(Ordering::SeqCst) == request
+    }
+}
+
+pub fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
+    m3u::configure_event_bridge(app);
+    trace::configure(app);
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let state = app.state::<MusicState>();
+    state.db.initialize(&directory.join("music.db"))?;
+    state
+        .engine
+        .initialize_audio(directory.join("music-audio.json"));
+    state.spotify.initialize(app, directory.join("spotify"));
+    worker::initialize(app)
+}
+
+/// A stream URL that failed mid-play stays valid in the cache until it expires, so a retry
+/// replayed the dead URL. Drop it so the next attempt resolves a fresh one.
+pub(super) fn forget_dead_stream(app: &tauri::AppHandle, track_id: &str) {
+    let Some(state) = app.try_state::<MusicState>() else {
+        return;
+    };
+    match state.db.invalidate_stream(track_id) {
+        Ok(()) => trace::log(format!("dropped cached stream for {track_id}")),
+        Err(error) => trace::log(format!("cache drop failed for {track_id}: {error}")),
+    }
+}
+
+pub fn shutdown(app: &tauri::AppHandle) {
+    let Some(state) = app.try_state::<MusicState>() else {
+        return;
+    };
+    state.engine.shutdown();
+    state.spotify.shutdown();
+    spotify::soloist::shutdown();
+    m3u::shutdown_host();
+}
+
+pub fn try_run_connector_worker() -> bool {
+    worker::try_run_from_args()
+}
+
+pub async fn pause_for_video(app: &tauri::AppHandle) -> Result<bool, String> {
+    let Some(state) = app.try_state::<MusicState>() else {
+        return Ok(false);
+    };
+    match state.active_engine() {
+        ACTIVE_SPOTIFY => state.spotify.pause_for_video().await,
+        ACTIVE_SOLOIST => spotify::soloist::playback::pause_for_video(app).await,
+        ACTIVE_STREAM => state.engine.pause_for_video().await,
+        ACTIVE_MODULE_SPOTIFY => {
+            let status = m3u::module_request_async(serde_json::json!({
+                "command":"spotify_state"
+            })).await?;
+            if status["live"] != true || status["paused"] == true { return Ok(false); }
+            m3u::module_request_async(serde_json::json!({
+                "command":"spotify_pause","paused":true
+            })).await?;
+            state.external_paused_for_video.store(true,Ordering::SeqCst);
+            Ok(true)
+        },
+        ACTIVE_MODULE => {
+            let status = m3u::module_request_async(serde_json::json!({
+                "command":"mpv_state","deck":0
+            })).await?;
+            if status["live"] != true || status["paused"] == true {
+                return Ok(false);
+            }
+            m3u::module_request_async(serde_json::json!({
+                "command":"mpv_pause","deck":0,"paused":true
+            })).await?;
+            state.external_paused_for_video.store(true, Ordering::SeqCst);
+            Ok(true)
+        },
+        _ => Ok(false),
+    }
+}
+
+fn duration_label(seconds: u64) -> String {
+    format!("{}:{:02}", seconds / 60, seconds % 60)
+}

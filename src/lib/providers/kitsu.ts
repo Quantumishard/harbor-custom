@@ -1,0 +1,735 @@
+import { addonOnlyMetadata } from "@/lib/metadata-policy";
+import { lruGet, lruSet } from "@/lib/cache";
+import type { Meta } from "@/lib/cinemeta";
+import { registerEvictable } from "@/lib/maintenance";
+import { safeFetch } from "@/lib/safe-fetch";
+import { adultContentHidden } from "@/lib/addons-store/adult-filter";
+import { episodeTextLanguage } from "@/lib/episode-text-language";
+import { createRequestScheduler } from "@/lib/request-scheduler";
+import {
+  loadMedia,
+  metadataCacheTtl,
+  onMediaCacheClear,
+  mediaCacheGeneration,
+} from "@/lib/media-cache";
+import { sourceFingerprint } from "./source-fingerprint";
+
+const KITSU = "https://kitsu.io/api/edge";
+
+type Img = { original?: string; large?: string; medium?: string; small?: string };
+
+type KitsuAnimeAttrs = {
+  slug?: string;
+  canonicalTitle?: string;
+  titles?: { en?: string; en_jp?: string; ja_jp?: string };
+  synopsis?: string;
+  description?: string;
+  posterImage?: Img | null;
+  coverImage?: Img | null;
+  averageRating?: string | null;
+  episodeCount?: number | null;
+  episodeLength?: number | null;
+  totalLength?: number | null;
+  status?: string;
+  subtype?: string;
+  startDate?: string;
+  endDate?: string;
+  ageRating?: string;
+  ageRatingGuide?: string;
+  youtubeVideoId?: string | null;
+  popularityRank?: number | null;
+  ratingRank?: number | null;
+};
+
+type KitsuEpisodeAttrs = {
+  canonicalTitle?: string;
+  synopsis?: string;
+  description?: string;
+  thumbnail?: Img | null;
+  number?: number;
+  seasonNumber?: number;
+  airdate?: string | null;
+  length?: number | null;
+};
+
+type KitsuCharacterAttrs = {
+  canonicalName?: string;
+  names?: { en?: string };
+  image?: Img | null;
+  description?: string;
+};
+
+type Resource<T> = {
+  id: string;
+  type: string;
+  attributes: T;
+  relationships?: Record<
+    string,
+    { data?: { id: string; type: string } | Array<{ id: string; type: string }> }
+  >;
+};
+type Doc<D, I = unknown> = { data: D; included?: Resource<I>[]; meta?: { count?: number } };
+
+const cache = new Map<string, { v: unknown; t: number; freshUntil: number; loadedAt: number }>();
+// Source identity outlives the LRU: evicting a value is a memory decision, not
+// a metadata change. Keeping the digest/revision here prevents a detail page
+// from rebuilding just because another title pushed its provider entry out.
+const sourceIdentities = new Map<
+  string,
+  { revision: number; digest: string; freshUntil: number }
+>();
+let revision = 0;
+const TTL = 30 * 60 * 1000;
+const CACHE_MAX = 300;
+const SOURCE_IDENTITY_MAX = 4000;
+const requests = createRequestScheduler({ concurrency: 4 });
+onMediaCacheClear(() => {
+  cache.clear();
+  sourceIdentities.clear();
+});
+
+registerEvictable("kitsu", (aggressive) => {
+  if (aggressive) {
+    cache.clear();
+    sourceIdentities.clear();
+    return;
+  }
+  const now = Date.now();
+  for (const [k, e] of cache) if (now > e.freshUntil) cache.delete(k);
+});
+
+function rememberSource(url: string, value: unknown, freshUntil: number): void {
+  const digest = sourceFingerprint(value);
+  const previous = sourceIdentities.get(url);
+  const sourceRevision = previous?.digest === digest ? previous.revision : ++revision;
+  lruSet(
+    sourceIdentities,
+    url,
+    { revision: sourceRevision, digest, freshUntil },
+    SOURCE_IDENTITY_MAX,
+  );
+}
+
+/** A strict caller cannot read a Kitsu outage as "no mapping". */
+export class KitsuUnavailableError extends Error {
+  constructor() {
+    super("kitsu unavailable");
+    this.name = "KitsuUnavailableError";
+  }
+}
+
+async function get<T>(
+  path: string,
+  maxAge?: number,
+  identity = false,
+  strict = false,
+): Promise<T | null> {
+  // An identity-only check must still run with addon-only metadata enabled:
+  // refusing to ask is not the same answer as "no such anime".
+  if (addonOnlyMetadata() && !identity && !strict) return null;
+  const url = `${KITSU}${path}`;
+  const now = Date.now();
+  const hit = lruGet(cache, url);
+  if (
+    hit &&
+    hit.freshUntil > now &&
+    now - hit.loadedAt < TTL &&
+    (maxAge === undefined || now - hit.t < Math.min(TTL, maxAge))
+  )
+    return hit.v as T;
+  const generation = mediaCacheGeneration();
+  if (strict) {
+    // Bypass the negative-caching loader: this caller must be able to tell a 404
+    // from a failure, and a failure must not be remembered as a miss.
+    const value = await requests.schedule(url, async () => {
+      let response: Response;
+      try {
+        response = await safeFetch(url, {
+          headers: { Accept: "application/vnd.api+json" },
+          signal: AbortSignal.timeout(15000),
+        });
+      } catch {
+        throw new KitsuUnavailableError();
+      }
+      if (response.status === 429) requests.pauseFor(1000);
+      if (response.status === 404) return null;
+      if (!response.ok) throw new KitsuUnavailableError();
+      try {
+        return (await response.json()) as T;
+      } catch {
+        throw new KitsuUnavailableError();
+      }
+    });
+    if (value && generation === mediaCacheGeneration()) {
+      const t = Date.now();
+      const freshUntil = t + metadataCacheTtl(value, t);
+      rememberSource(url, value, freshUntil);
+      lruSet(cache, url, { v: value, t, freshUntil, loadedAt: Date.now() }, CACHE_MAX);
+    }
+    return value;
+  }
+  return loadMedia<T>(
+    "kitsu-resource",
+    [url],
+    () =>
+      requests.schedule(url, async () => {
+        try {
+          const r = await safeFetch(url, {
+            headers: { Accept: "application/vnd.api+json" },
+            signal: AbortSignal.timeout(15000),
+          });
+          if (r.status === 429) requests.pauseFor(1000);
+          if (!r.ok) return null;
+          return (await r.json()) as T;
+        } catch {
+          return null;
+        }
+      }),
+    { ttl: metadataCacheTtl, maxAge },
+  ).then(({ value, storedAt }) => {
+    if (value && generation === mediaCacheGeneration()) {
+      const t = storedAt ?? Date.now();
+      const freshUntil = t + metadataCacheTtl(value, t);
+      rememberSource(url, value, freshUntil);
+      lruSet(cache, url, { v: value, t, freshUntil, loadedAt: Date.now() }, CACHE_MAX);
+    }
+    return value;
+  });
+}
+
+export { get as kitsuMappingRequest };
+
+/** Strict counterpart: throws on a provider failure, returns null only on a real 404. */
+export function kitsuMappingRequestStrict<T>(path: string, maxAge?: number): Promise<T | null> {
+  return get<T>(path, maxAge, false, true);
+}
+
+export type KitsuEpisode = {
+  id: number;
+  number: number;
+  seasonNumber: number;
+  title: string;
+  synopsis: string;
+  titleLanguage?: string;
+  synopsisLanguage?: string;
+  thumbnail: string | null;
+  thumbnailFallback?: string | null;
+  airdate: string | null;
+  length: number | null;
+  streamId?: string;
+  imdbId?: string;
+  imdbSeason?: number;
+  imdbEpisode?: number;
+  filler?: boolean;
+  absoluteNumber?: number;
+  tvdbEpisodeId?: number;
+  rating?: number;
+  ratingIsImdb?: boolean;
+  sourceMetaId?: string;
+  displayNumber?: number;
+  displaySeason?: number;
+};
+
+export type KitsuCharacter = {
+  id: number;
+  name: string;
+  role: string;
+  image: string | null;
+  voiceActor: string | null;
+  voiceActorId: number | null;
+  voiceActorImage: string | null;
+  language: string | null;
+};
+
+export type KitsuRelated = {
+  role: string;
+  meta: Meta;
+};
+
+export type KitsuAnimeDetail = {
+  id: number;
+  slug: string;
+  title: string;
+  altTitles: string[];
+  synopsis: string;
+  poster?: string;
+  backdrop?: string;
+  rating?: string;
+  episodeCount?: number;
+  episodeLength?: number;
+  status?: string;
+  subtype?: string;
+  year?: string;
+  startDate?: string;
+  endDate?: string;
+  ageRating?: string;
+  ageRatingGuide?: string;
+  trailerYtId?: string;
+  popularityRank?: number;
+  ratingRank?: number;
+  genres: string[];
+  genreSlugs: string[];
+  categories: string[];
+};
+
+export type KitsuStudio = {
+  id: number;
+  name: string;
+  role: string;
+};
+
+export type KitsuStreamer = {
+  id: number;
+  url: string;
+  service: string;
+  subtitles: string[];
+  dubs: string[];
+};
+
+function pickImg(img?: Img | null): string | undefined {
+  return img?.original ?? img?.large ?? img?.medium ?? img?.small ?? undefined;
+}
+
+function pickPoster(img?: Img | null): string | undefined {
+  return img?.medium ?? img?.large ?? img?.original ?? img?.small ?? undefined;
+}
+
+function ratingToTen(raw?: string | null): string | undefined {
+  if (!raw) return undefined;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return undefined;
+  return (n / 10).toFixed(1);
+}
+
+export function parseKitsuId(metaId: string): number | null {
+  const m = metaId.match(/^kitsu:(\d+)/);
+  return m ? Number(m[1]) : null;
+}
+
+const COVER_CACHE_MAX = 800;
+const coverCache = new Map<number, string | null>();
+
+export async function kitsuCoverImage(id: number): Promise<string | null> {
+  if (coverCache.has(id)) return coverCache.get(id)!;
+  const j = await get<Doc<Resource<{ coverImage?: Img | null }>>>(
+    `/anime/${id}?fields[anime]=coverImage`,
+  );
+  const img = j?.data?.attributes?.coverImage;
+  const url = pickImg(img) ?? null;
+  lruSet(coverCache, id, url, COVER_CACHE_MAX);
+  return url;
+}
+
+type GenreAttrs = { name?: string; slug?: string; description?: string };
+type CategoryAttrs = { title?: string; slug?: string; description?: string };
+
+export async function kitsuAnime(
+  id: number,
+  maxAge?: number,
+  identity = false,
+): Promise<KitsuAnimeDetail | null> {
+  const j = await get<Doc<Resource<KitsuAnimeAttrs>, GenreAttrs | CategoryAttrs>>(
+    `/anime/${id}?include=genres,categories`,
+    maxAge,
+    identity,
+  );
+  if (!j?.data) return null;
+  const a = j.data.attributes;
+  const startYear = a.startDate ? a.startDate.slice(0, 4) : undefined;
+  const genres: string[] = [];
+  const genreSlugs: string[] = [];
+  const categories: string[] = [];
+  for (const inc of j.included ?? []) {
+    if (inc.type === "genres") {
+      const g = inc.attributes as GenreAttrs;
+      if (g.name) genres.push(g.name);
+      if (g.slug) genreSlugs.push(g.slug);
+    } else if (inc.type === "categories") {
+      const c = inc.attributes as CategoryAttrs;
+      if (c.title) categories.push(c.title);
+    }
+  }
+  return {
+    id: Number(j.data.id),
+    slug: a.slug ?? "",
+    title: a.titles?.en || a.canonicalTitle || a.titles?.en_jp || "Unknown",
+    altTitles: [a.titles?.en, a.titles?.en_jp, a.titles?.ja_jp, a.canonicalTitle].filter(
+      (t): t is string => !!t,
+    ),
+    synopsis: a.synopsis || a.description || "",
+    poster: pickPoster(a.posterImage),
+    backdrop: pickImg(a.coverImage),
+    rating: ratingToTen(a.averageRating),
+    episodeCount: a.episodeCount ?? undefined,
+    episodeLength: a.episodeLength ?? undefined,
+    status: a.status,
+    subtype: a.subtype,
+    year: startYear,
+    startDate: a.startDate,
+    endDate: a.endDate ?? undefined,
+    ageRating: a.ageRating,
+    ageRatingGuide: a.ageRatingGuide,
+    trailerYtId: a.youtubeVideoId ?? undefined,
+    popularityRank: a.popularityRank ?? undefined,
+    ratingRank: a.ratingRank ?? undefined,
+    genres,
+    genreSlugs,
+    categories,
+  };
+}
+
+function attrsToMeta(id: string, a: KitsuAnimeAttrs): Meta {
+  return {
+    id: `kitsu:${id}`,
+    type: a.subtype === "movie" ? "movie" : "series",
+    name: a.titles?.en || a.canonicalTitle || a.titles?.en_jp || "Unknown",
+    poster: pickPoster(a.posterImage),
+    background: pickImg(a.coverImage),
+    description: a.synopsis || a.description || "",
+    releaseInfo: a.startDate ? a.startDate.slice(0, 4) : undefined,
+    imdbRating: ratingToTen(a.averageRating),
+  };
+}
+
+export async function kitsuSimilarByGenres(
+  genreSlugs: string[],
+  excludeId: number,
+  limit = 18,
+): Promise<Meta[]> {
+  if (genreSlugs.length === 0) return [];
+  const slug = genreSlugs[0];
+  const ageFilter = adultContentHidden() ? "&filter[ageRating]=G,PG,R" : "";
+  // Kitsu rejects page[limit] above 20, so a larger request returned no rows at
+  // all. Twenty is enough to fill the two recommendation rails.
+  const pageLimit = Math.min(limit + 6, 20);
+  const params = `filter[genres]=${encodeURIComponent(slug)}${ageFilter}&sort=-userCount&page[limit]=${pageLimit}`;
+  const j = await get<Doc<Resource<KitsuAnimeAttrs>[]>>(`/anime?${params}`);
+  if (!j?.data) return [];
+  const out: Meta[] = [];
+  for (const a of j.data) {
+    if (Number(a.id) === excludeId) continue;
+    out.push(attrsToMeta(a.id, a.attributes));
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+export async function kitsuStudios(id: number): Promise<KitsuStudio[]> {
+  type ProdAttrs = { role?: string };
+  type ProducerAttrs = { name?: string; slug?: string };
+  const j = await get<Doc<Resource<ProdAttrs>[], ProducerAttrs>>(
+    `/anime/${id}/anime-productions?include=producer&page[limit]=20`,
+  );
+  if (!j?.data) return [];
+  const byId = new Map<string, Resource<ProducerAttrs>>();
+  for (const inc of j.included ?? []) {
+    if (inc.type === "producers") byId.set(inc.id, inc);
+  }
+  const out: KitsuStudio[] = [];
+  for (const prod of j.data) {
+    const ref = prod.relationships?.producer;
+    const pid = ref && !Array.isArray(ref.data) ? ref.data?.id : undefined;
+    if (!pid) continue;
+    const p = byId.get(pid);
+    if (!p) continue;
+    out.push({
+      id: Number(p.id),
+      name: p.attributes.name || "Studio",
+      role: prod.attributes.role || "production",
+    });
+  }
+  return out;
+}
+
+export async function kitsuStreamingLinks(id: number): Promise<KitsuStreamer[]> {
+  type LinkAttrs = { url?: string; subs?: string[]; dubs?: string[] };
+  type StreamerAttrs = { siteName?: string };
+  const j = await get<Doc<Resource<LinkAttrs>[], StreamerAttrs>>(
+    `/anime/${id}/streaming-links?include=streamer&page[limit]=20`,
+  );
+  if (!j?.data) return [];
+  const byId = new Map<string, Resource<StreamerAttrs>>();
+  for (const inc of j.included ?? []) {
+    if (inc.type === "streamers") byId.set(inc.id, inc);
+  }
+  const out: KitsuStreamer[] = [];
+  for (const link of j.data) {
+    const ref = link.relationships?.streamer;
+    const sid = ref && !Array.isArray(ref.data) ? ref.data?.id : undefined;
+    if (!sid || !link.attributes.url) continue;
+    const s = byId.get(sid);
+    if (!s) continue;
+    out.push({
+      id: Number(s.id),
+      url: link.attributes.url,
+      service: s.attributes.siteName || "Streaming",
+      subtitles: link.attributes.subs ?? [],
+      dubs: link.attributes.dubs ?? [],
+    });
+  }
+  return out;
+}
+
+export async function kitsuEpisodes(
+  id: number,
+  limit = 60,
+  maxAge?: number,
+): Promise<KitsuEpisode[]> {
+  const PAGE = 20;
+  if (!Number.isFinite(limit) || limit <= 0) return [];
+  limit = Math.floor(limit);
+  const page = (offset: number) =>
+    get<Doc<Resource<KitsuEpisodeAttrs>[]>>(
+      `/anime/${id}/episodes?page[limit]=${Math.min(PAGE, limit - offset)}&page[offset]=${offset}&sort=number`,
+      maxAge,
+    );
+  const first = await page(0);
+  if (!first?.data?.length) return [];
+  const pages = [first];
+  const count = first.meta?.count;
+  const total =
+    typeof count === "number" && Number.isFinite(count) && count >= 0
+      ? Math.min(limit, count)
+      : limit;
+  // Fetch later pages in bounded waves. The count avoids probing beyond short
+  // series, while a short or failed page always stops the returned prefix.
+  if (first.data.length === Math.min(PAGE, limit)) {
+    for (let offset = PAGE; offset < total; offset += 3 * PAGE) {
+      const offsets = Array.from({ length: 3 }, (_, i) => offset + i * PAGE).filter(
+        (n) => n < total,
+      );
+      const batch = await Promise.all(offsets.map(page));
+      let complete = true;
+      for (let i = 0; i < batch.length; i++) {
+        const value = batch[i];
+        if (!value?.data) {
+          complete = false;
+          break;
+        }
+        pages.push(value);
+        if (value.data.length < Math.min(PAGE, limit - offsets[i])) {
+          complete = false;
+          break;
+        }
+      }
+      if (!complete) break;
+    }
+  }
+  const out: KitsuEpisode[] = [];
+  for (const j of pages) {
+    for (const ep of j.data) {
+      const a = ep.attributes;
+      out.push({
+        id: Number(ep.id),
+        number: a.number ?? 0,
+        seasonNumber: a.seasonNumber ?? 1,
+        title: a.canonicalTitle || `Episode ${a.number ?? "?"}`,
+        synopsis: a.synopsis || a.description || "",
+        titleLanguage: episodeTextLanguage(a.canonicalTitle, "en"),
+        synopsisLanguage: episodeTextLanguage(a.synopsis || a.description, "en"),
+        thumbnail: pickImg(a.thumbnail) ?? null,
+        airdate: a.airdate ?? null,
+        length: a.length ?? null,
+      });
+    }
+  }
+  return out.sort((a, b) => a.number - b.number).slice(0, limit);
+}
+
+type AnimeCharAttrs = { role?: string };
+type CastingAttrs = { locale?: string; notes?: string };
+type PersonAttrs = { name?: string; image?: Img | null };
+
+export async function kitsuCharacters(id: number, limit = 30): Promise<KitsuCharacter[]> {
+  const j = await get<
+    Doc<Resource<AnimeCharAttrs>[], KitsuCharacterAttrs | CastingAttrs | PersonAttrs>
+  >(
+    `/anime/${id}/anime-characters?include=character,castings.person&page[limit]=${Math.min(limit, 20)}&sort=role`,
+  );
+  if (!j?.data) return [];
+  const charById = new Map<string, Resource<KitsuCharacterAttrs>>();
+  const castingById = new Map<string, Resource<CastingAttrs>>();
+  const personById = new Map<string, Resource<PersonAttrs>>();
+  for (const inc of j.included ?? []) {
+    if (inc.type === "characters") charById.set(inc.id, inc as Resource<KitsuCharacterAttrs>);
+    else if (inc.type === "animeCastings") castingById.set(inc.id, inc as Resource<CastingAttrs>);
+    else if (inc.type === "people") personById.set(inc.id, inc as Resource<PersonAttrs>);
+  }
+
+  const out: KitsuCharacter[] = [];
+  for (const ac of j.data) {
+    const charRef = ac.relationships?.character;
+    const charId = charRef && !Array.isArray(charRef.data) ? charRef.data?.id : undefined;
+    if (!charId) continue;
+    const ch = charById.get(charId);
+    if (!ch) continue;
+
+    const castingsRef = ac.relationships?.castings;
+    const castingIds: string[] = [];
+    if (castingsRef && Array.isArray(castingsRef.data)) {
+      for (const c of castingsRef.data) castingIds.push(c.id);
+    }
+
+    let chosen: Resource<CastingAttrs> | null = null;
+    for (const cid of castingIds) {
+      const c = castingById.get(cid);
+      if (!c) continue;
+      if ((c.attributes.locale || "").toLowerCase() === "ja") {
+        chosen = c;
+        break;
+      }
+      if (!chosen) chosen = c;
+    }
+
+    let va: Resource<PersonAttrs> | null = null;
+    if (chosen) {
+      const personRef = chosen.relationships?.person;
+      const pid = personRef && !Array.isArray(personRef.data) ? personRef.data?.id : undefined;
+      if (pid) va = personById.get(pid) ?? null;
+    }
+
+    out.push({
+      id: Number(ch.id),
+      name: ch.attributes.canonicalName || ch.attributes.names?.en || "Character",
+      role: ac.attributes.role || "supporting",
+      image: pickImg(ch.attributes.image) ?? null,
+      voiceActor: va?.attributes.name ?? null,
+      voiceActorId: va ? Number(va.id) : null,
+      voiceActorImage: pickImg(va?.attributes.image ?? null) ?? null,
+      language: chosen?.attributes.locale ?? null,
+    });
+  }
+  return out;
+}
+
+export async function kitsuRelated(id: number, identity = false): Promise<KitsuRelated[]> {
+  type RelAttrs = { role?: string };
+  type DestAttrs = KitsuAnimeAttrs;
+  const j = await get<Doc<Resource<RelAttrs>[], DestAttrs>>(
+    `/anime/${id}/media-relationships?include=destination&page[limit]=12`,
+    undefined,
+    identity,
+  );
+  if (!j?.data) return [];
+  const animeById = new Map<string, Resource<DestAttrs>>();
+  for (const inc of j.included ?? []) {
+    if (inc.type === "anime") animeById.set(inc.id, inc);
+  }
+  const out: KitsuRelated[] = [];
+  for (const rel of j.data) {
+    const ref = rel.relationships?.destination;
+    const destId = ref && !Array.isArray(ref.data) ? ref.data?.id : undefined;
+    if (!destId) continue;
+    const a = animeById.get(destId);
+    if (!a) continue;
+    const at = a.attributes;
+    out.push({
+      role: rel.attributes.role || "related",
+      meta: {
+        id: `kitsu:${a.id}`,
+        type: at.subtype === "movie" ? "movie" : "series",
+        name: at.titles?.en || at.canonicalTitle || at.titles?.en_jp || "Unknown",
+        poster: pickPoster(at.posterImage),
+        background: pickImg(at.coverImage),
+        description: at.synopsis || at.description || "",
+        releaseInfo: at.startDate ? at.startDate.slice(0, 4) : undefined,
+        imdbRating: ratingToTen(at.averageRating),
+      },
+    });
+  }
+  return out;
+}
+
+const mainTvCache = new Map<number, number | null>();
+
+export async function kitsuMainTvSeries(id: number, identity = false): Promise<number | null> {
+  if (mainTvCache.has(id)) return mainTvCache.get(id)!;
+  const j = await get<
+    Doc<Resource<{ role?: string }>[], { subtype?: string; episodeCount?: number }>
+  >(`/anime/${id}/media-relationships?include=destination&page[limit]=20`, undefined, identity);
+  let best: number | null = null;
+  let bestEps = -1;
+  const animeById = new Map<string, { subtype?: string; episodeCount?: number }>();
+  for (const inc of j?.included ?? []) {
+    if (inc.type === "anime") animeById.set(inc.id, inc.attributes ?? {});
+  }
+  for (const rel of j?.data ?? []) {
+    const role = (rel.attributes?.role ?? "").toLowerCase();
+    if (role !== "parent_story" && role !== "full_story") continue;
+    const destRef = rel.relationships?.destination?.data;
+    const destId = destRef && !Array.isArray(destRef) ? destRef.id : undefined;
+    if (!destId) continue;
+    const a = animeById.get(destId);
+    if (a?.subtype !== "TV") continue;
+    const nid = Number(destId);
+    const eps = Number(a?.episodeCount ?? 0);
+    if (Number.isFinite(nid) && nid !== id && eps > bestEps) {
+      bestEps = eps;
+      best = nid;
+    }
+  }
+  mainTvCache.set(id, best);
+  return best;
+}
+
+export type KitsuSearchHit = {
+  id: number;
+  title: string;
+  year: number | null;
+  subtype: string | null;
+};
+
+/**
+ * Kitsu's own text search. ARM and AniZip do not link every brand-new cours, so
+ * a MAL/AniList row whose entry they cannot map can still be reached by the
+ * Kitsu entry that carries episodes (and therefore streams).
+ */
+export async function kitsuSearchAnime(
+  query: string,
+  limit = 8,
+  identity = false,
+): Promise<KitsuSearchHit[]> {
+  const q = query.trim();
+  if (q.length < 2) return [];
+  const j = await get<Doc<Resource<KitsuAnimeAttrs>[]>>(
+    `/anime?filter%5Btext%5D=${encodeURIComponent(q)}&page%5Blimit%5D=${limit}&sort=-userCount`,
+    undefined,
+    identity,
+  );
+  const out: KitsuSearchHit[] = [];
+  for (const a of j?.data ?? []) {
+    const id = Number(a.id);
+    if (!Number.isFinite(id)) continue;
+    out.push({
+      id,
+      title: a.attributes.titles?.en?.trim() || a.attributes.canonicalTitle || "Untitled",
+      year: a.attributes.startDate ? Number(a.attributes.startDate.slice(0, 4)) : null,
+      subtype: a.attributes.subtype ?? null,
+    });
+  }
+  return out;
+}
+
+function isDetailEpisodeSource(url: string, id: number): boolean {
+  if (url === `${KITSU}/anime/${id}?include=genres,categories`) return true;
+  if (!url.startsWith(`${KITSU}/anime/${id}/episodes?`)) return false;
+  const page = /page\[limit\]=(\d+)&page\[offset\]=(\d+)/.exec(url);
+  // Other callers may cache shorter prefixes; their unused pages cannot age this snapshot.
+  return !!page && Number(page[1]) === 20 && Number(page[2]) < 100;
+}
+
+export function kitsuEpisodeSourceVersion(id: number): number {
+  let version = 0;
+  for (const [url, entry] of sourceIdentities) {
+    if (isDetailEpisodeSource(url, id)) version = Math.max(version, entry.revision);
+  }
+  return version;
+}
+
+export function kitsuEpisodeSourceFreshUntil(id: number): number | undefined {
+  let oldest = Infinity;
+  for (const [url, entry] of sourceIdentities) {
+    if (isDetailEpisodeSource(url, id)) oldest = Math.min(oldest, entry.freshUntil);
+  }
+  return Number.isFinite(oldest) ? oldest : undefined;
+}

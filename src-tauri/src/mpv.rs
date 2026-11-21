@@ -1,0 +1,5996 @@
+use std::collections::HashMap;
+use std::ffi::CString;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use libmpv2::events::{Event, EventContext, PropertyData};
+use libmpv2::mpv_node::MpvNode;
+use libmpv2::{Format, Mpv, MpvInitializer};
+
+pub(crate) fn mpv_argv_command(mpv: &Mpv, argv: &[&str]) -> Result<(), String> {
+    let cstrings: Vec<CString> = argv
+        .iter()
+        .map(|s| CString::new(*s).map_err(|e| format!("cstring: {}", e)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut ptrs: Vec<*const std::os::raw::c_char> = cstrings.iter().map(|c| c.as_ptr()).collect();
+    ptrs.push(std::ptr::null());
+    let rc = unsafe { libmpv2_sys::mpv_command(mpv.ctx.as_ptr(), ptrs.as_mut_ptr()) };
+    if rc < 0 {
+        return Err(format!("mpv_command rc={}", rc));
+    }
+    Ok(())
+}
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use tauri::Manager;
+use tauri::{AppHandle, Emitter, State};
+use tokio::sync::Mutex;
+use uuid::Uuid;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MpvProbe {
+    pub available: bool,
+    pub binary: Option<String>,
+    pub version: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MpvStartArgs {
+    pub url: String,
+    pub start_at_sec: Option<f64>,
+    pub subtitles: Option<Vec<MpvSub>>,
+    pub anime4k: Option<bool>,
+    pub hdr_to_sdr: Option<bool>,
+    pub rtx_hdr: Option<bool>,
+    pub rtx_vsr: Option<bool>,
+    pub embed: Option<bool>,
+    pub anime4k_shaders: Option<Vec<String>>,
+    pub d3d11_flip: Option<bool>,
+    pub mac_edr: Option<bool>,
+    pub is_live: Option<bool>,
+    pub startup_profile: Option<String>,
+    pub headers: Option<HashMap<String, String>>,
+    pub extra_options: Option<String>,
+    pub renderer: Option<String>,
+    pub force_yuv420p: Option<bool>,
+    pub separate_display: Option<crate::monitors::MonitorInfo>,
+    /// Fill the whole monitor (cover the taskbar) instead of the work area.
+    pub separate_cover_taskbar: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MpvGeometry {
+    pub css_left: f64,
+    pub css_top: f64,
+    pub css_width: f64,
+    pub css_height: f64,
+    pub css_view_w: f64,
+    pub css_view_h: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+pub(crate) struct NativeMpvRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Smallest client extent that can still show a video surface. The main window
+/// is configured with a 960x600 minimum, so anything below this is not a real
+/// resize.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+pub(crate) const MIN_EMBED_CLIENT: i32 = 64;
+
+/// Reject iconic/transient client rectangles, preserving the last video size.
+/// mpv also follows its parent independently; the native child guard below
+/// covers that path before mpv's renderer consumes the size change.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+pub(crate) fn surface_is_hidden(minimized: bool, client_width: i32, client_height: i32) -> bool {
+    minimized || client_width < MIN_EMBED_CLIENT || client_height < MIN_EMBED_CLIENT
+}
+
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+pub(crate) fn map_css_geometry(
+    css: &MpvGeometry,
+    native_width: f64,
+    native_height: f64,
+) -> NativeMpvRect {
+    let full_surface = NativeMpvRect {
+        x: 0.0,
+        y: 0.0,
+        width: native_width,
+        height: native_height,
+    };
+    if !css.css_left.is_finite()
+        || !css.css_top.is_finite()
+        || !css.css_width.is_finite()
+        || !css.css_height.is_finite()
+        || !css.css_view_w.is_finite()
+        || !css.css_view_h.is_finite()
+        || css.css_width <= 0.0
+        || css.css_height <= 0.0
+        || css.css_view_w <= 0.0
+        || css.css_view_h <= 0.0
+    {
+        return full_surface;
+    }
+
+    let scale_x = native_width / css.css_view_w;
+    let scale_y = native_height / css.css_view_h;
+    let mut x = css.css_left * scale_x;
+    let mut y = css.css_top * scale_y;
+    let mut width = css.css_width * scale_x;
+    let mut height = css.css_height * scale_y;
+
+    if css.css_left.abs() <= 2.0 {
+        width += x;
+        x = 0.0;
+    }
+    if css.css_top.abs() <= 2.0 {
+        height += y;
+        y = 0.0;
+    }
+    if css.css_left + css.css_width >= css.css_view_w - 2.0 {
+        width = native_width - x;
+    }
+    if css.css_top + css.css_height >= css.css_view_h - 2.0 {
+        height = native_height - y;
+    }
+
+    x = x.clamp(0.0, (native_width - 1.0).max(0.0));
+    y = y.clamp(0.0, (native_height - 1.0).max(0.0));
+    width = width.clamp(1.0, (native_width - x).max(1.0));
+    height = height.clamp(1.0, (native_height - y).max(1.0));
+
+    NativeMpvRect {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MpvSub {
+    pub url: String,
+    pub lang: Option<String>,
+}
+
+pub struct MpvState {
+    inner: Arc<Mutex<Option<MpvSession>>>,
+    // Serialize start/stop while the session lock is released for a display switch.
+    // Property reads still use only `inner`, so they remain responsive.
+    #[cfg(windows)]
+    lifecycle: Mutex<()>,
+}
+
+struct MpvSession {
+    preload: Arc<crate::mpv_preload::PreloadSelection>,
+    mpv: Arc<Mpv>,
+    is_live: bool,
+    #[cfg(any(windows, target_os = "linux"))]
+    embedded: bool,
+    /// OS-level HDR state when the session started. Compared against the
+    /// script-reported state at teardown: only an off->on flip waits.
+    #[cfg(windows)]
+    hdr_baseline_on: bool,
+    /// Monitor this session's video is actually on, as a raw `HMONITOR` value
+    /// (kept as `isize` so the session stays `Send`). Embedded -> "main"'s
+    /// monitor; separate window -> the chosen monitor (or "main"'s when
+    /// Automatic). The HDR flip and its restore key off this, not off "main",
+    /// so a separate player on another display flips the right screen.
+    #[cfg(windows)]
+    hdr_monitor: Option<isize>,
+}
+
+impl MpvState {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(None)),
+            #[cfg(windows)]
+            lifecycle: Mutex::new(()),
+        }
+    }
+
+    /// The live handle, so the render target can be moved to another window without
+    /// restarting playback. A second session would re-open the stream and seek.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(crate) async fn ctx_addr(&self) -> Option<usize> {
+        let guard = self.inner.lock().await;
+        guard
+            .as_ref()
+            .map(|session| session.mpv.ctx.as_ptr() as usize)
+    }
+
+    /// Preserve the exact selected video track while Linux moves the libmpv
+    /// render context between the main and detached PiP windows.
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn selected_video_track(&self) -> Result<Option<String>, String> {
+        let mpv = {
+            let guard = self.inner.lock().await;
+            guard
+                .as_ref()
+                .map(|session| session.mpv.clone())
+                .ok_or_else(|| "mpv not started".to_string())?
+        };
+
+        let vid = mpv
+            .get_property::<String>("vid")
+            .map_err(|error| format!("get vid before render retarget: {error}"))?;
+
+        if vid == "no" {
+            return Ok(None);
+        }
+
+        vid.parse::<u64>()
+            .map_err(|_| format!("unexpected mpv video track id: {vid}"))?;
+
+        Ok(Some(vid))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn restore_video_track(&self, vid: &str) -> Result<(), String> {
+        let mpv = {
+            let guard = self.inner.lock().await;
+            guard
+                .as_ref()
+                .map(|session| session.mpv.clone())
+                .ok_or_else(|| "mpv not started".to_string())?
+        };
+
+        mpv.set_property("vid", vid)
+            .map_err(|error| format!("restore vid after render retarget: {error}"))
+    }
+
+    pub(crate) async fn active_file_path(&self) -> Result<Option<String>, String> {
+        let session = self.inner.lock().await;
+        let Some(session) = session.as_ref() else {
+            return Ok(None);
+        };
+        let path = match session.mpv.get_property::<String>("path") {
+            Ok(path) => path,
+            // An idle mpv instance has no path, but can outlive the last loaded file.
+            // Only allow deletion when mpv positively confirms that no file is loaded.
+            Err(_) if matches!(session.mpv.get_property::<bool>("idle-active"), Ok(true)) => {
+                return Ok(None);
+            }
+            Err(_) => return Err("Could not verify the file currently in playback.".into()),
+        };
+        if let Ok(url) = url::Url::parse(&path) {
+            if url.scheme() == "file" {
+                return Ok(url
+                    .to_file_path()
+                    .ok()
+                    .map(|path| path.to_string_lossy().into_owned()));
+            }
+            if !std::path::Path::new(&path).is_absolute() {
+                return Ok(None);
+            }
+        }
+        Ok(Some(path))
+    }
+}
+
+#[cfg(target_os = "macos")]
+static MAC_EDR_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(target_os = "macos")]
+pub(crate) fn mac_edr_active() -> bool {
+    MAC_EDR_ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+const OBSERVED_PROPS: &[(&str, u64, PropertyKind)] = &[
+    ("time-pos", 1, PropertyKind::Double),
+    ("duration", 2, PropertyKind::Double),
+    ("pause", 3, PropertyKind::Flag),
+    ("eof-reached", 4, PropertyKind::Flag),
+    ("track-list", 5, PropertyKind::Node),
+    ("volume", 6, PropertyKind::Double),
+    ("mute", 7, PropertyKind::Flag),
+    ("chapter-list", 8, PropertyKind::Node),
+    ("sub-delay", 9, PropertyKind::Double),
+    ("audio-delay", 10, PropertyKind::Double),
+    ("sub-text", 11, PropertyKind::String),
+    ("sub-start", 12, PropertyKind::Double),
+    ("af", 13, PropertyKind::String),
+    ("dwidth", 14, PropertyKind::Int64),
+    ("dheight", 15, PropertyKind::Int64),
+    ("video-params/gamma", 16, PropertyKind::String),
+    ("demuxer-cache-duration", 17, PropertyKind::Double),
+    ("paused-for-cache", 18, PropertyKind::Flag),
+    ("secondary-sub-text", 19, PropertyKind::String),
+    ("path", 20, PropertyKind::String),
+    ("audio-device-list", 21, PropertyKind::Node),
+    // Native decoded size. `dwidth`/`dheight` are the post-scale display size,
+    // so upscaler presets need these to know how much headroom the window has.
+    ("width", 22, PropertyKind::Int64),
+    ("height", 23, PropertyKind::Int64),
+    ("sub-fps", 24, PropertyKind::Double),
+];
+
+// Display-info publishes this user-data property after the video window opens.
+// Observe its changes instead of polling mpv synchronously every event-loop tick.
+#[cfg(windows)]
+const HDR_STATUS_OBSERVED_PROP: (&str, u64, PropertyKind) = (
+    "user-data/display-info/hdr-status",
+    30,
+    PropertyKind::String,
+);
+
+// Observed by libmpv itself, without synchronous property queries in the event
+// dispatcher. Do not forward these diagnostic-only changes to the frontend.
+#[cfg(windows)]
+const RESUME_DIAG_PROPS: &[(&str, u64, PropertyKind)] = &[
+    ("avsync", 100, PropertyKind::Double),
+    ("total-avsync-change", 101, PropertyKind::Double),
+    ("audio-pts", 102, PropertyKind::Double),
+    ("demuxer-cache-time", 103, PropertyKind::Double),
+    ("cache-speed", 104, PropertyKind::Int64),
+    ("cache-buffering-state", 105, PropertyKind::Int64),
+    ("demuxer-cache-idle", 106, PropertyKind::Flag),
+    ("core-idle", 107, PropertyKind::Flag),
+    ("seeking", 108, PropertyKind::Flag),
+    ("audio-buffer", 109, PropertyKind::Double),
+    ("current-ao", 110, PropertyKind::String),
+    ("audio-params/samplerate", 111, PropertyKind::Int64),
+    ("audio-out-params/samplerate", 112, PropertyKind::Int64),
+    ("speed", 113, PropertyKind::Double),
+    ("estimated-vf-fps", 114, PropertyKind::Double),
+    ("display-fps", 115, PropertyKind::Double),
+    ("hwdec-current", 116, PropertyKind::String),
+    ("display-sync-active", 117, PropertyKind::Flag),
+    ("frame-drop-count", 118, PropertyKind::Int64),
+    ("decoder-frame-drop-count", 119, PropertyKind::Int64),
+    ("vo-delayed-frame-count", 120, PropertyKind::Int64),
+    ("demuxer-cache-state/fw-bytes", 121, PropertyKind::Int64),
+    ("vsync-ratio", 122, PropertyKind::Double),
+    ("mistimed-frame-count", 123, PropertyKind::Int64),
+];
+
+#[derive(Clone, Copy)]
+enum PropertyKind {
+    Double,
+    Flag,
+    Int64,
+    String,
+    Node,
+}
+
+impl PropertyKind {
+    fn fmt(&self) -> Format {
+        match self {
+            PropertyKind::Double => Format::Double,
+            PropertyKind::Flag => Format::Flag,
+            PropertyKind::Int64 => Format::Int64,
+            PropertyKind::String => Format::String,
+            PropertyKind::Node => Format::Node,
+        }
+    }
+}
+
+#[cfg(unix)]
+fn force_c_numeric_locale() {
+    unsafe {
+        libc::setlocale(libc::LC_NUMERIC, b"C\0".as_ptr() as *const libc::c_char);
+    }
+}
+
+#[cfg(not(unix))]
+fn force_c_numeric_locale() {}
+
+#[tauri::command]
+pub async fn mpv_probe(_app: AppHandle) -> MpvProbe {
+    force_c_numeric_locale();
+    match Mpv::with_initializer(|init| {
+        let _ = init.set_property("media-controls", "no");
+        Ok(())
+    }) {
+        Ok(mpv) => {
+            let version = mpv
+                .get_property::<String>("mpv-version")
+                .ok()
+                .or_else(|| Some("libmpv (embedded)".to_string()));
+            MpvProbe {
+                available: true,
+                binary: Some("embedded libmpv".into()),
+                version,
+                error: None,
+            }
+        }
+        Err(e) => MpvProbe {
+            available: false,
+            binary: None,
+            version: None,
+            error: Some(format!("libmpv init failed: {}", e)),
+        },
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn supports_vapoursynth_filter() -> bool {
+    force_c_numeric_locale();
+    Mpv::new()
+        .and_then(|mpv| mpv.set_property("vf", "vapoursynth"))
+        .is_ok()
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AudioDevice {
+    pub name: String,
+    pub description: String,
+}
+
+fn read_audio_devices(mpv: &Mpv) -> Vec<AudioDevice> {
+    let node = match mpv.get_property::<MpvNode>("audio-device-list") {
+        Ok(n) => n,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    if let Some(arr) = node.array() {
+        for item in arr {
+            let mut name = String::new();
+            let mut description = String::new();
+            if let Some(map) = item.map() {
+                for (k, v) in map {
+                    match k.as_str() {
+                        "name" => name = v.str().unwrap_or_default().to_string(),
+                        "description" => description = v.str().unwrap_or_default().to_string(),
+                        _ => {}
+                    }
+                }
+            }
+            if !name.is_empty() && name != "auto" {
+                out.push(AudioDevice { name, description });
+            }
+        }
+    }
+    out
+}
+
+#[tauri::command]
+pub async fn mpv_audio_devices(state: State<'_, MpvState>) -> Result<Vec<AudioDevice>, String> {
+    let existing = {
+        let g = state.inner.lock().await;
+        g.as_ref().map(|s| s.mpv.clone())
+    };
+    if let Some(mpv) = existing {
+        return Ok(read_audio_devices(&mpv));
+    }
+    force_c_numeric_locale();
+    let mpv = Mpv::with_initializer(|init| {
+        let _ = init.set_property("media-controls", "no");
+        Ok(())
+    })
+    .map_err(|e| format!("mpv init: {}", e))?;
+    Ok(read_audio_devices(&mpv))
+}
+
+// Selecting a removed USB/Bluetooth/WASAPI endpoint can make mpv disable audio
+// entirely while video keeps playing. Check the effective option (including any
+// advanced mpv.conf override) against mpv's own enumeration before loadfile.
+// An empty list can also mean the backend cannot enumerate, so never replace a
+// preferred output without positive evidence that it is missing.
+#[cfg(any(windows, test))]
+fn audio_device_unavailable(selected: &str, devices: &[AudioDevice]) -> bool {
+    !selected.is_empty()
+        && selected != "auto"
+        && !devices.is_empty()
+        && !devices.iter().any(|device| device.name == selected)
+}
+
+#[cfg(windows)]
+fn fallback_missing_audio_device(mpv: &Mpv) {
+    let selected = match mpv.get_property::<String>("audio-device") {
+        Ok(device) => device,
+        Err(_) => return,
+    };
+    if selected == "auto" || selected.is_empty() {
+        return;
+    }
+    let available = read_audio_devices(mpv);
+    if !audio_device_unavailable(&selected, &available) {
+        return;
+    }
+    // Do not overwrite Harbor's saved preference. The device can be used again
+    // after it reconnects; only this mpv session falls back to system default.
+    match mpv.set_property("audio-device", "auto") {
+        Ok(()) => eprintln!("[harbor::mpv] configured audio device unavailable; using system default for this session"),
+        Err(err) => eprintln!("[harbor::mpv] failed to fall back to system audio device: {err}"),
+    }
+}
+
+fn mpv_header_field(name: &str, value: &str) -> String {
+    // mpv parses this option as a comma-separated string list. An unescaped
+    // Accept-Language comma creates an invalid second HTTP header (HTTP 400).
+    format!("{name}: {value}")
+        .replace('\\', "\\\\")
+        .replace(',', "\\,")
+}
+
+/// The player's HTTP identity for a stream, shared with the thumbnail pipeline.
+pub(crate) fn stream_http_options(
+    headers: &Option<std::collections::HashMap<String, String>>,
+) -> (String, Vec<String>) {
+    let mut user_agent = "VLC/3.0.20 LibVLC/3.0.20".to_string();
+    let mut header_fields: Vec<String> = Vec::new();
+    if let Some(headers) = headers {
+        for (k, v) in headers {
+            if k.eq_ignore_ascii_case("user-agent") {
+                user_agent = v.clone();
+            } else {
+                header_fields.push(mpv_header_field(k, v));
+            }
+        }
+    }
+    (user_agent, header_fields)
+}
+
+// The PulseAudio client name is also how song_id identifies our playback on
+// Linux. Flatpak instances can share a sandbox PID, so PID alone cannot
+// distinguish their streams. A stable, per-process UUID avoids that collision.
+#[cfg(target_os = "linux")]
+pub(crate) fn audio_client_name() -> &'static str {
+    use std::sync::OnceLock;
+
+    static NAME: OnceLock<String> = OnceLock::new();
+    NAME.get_or_init(|| format!("Harbor {}", uuid::Uuid::new_v4().simple()))
+        .as_str()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn audio_client_name() -> &'static str {
+    "Harbor"
+}
+
+fn apply_pre_init(
+    init: &MpvInitializer,
+    args: &MpvStartArgs,
+    embed_hwnd: Option<&str>,
+    separate_screen: Option<i32>,
+    separate_screen_size: Option<(u32, u32)>,
+    shader_cache_dir: Option<&std::path::Path>,
+) -> Result<(), String> {
+    #[cfg(not(windows))]
+    {
+        let _ = separate_screen;
+        let _ = separate_screen_size;
+    }
+    // Property sets here are best-effort. Some builds of mpv (e.g. Flatpak's
+    // meson build without Lua) omit optional properties like `osc`. Treat
+    // PROPERTY_NOT_FOUND as non-fatal so the player still initializes.
+    let set = |k: &str, v: &str| {
+        if let Err(e) = init.set_property(k, v) {
+            eprintln!("[harbor::mpv] pre-init skip {}: {}", k, e);
+        }
+    };
+    // Scripts and script options must be applied before mpv initializes; they
+    // cannot be set afterwards. Parse them out of extra_options so the
+    // post-init pass skips them.
+    let (init_only_pairs, _rest) = args
+        .extra_options
+        .as_deref()
+        .map(split_extra_option_pairs)
+        .unwrap_or_default();
+    let joined_init_only = join_init_only_pairs(&init_only_pairs);
+    set("title", "Harbor");
+    set("audio-client-name", audio_client_name());
+    set("terminal", "no");
+    set("log-file", "");
+    set("msg-level", "all=warn,vo=v,d3d11=v,gpu=v,win32=v");
+    let is_live = args.is_live.unwrap_or(false);
+    set("ytdl", if is_live { "yes" } else { "no" });
+    let (user_agent, header_fields) = stream_http_options(&args.headers);
+    set("user-agent", &user_agent);
+    if !header_fields.is_empty() {
+        set("http-header-fields", &header_fields.join(","));
+    }
+    let rtx = cfg!(windows) && args.rtx_hdr.unwrap_or(false);
+    let rtx_vsr = cfg!(windows) && args.rtx_vsr.unwrap_or(false);
+    // RTX Video HDR and RTX Video Super Resolution both need native D3D11
+    // hardware frames for mpv's d3d11vpp filter.
+    let rtx_video = rtx || rtx_vsr;
+    let on_mac_embed = cfg!(target_os = "macos") && embed_hwnd.is_some();
+    #[cfg(target_os = "macos")]
+    let macos_major = objc2_foundation::NSProcessInfo::processInfo()
+        .operatingSystemVersion()
+        .majorVersion;
+    #[cfg(target_os = "macos")]
+    if macos_major == 27 {
+        // macOS 27 can reject planar CoreAudio formats, forcing mpv to fall back
+        // to AVFoundation, which can stall when playback speed changes.
+        set("audio-format", "float");
+    }
+    if on_mac_embed {
+        set("hwdec", "videotoolbox-copy");
+        set("force-window", "no");
+    } else if cfg!(target_os = "linux") {
+        set("hwdec", "auto-safe");
+        if args.embed.unwrap_or(false) {
+            set("force-window", "no");
+        } else {
+            set("force-window", "yes");
+        }
+    } else if cfg!(windows) {
+        set("hwdec", if rtx_video { "d3d11va" } else { "auto-safe" });
+        set("force-window", "immediate");
+    } else {
+        set("hwdec", "auto-safe");
+        set("force-window", "immediate");
+    }
+    let use_render_api =
+        (cfg!(target_os = "macos") || cfg!(target_os = "linux")) && args.embed.unwrap_or(false);
+    if !use_render_api {
+        // libmpv reports `vo` as empty after initialization, so setting it
+        // afterwards always tears down and rebuilds the GPU context. Do it
+        // before mpv_initialize instead.
+        set(
+            "vo",
+            match args.renderer.as_deref() {
+                Some("gpu") => "gpu",
+                _ => "gpu-next",
+            },
+        );
+    }
+    if args.embed.unwrap_or(false) && (cfg!(target_os = "macos") || cfg!(target_os = "linux")) {
+        // libmpv normally wakes the render callback ahead of the target
+        // presentation time and blocks inside render() until that time. Both
+        // platform render APIs run on the application UI thread, so that wait
+        // also stalls the WebKit overlay. Wake at the target time instead.
+        set("video-timing-offset", "0");
+    }
+    set("input-default-bindings", "no");
+    set("input-media-keys", "no");
+    set("input-cursor", "no");
+    // `osc` is provided by mpv's optional on-screen-controller script. Some
+    // libmpv builds, including the Flatpak build, do not ship that script, so
+    // its option is unavailable. Harbor supplies its own controls either way.
+    let _ = set("osc", "no");
+    set("osd-level", "0");
+    set("cursor-autohide", "200");
+    set("volume-max", "600");
+    set("sub-codepage", "utf-8");
+    let _ = init.set_property("background-color", "#000000");
+    let _ = init.set_property("background", "color");
+    let _ = init.set_property("media-controls", "no");
+
+    if let Some(hwnd) = embed_hwnd {
+        #[cfg(windows)]
+        {
+            let hwnd_i64: i64 = hwnd
+                .parse()
+                .map_err(|e| format!("parse wid {}: {}", hwnd, e))?;
+            init.set_property("wid", hwnd_i64)
+                .map_err(|e| format!("set wid={}: {}", hwnd_i64, e))?;
+            if args.d3d11_flip.unwrap_or(false) && args.hdr_to_sdr.unwrap_or(false) {
+                set("d3d11-flip", "no");
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = hwnd;
+        }
+    } else if !args.embed.unwrap_or(false) {
+        set("ontop", "yes");
+        set("border", "no");
+        // The separate-window player is created with force-window: immediate
+        // while mpv_initialize runs, so its win32 monitor must be fixed here
+        // pre-init or the VO window lands on the primary monitor. `screen` is
+        // a 0-based EnumDisplayMonitors ordinal.
+        #[cfg(windows)]
+        if let Some(idx) = separate_screen {
+            set("screen", idx.to_string().as_str());
+            // Size the VO window to the monitor's exact physical pixels. mpv
+            // applies the monitor's DPI factor to `geometry` by default (a
+            // 3840x2160 monitor at 225% became a 3648x2052 window), so scaling
+            // is turned off for the separate window and the requested WxH is
+            // then honoured literally. keepaspect-window (default yes) would
+            // also snap the window back to the video's aspect and leave a gap.
+            if let Some((w, h)) = separate_screen_size {
+                set("hidpi-window-scale", "no");
+                set("keepaspect-window", "no");
+                set("geometry", format!("{w}x{h}").as_str());
+            }
+        }
+    }
+
+    // A silently dropped option looks identical to a working one from the
+    // outside, so shader failures in particular need to reach the log rather
+    // than vanish into a discarded Result.
+    let opt = |k: &str, v: &str| {
+        if let Err(e) = init.set_property(k, v) {
+            eprintln!("[harbor::mpv] pre-init option {k} rejected: {e}");
+        }
+    };
+    // libmpv has no user cache directory, so mpv's `gpu-shader-cache-dir`
+    // default resolves to empty and every shader is recompiled on each launch.
+    // Point it at an app-owned directory so compiled DXBC survives restarts.
+    if let Some(dir) = shader_cache_dir {
+        opt("gpu-shader-cache-dir", &dir.to_string_lossy());
+    }
+    if rtx {
+        opt("gpu-api", "d3d11");
+        opt("target-colorspace-hint", "yes");
+        opt("target-peak", "10000");
+    } else if args.hdr_to_sdr.unwrap_or(false) {
+        opt("tone-mapping", "spline");
+        opt("gamut-mapping-mode", "perceptual");
+        opt("hdr-compute-peak", "yes");
+        opt("hdr-contrast-recovery", "0.30");
+        opt("hdr-peak-percentile", "99.995");
+        opt("dither-depth", "auto");
+        opt("target-trc", "bt.1886");
+        opt("target-prim", "bt.709");
+        #[cfg(any(windows, target_os = "macos"))]
+        opt("target-colorspace-hint", "yes");
+        // VSR still needs the D3D11 backend even while tonemapping HDR to SDR.
+        #[cfg(windows)]
+        if rtx_vsr {
+            opt("gpu-api", "d3d11");
+        }
+    } else {
+        #[cfg(windows)]
+        {
+            opt("target-colorspace-hint", "yes");
+            if embed_hwnd.is_some() || rtx_vsr {
+                opt("gpu-api", "d3d11");
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            opt("target-colorspace-hint", "yes");
+        }
+    }
+
+    if let Some(shaders) = &args.anime4k_shaders {
+        let cleaned: Vec<String> = shaders
+            .iter()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.replace('\\', "/"))
+            .collect();
+        if !cleaned.is_empty() {
+            let sep = if cfg!(windows) { ";" } else { ":" };
+            let joined = cleaned.join(sep);
+            opt("glsl-shaders", &joined);
+        }
+    }
+
+    if let Some(start) = args.start_at_sec {
+        if start > 0.0 {
+            set("start", &format!("{}", start));
+        }
+    }
+    for (key, value) in &joined_init_only {
+        set(key, value);
+    }
+    Ok(())
+}
+
+fn parse_extra_option_lines(raw: &str) -> Vec<(String, String)> {
+    let mut options = Vec::new();
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
+            continue;
+        }
+        let (key, value) = if let Some((k, v)) = line.split_once('=') {
+            (k.trim(), v.trim())
+        } else if let Some((k, v)) = line.split_once(char::is_whitespace) {
+            (k.trim(), v.trim())
+        } else {
+            (line, "yes")
+        };
+        let key = key.trim_start_matches("--").trim();
+        if key.is_empty()
+            || key.eq_ignore_ascii_case("log-file")
+            || key.eq_ignore_ascii_case("terminal")
+        {
+            continue;
+        }
+        options.push((key.to_string(), value.to_string()));
+    }
+    options
+}
+
+/// Extra-option keys that only take effect before mpv initializes. Scripts
+/// and script options must be present when mpv_initialize runs; setting them
+/// afterwards is rejected or silently ignored.
+const EXTRA_INIT_ONLY_KEYS: &[&str] = &["scripts", "script-opts", "load-scripts", "load-script"];
+
+fn is_init_only_key(key: &str) -> bool {
+    EXTRA_INIT_ONLY_KEYS
+        .iter()
+        .any(|k| k.eq_ignore_ascii_case(key))
+}
+
+/// Splits parsed extra options into (init_only, rest), preserving the order
+/// within each bucket. `load-script` entries are folded into the `scripts`
+/// bucket so every script path is joined and applied together pre-init.
+fn split_extra_option_pairs(raw: &str) -> (Vec<(String, String)>, Vec<(String, String)>) {
+    let mut init_only = Vec::new();
+    let mut rest = Vec::new();
+    for (key, value) in parse_extra_option_lines(raw) {
+        if is_init_only_key(&key) {
+            let key = key.to_ascii_lowercase();
+            let key = if key == "load-script" {
+                "scripts".to_string()
+            } else {
+                key
+            };
+            init_only.push((key, value));
+        } else {
+            rest.push((key, value));
+        }
+    }
+    (init_only, rest)
+}
+
+/// Joins init-only pairs into single option values. `scripts` entries are
+/// joined with ';' on Windows and ':' elsewhere (empty entries rejected),
+/// `script-opts` with ',', and `load-scripts` keeps the last non-empty value.
+fn join_init_only_pairs(pairs: &[(String, String)]) -> Vec<(String, String)> {
+    let mut scripts: Vec<String> = Vec::new();
+    let mut script_opts: Vec<String> = Vec::new();
+    let mut load_scripts: Option<String> = None;
+    for (key, value) in pairs {
+        match key.as_str() {
+            "scripts" => {
+                if !value.is_empty() {
+                    scripts.push(value.clone());
+                }
+            }
+            "script-opts" => {
+                if !value.is_empty() {
+                    script_opts.push(value.clone());
+                }
+            }
+            "load-scripts" => {
+                if !value.is_empty() {
+                    load_scripts = Some(value.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    if !scripts.is_empty() {
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        out.push(("scripts".to_string(), scripts.join(sep)));
+    }
+    if !script_opts.is_empty() {
+        out.push(("script-opts".to_string(), script_opts.join(",")));
+    }
+    if let Some(v) = load_scripts {
+        out.push(("load-scripts".to_string(), v));
+    }
+    out
+}
+
+fn is_disk_cache_option(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "cache-on-disk" | "cache-dir" | "demuxer-cache-dir"
+    )
+}
+
+fn apply_extra_mpv_options(mpv: &Mpv, raw: &str) {
+    for (key, value) in parse_extra_option_lines(raw) {
+        if is_init_only_key(&key) {
+            eprintln!("[harbor::mpv] extra option {} skipped (init-only)", key);
+            continue;
+        }
+        if is_disk_cache_option(&key) {
+            eprintln!(
+                "[harbor::mpv] extra option {} skipped (disk caching is disabled)",
+                key
+            );
+            continue;
+        }
+        match mpv.set_property(&key, value.as_str()) {
+            Ok(()) => eprintln!("[harbor::mpv] extra option set {}", key),
+            Err(e) => eprintln!("[harbor::mpv] extra option {} rejected: {:?}", key, e),
+        }
+    }
+}
+
+fn is_local_network_url(url: &str) -> bool {
+    let rest = match url.split_once("://") {
+        Some((_, r)) => r,
+        None => return false,
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = match authority.rsplit_once(':') {
+        Some((h, p)) if !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) => h,
+        _ => authority,
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.eq_ignore_ascii_case("localhost") || host == "::1" {
+        return true;
+    }
+    if host.starts_with("127.") || host.starts_with("10.") || host.starts_with("192.168.") {
+        return true;
+    }
+    match host.strip_prefix("172.").and_then(|r| r.split_once('.')) {
+        Some((second, _)) => matches!(second.parse::<u8>(), Ok(n) if (16..=31).contains(&n)),
+        None => false,
+    }
+}
+
+fn network_timeout_for(url: &str) -> &'static str {
+    if is_local_network_url(url) {
+        "600"
+    } else {
+        "60"
+    }
+}
+
+fn source_kind(url: &str) -> &'static str {
+    if is_local_network_url(url) {
+        "local-http"
+    } else if url.starts_with("https://") {
+        "https"
+    } else if url.starts_with("http://") {
+        "http"
+    } else if url.starts_with("file://") || !url.contains("://") {
+        "local-file"
+    } else {
+        "other"
+    }
+}
+
+#[tauri::command]
+pub async fn mpv_start(
+    app: AppHandle,
+    state: State<'_, MpvState>,
+    args: MpvStartArgs,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    let _lifecycle = state.lifecycle.lock().await;
+    let want_embed = args.embed.unwrap_or(false);
+    // Resolve the monitor this session's video lands on before anything reads HDR
+    // state. Embedded mpv is a child of "main"; a separate window goes to the
+    // chosen display, or "main"'s when the setting is Automatic or the monitor is
+    // gone. HDR must key off this monitor, not off "main", or a separate player on
+    // another display flips the wrong screen.
+    #[cfg(windows)]
+    let target_monitor = if want_embed {
+        app.get_webview_window("main")
+            .and_then(|w| w.hwnd().ok())
+            .and_then(|h| crate::monitors::resolve_for_hwnd(h.0 as isize))
+    } else {
+        crate::monitors::resolve_or_default(args.separate_display.as_ref()).or_else(|| {
+            app.get_webview_window("main")
+                .and_then(|w| w.hwnd().ok())
+                .and_then(|h| crate::monitors::resolve_for_hwnd(h.0 as isize))
+        })
+    };
+    // OS-level HDR state before this transition begins. Compared at teardown
+    // against the script-reported state: only off->on waits for restore.
+    #[cfg(windows)]
+    let hdr_baseline_on = target_monitor
+        .map(|m| monitor_hdr_active(m.hmon))
+        .unwrap_or(false);
+    #[cfg(windows)]
+    let hdr_monitor = target_monitor.map(|m| m.hmon.0 as isize);
+    #[cfg(windows)]
+    let separate_screen_for_init = if want_embed {
+        None
+    } else {
+        target_monitor.map(|m| m.screen_index)
+    };
+    // Fill the whole monitor by default; the setting drops to the work area so
+    // the taskbar stays visible on that display.
+    #[cfg(windows)]
+    let separate_cover_taskbar = args.separate_cover_taskbar.unwrap_or(true);
+    #[cfg(windows)]
+    let separate_screen_size_for_init = if want_embed {
+        None
+    } else {
+        target_monitor.map(|m| {
+            if separate_cover_taskbar {
+                (m.width, m.height)
+            } else {
+                (m.work_width, m.work_height)
+            }
+        })
+    };
+    #[cfg(windows)]
+    let separate_screen_pos_for_init = if want_embed {
+        None
+    } else {
+        target_monitor.map(|m| {
+            if separate_cover_taskbar {
+                (m.x, m.y)
+            } else {
+                (m.work_x, m.work_y)
+            }
+        })
+    };
+    #[cfg(not(windows))]
+    let separate_screen_for_init = None;
+    #[cfg(not(windows))]
+    let separate_screen_size_for_init = None;
+    #[cfg(feature = "music")]
+    if let Err(error) = crate::music::pause_for_video(&app).await {
+        eprintln!("[harbor::music] could not pause for video: {error}");
+    }
+    let mut g = state.inner.lock().await;
+    let prev = g.take();
+    // Windows releases the session lock across the SDR restore: a display mode
+    // switch can take seconds, and every property poll would queue behind it.
+    #[cfg(windows)]
+    {
+        drop(g);
+    }
+    if let Some(prev) = prev {
+        #[cfg(target_os = "macos")]
+        {
+            let (tx, rx) = std::sync::mpsc::sync_channel::<()>(1);
+            let _ = app.run_on_main_thread(move || {
+                let _ = crate::mpv_render_mac::uninstall();
+                let _ = prev.mpv.command("quit", &[]);
+                drop(prev);
+                let _ = tx.send(());
+            });
+            let _ = rx.recv_timeout(std::time::Duration::from_millis(4000));
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let (tx, rx) = std::sync::mpsc::sync_channel::<()>(1);
+            let _ = app.run_on_main_thread(move || {
+                let _ = crate::mpv_render_linux::uninstall();
+                let _ = prev.mpv.command("quit", &[]);
+                drop(prev);
+                let _ = tx.send(());
+            });
+            let _ = rx.recv_timeout(std::time::Duration::from_millis(4000));
+        }
+        #[cfg(all(not(target_os = "macos"), not(target_os = "linux"), not(windows)))]
+        {
+            let _ = prev.mpv.command("quit", &[]);
+            drop(prev);
+        }
+        #[cfg(windows)]
+        {
+            let was_off = !prev.hdr_baseline_on;
+            let prev_monitor = prev.hdr_monitor;
+            let _ = prev.mpv.command("quit", &[]);
+            drop(prev);
+            restore_display_sdr_if_flipped(&app, was_off, prev_monitor).await;
+        }
+    }
+    #[cfg(windows)]
+    let mut g = state.inner.lock().await;
+
+    let embed_hwnd = if want_embed {
+        get_main_hwnd_str(&app)
+    } else {
+        None
+    };
+    eprintln!(
+        "[harbor::mpv] start source_kind={} want_embed={} embed_hwnd={:?}",
+        source_kind(&args.url),
+        want_embed,
+        embed_hwnd
+    );
+    let embed_hwnd_for_init = embed_hwnd.clone();
+    let args_for_init = args.clone();
+    let shader_cache_dir = app
+        .path()
+        .app_cache_dir()
+        .ok()
+        .map(|dir| dir.join("mpv-shader-cache"))
+        .filter(|dir| {
+            if let Err(error) = std::fs::create_dir_all(dir) {
+                eprintln!("[harbor::mpv] shader cache unavailable: {error}");
+                return false;
+            }
+            true
+        });
+    let init_err: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+    let init_err_cap = init_err.clone();
+
+    force_c_numeric_locale();
+    let mpv = Mpv::with_initializer(move |init| {
+        if let Err(e) = apply_pre_init(
+            &init,
+            &args_for_init,
+            embed_hwnd_for_init.as_deref(),
+            separate_screen_for_init,
+            separate_screen_size_for_init,
+            shader_cache_dir.as_deref(),
+        ) {
+            eprintln!("[harbor::mpv] pre-init failed: {}", e);
+            if let Ok(mut g) = init_err_cap.lock() {
+                *g = Some(e);
+            }
+            return Err(libmpv2::Error::Raw(-1));
+        }
+        Ok(())
+    })
+    .map_err(|e| {
+        let msg = if let Ok(g) = init_err.lock() {
+            g.clone().unwrap_or_else(|| format!("mpv init: {}", e))
+        } else {
+            format!("mpv init: {}", e)
+        };
+        eprintln!("[harbor::mpv] init error: {}", msg);
+        msg
+    })?;
+
+    // Never write the demuxer cache to disk. Debrid and HTTPS streams stay in
+    // RAM (bounded by demuxer-max-bytes); mpv's disk cache is append-only and
+    // would grow to the size of everything played during the session.
+    let _ = mpv.set_property("cache-on-disk", "no");
+
+    unsafe {
+        let level = std::ffi::CString::new("v").unwrap();
+        libmpv2_sys::mpv_request_log_messages(mpv.ctx.as_ptr(), level.as_ptr());
+    }
+    let use_render_api = (cfg!(target_os = "macos") || cfg!(target_os = "linux")) && want_embed;
+    if !use_render_api {
+        if args.force_yuv420p.unwrap_or(false) {
+            if let Err(e) = mpv.set_property("vf-append", "format=yuv420p") {
+                eprintln!("[harbor::mpv] vf yuv420p rejected: {:?}", e);
+            }
+        }
+    } else {
+        if let Err(e) = mpv.set_property("vo", "libmpv") {
+            eprintln!("[harbor::mpv] vo=libmpv FAILED: {:?}", e);
+        }
+        let _ = mpv.set_property("force-window", "no");
+    }
+
+    // Size the separate window by setting its OS window rect directly. mpv's own
+    // `geometry` cannot fill a scaled monitor: it clamps the borderless window to
+    // the monitor *work area* (a 3840x2160 monitor with a taskbar reports
+    // `max content size: 3840x2052`) and re-applies `keepaspect-window`, so the
+    // requested 3840x2160 came back as 3648x2052. SetWindowPos bypasses all of
+    // that and pins the VO window to the monitor's true pixel bounds.
+    #[cfg(windows)]
+    if !want_embed {
+        if let Some((w, h)) = separate_screen_size_for_init {
+            let x = separate_screen_pos_for_init.map(|p| p.0).unwrap_or(0);
+            let y = separate_screen_pos_for_init.map(|p| p.1).unwrap_or(0);
+            match size_separate_mpv_window(x, y, w as i32, h as i32) {
+                Some(()) => eprintln!(
+                    "[harbor::mpv] separate window sized via SetWindowPos {}x{}+{}+{}",
+                    w, h, x, y
+                ),
+                None => eprintln!(
+                    "[harbor::mpv] separate window VO not found yet; relying on mpv geometry"
+                ),
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    if use_render_api {
+        let window = app
+            .get_webview_window("main")
+            .ok_or_else(|| "main window missing for render API install".to_string())?;
+        let ns_window_ptr = window
+            .ns_window()
+            .map_err(|e| format!("ns_window: {:?}", e))? as i64;
+        let mpv_ctx_addr: usize = mpv.ctx.as_ptr() as usize;
+        let mac_edr = args.mac_edr.unwrap_or(false);
+        MAC_EDR_ACTIVE.store(mac_edr, std::sync::atomic::Ordering::Relaxed);
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Result<(), String>>(1);
+        let _ = app.run_on_main_thread(move || {
+            let res = match std::ptr::NonNull::new(mpv_ctx_addr as *mut libmpv2_sys::mpv_handle) {
+                Some(p) => crate::mpv_render_mac::install(p, ns_window_ptr, mac_edr),
+                None => Err("null mpv ctx".into()),
+            };
+            let _ = tx.send(res);
+        });
+        match rx.recv_timeout(std::time::Duration::from_millis(3000)) {
+            Ok(Ok(())) => eprintln!("[harbor::mpv_mac] install OK"),
+            Ok(Err(e)) => {
+                eprintln!("[harbor::mpv_mac] install failed: {}", e);
+                return Err(format!("mac render install: {}", e));
+            }
+            Err(e) => {
+                eprintln!("[harbor::mpv_mac] install timed out: {:?}", e);
+                return Err("mac render install timeout".into());
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    if use_render_api {
+        let window = app
+            .get_webview_window("main")
+            .ok_or_else(|| "main window missing for render API install".to_string())?;
+        let mpv_ctx_addr: usize = mpv.ctx.as_ptr() as usize;
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Result<(), String>>(1);
+        let _ = app.run_on_main_thread(move || {
+            let res = (|| {
+                let p = std::ptr::NonNull::new(mpv_ctx_addr as *mut libmpv2_sys::mpv_handle)
+                    .ok_or_else(|| "null mpv ctx".to_string())?;
+                crate::mpv_render_linux::prepare(p)?;
+                let gtk_window = window
+                    .gtk_window()
+                    .map_err(|e| format!("gtk_window: {:?}", e))?;
+                let vbox = window
+                    .default_vbox()
+                    .map_err(|e| format!("default_vbox: {:?}", e))?;
+                crate::mpv_render_linux::install(&gtk_window, &vbox)
+            })();
+            let _ = tx.send(res);
+        });
+        match rx.recv_timeout(std::time::Duration::from_millis(3000)) {
+            Ok(Ok(())) => eprintln!("[harbor::mpv_linux] install OK"),
+            Ok(Err(e)) => {
+                eprintln!("[harbor::mpv_linux] install failed: {}", e);
+                return Err(format!("linux render install: {}", e));
+            }
+            Err(e) => {
+                eprintln!("[harbor::mpv_linux] install timed out: {:?}", e);
+                return Err("linux render install timeout".into());
+            }
+        }
+    }
+    let is_live = args.is_live.unwrap_or(false);
+    if is_live {
+        let _ = mpv.set_property("cache", "yes");
+        let _ = mpv.set_property("cache-secs", "30");
+        let _ = mpv.set_property("cache-pause", "yes");
+        let _ = mpv.set_property("cache-pause-initial", "no");
+        let _ = mpv.set_property("demuxer-max-bytes", "64MiB");
+        let _ = mpv.set_property("demuxer-max-back-bytes", "16MiB");
+        let _ = mpv.set_property("demuxer-readahead-secs", "20");
+        let _ = mpv.set_property("network-timeout", "60");
+        let _ = mpv.set_property(
+            "stream-lavf-o",
+            "reconnect=1,reconnect_delay_max=5,reconnect_on_network_error=1",
+        );
+        let _ = mpv.set_property("demuxer-lavf-o", "http_seekable=0,http_persistent=0");
+        let _ = mpv.set_property("stream-buffer-size", "16MiB");
+    } else {
+        let high_bitrate = args.startup_profile.as_deref() == Some("high-bitrate");
+        let _ = mpv.set_property("cache", "yes");
+        let _ = mpv.set_property("cache-secs", if high_bitrate { "45" } else { "30" });
+        let _ = mpv.set_property("cache-pause", "yes");
+        let _ = mpv.set_property("cache-pause-initial", "no");
+        let _ = mpv.set_property("cache-pause-wait", if high_bitrate { "2" } else { "1" });
+        let _ = mpv.set_property(
+            "demuxer-max-bytes",
+            if high_bitrate { "256MiB" } else { "128MiB" },
+        );
+        let _ = mpv.set_property(
+            "demuxer-max-back-bytes",
+            if high_bitrate { "64MiB" } else { "32MiB" },
+        );
+        let _ = mpv.set_property(
+            "demuxer-readahead-secs",
+            if high_bitrate { "45" } else { "30" },
+        );
+        let _ = mpv.set_property("network-timeout", network_timeout_for(&args.url));
+        // No reconnect_streamed: on AES-128 HLS every segment ends in a normal
+        // EOF that ffmpeg then retries from offset 0, gets an empty body, and
+        // backs off 1/3/7s. Measured on a vixsrc stream: 7 segments and 55s of
+        // backoff per 100s with the flag, 94 segments and 0s without it.
+        let reconnect_opts = "reconnect=1,reconnect_on_network_error=1,reconnect_on_http_error=429,reconnect_delay_max=10,reconnect_delay_total_max=60";
+        match mpv.set_property("stream-lavf-o", reconnect_opts) {
+            Ok(()) => eprintln!("[harbor::mpv] stream-lavf-o set {}", reconnect_opts),
+            Err(e) => eprintln!("[harbor::mpv] stream-lavf-o rejected: {:?}", e),
+        }
+        let _ = mpv.set_property(
+            "stream-buffer-size",
+            if high_bitrate { "32MiB" } else { "16MiB" },
+        );
+    }
+    // mpv may auto-select an embedded subtitle as soon as loadfile runs. Keep
+    // both subtitle slots empty until Harbor applies the user's language choice.
+    // Still discover sidecars beside local files so they are available in the
+    // track picker even for libraries indexed before sidecars were persisted.
+    let _ = mpv.set_property("sub-auto", "all");
+    let _ = mpv.set_property("sid", "no");
+    let _ = mpv.set_property("secondary-sid", "no");
+    if want_embed {
+        let _ = mpv.set_property("sub-visibility", "no");
+        let _ = mpv.set_property("secondary-sub-visibility", "no");
+    }
+
+    if let Some(fonts) = crate::fonts::sub_fonts_dir(&app) {
+        if let Some(s) = fonts.to_str() {
+            let _ = mpv.set_property("sub-fonts-dir", s);
+        }
+    }
+    let _ = mpv.set_property("sub-font-provider", "auto");
+    let _ = mpv.set_property("sub-font", "sans-serif");
+    let _ = mpv.set_property("sub-ass-shaper", "complex");
+    let _ = mpv.set_property("embeddedfonts", "yes");
+
+    if let Some(extra) = args.extra_options.as_deref() {
+        apply_extra_mpv_options(&mpv, extra);
+    }
+    #[cfg(windows)]
+    fallback_missing_audio_device(&mpv);
+    // Keep network playback RAM-only even if an advanced option tried to
+    // re-enable mpv's disk cache above.
+    let _ = mpv.set_property("cache-on-disk", "no");
+
+    if is_live {
+        for (k, v) in [
+            ("scale", "bilinear"),
+            ("dscale", "bilinear"),
+            ("cscale", "bilinear"),
+            ("dither", "no"),
+            ("deband", "no"),
+            ("correct-downscaling", "no"),
+            ("linear-downscaling", "no"),
+            ("sigmoid-upscaling", "no"),
+            ("hdr-compute-peak", "no"),
+            ("interpolation", "no"),
+        ] {
+            let _ = mpv.set_property(k, v);
+        }
+    }
+
+    let mpv_arc = Arc::new(mpv);
+    let preload = Arc::new(crate::mpv_preload::PreloadSelection::default());
+    // on_preloaded runs after demuxing, before track selection and decoding.
+    let _ =
+        unsafe { libmpv2_sys::mpv_hook_add(mpv_arc.ctx.as_ptr(), 0, c"on_preloaded".as_ptr(), 0) };
+
+    let event_ctx = EventContext::new(mpv_arc.ctx);
+    for (name, id, kind) in OBSERVED_PROPS {
+        if let Err(e) = event_ctx.observe_property(name, kind.fmt(), *id) {
+            eprintln!("[mpv] observe {} failed: {}", name, e);
+        }
+    }
+    #[cfg(windows)]
+    {
+        let (name, id, kind) = HDR_STATUS_OBSERVED_PROP;
+        if let Err(e) = event_ctx.observe_property(name, kind.fmt(), id) {
+            eprintln!("[mpv] HDR status observe {} failed: {}", name, e);
+        }
+    }
+    #[cfg(windows)]
+    for (name, id, kind) in RESUME_DIAG_PROPS {
+        if let Err(e) = event_ctx.observe_property(name, kind.fmt(), *id) {
+            eprintln!("[mpv] diagnostic observe {} failed: {}", name, e);
+        }
+    }
+    spawn_event_loop(
+        app.clone(),
+        mpv_arc.clone(),
+        event_ctx,
+        preload.clone(),
+        want_embed,
+        args.mac_edr.unwrap_or(false),
+        #[cfg(windows)]
+        hdr_monitor,
+    );
+
+    eprintln!(
+        "[harbor::mpv] loadfile source_kind={}",
+        source_kind(&args.url)
+    );
+    mpv_argv_command(&*mpv_arc, &["loadfile", &args.url, "replace"]).map_err(|e| {
+        eprintln!("[harbor::mpv] loadfile FAILED: {}", e);
+        format!("loadfile: {}", e)
+    })?;
+    eprintln!("[harbor::mpv] loadfile OK");
+
+    // `loadfile replace` clears tracks added to the previous playlist entry,
+    // so explicit sidecars must be attached after the video is loaded.
+    // This is required for sidecars whose filename differs from the video and
+    // therefore cannot be discovered by mpv's `sub-auto` matching alone.
+    if let Some(subs) = &args.subtitles {
+        for subtitle in subs {
+            let url = subtitle.url.replace('\\', "/");
+            if let Err(error) = mpv_argv_command(&mpv_arc, &["sub-add", &url, "auto"]) {
+                eprintln!(
+                    "[harbor::mpv] sub-add failed for {}: {}",
+                    crate::log_privacy::scrub(&url),
+                    error
+                );
+            }
+        }
+    }
+    attach_local_sidecars(&mpv_arc, &args.url);
+
+    *g = Some(MpvSession {
+        preload,
+        mpv: mpv_arc,
+        is_live,
+        #[cfg(windows)]
+        embedded: embed_hwnd.is_some(),
+        #[cfg(target_os = "linux")]
+        embedded: use_render_api,
+        #[cfg(windows)]
+        hdr_baseline_on,
+        #[cfg(windows)]
+        hdr_monitor,
+    });
+    drop(g);
+
+    #[cfg(not(windows))]
+    let _ = embed_hwnd;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn reassert_hdr_colorspace(mpv: &Arc<Mpv>) {
+    let _ = mpv.set_property("target-peak", "10000");
+    std::thread::sleep(Duration::from_millis(60));
+    let _ = mpv.set_property("target-peak", "auto");
+}
+
+/// Confident HDR-to-SDR restore after mpv quit. The user script's own
+/// shutdown toggle (hdr-mode.lua's `toggle-hdr-display off`) runs while the
+/// vo window is already being destroyed and can be cut off before the display
+/// flip lands, so Harbor re-applies the flip itself once mpv is gone. Only
+/// acts when this session flipped HDR off->on (baseline was SDR); a session
+/// on an always-HDR display keeps that mode untouched.
+///
+/// The display is the one Harbor's own window sits on, which matches the
+/// embedded player (mpv is a child of "main"). The separate-window player is
+/// opened on the same display (via the `screen` option), so the same monitor
+/// check works for both modes.
+#[cfg(windows)]
+async fn restore_display_sdr_if_flipped(
+    _app: &AppHandle,
+    was_off: bool,
+    hdr_monitor: Option<isize>,
+) {
+    if !was_off {
+        eprintln!("[harbor::mpv] skip display restore (baseline HDR was on)");
+        return;
+    }
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let Some(hmon_raw) = hdr_monitor else {
+        return;
+    };
+    // DisplayConfig drives a display mode switch that can block for seconds;
+    // it never runs on the async runtime's worker threads.
+    let restored = tokio::task::spawn_blocking(move || {
+        let hmon = windows::Win32::Graphics::Gdi::HMONITOR(hmon_raw as *mut _);
+        if !monitor_hdr_active(hmon) {
+            return None;
+        }
+        Some(set_monitor_advanced_color(hmon, false))
+    })
+    .await
+    .unwrap_or(None);
+    match restored {
+        None => eprintln!("[harbor::mpv] display already SDR after quit"),
+        Some(true) => eprintln!("[harbor::mpv] display restored to SDR via DisplayConfig"),
+        Some(false) => eprintln!("[harbor::mpv] DisplayConfig SDR restore failed"),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn apply_mac_edr(app: &AppHandle, mpv: &Arc<Mpv>, active: bool) {
+    let primaries = mpv
+        .get_property::<String>("video-params/primaries")
+        .unwrap_or_default();
+    let bt2020 = primaries == "bt.2020";
+    if active {
+        let _ = mpv.set_property("icc-profile-auto", "no");
+        let _ = mpv.set_property("target-prim", if bt2020 { "bt.2020" } else { "display-p3" });
+        let _ = mpv.set_property("target-trc", "pq");
+        let _ = mpv.set_property("target-peak", "auto");
+    } else {
+        let _ = mpv.set_property("target-trc", "auto");
+        let _ = mpv.set_property("target-prim", "auto");
+        let _ = mpv.set_property("target-peak", "auto");
+    }
+    let _ = app.run_on_main_thread(move || {
+        crate::mpv_render_mac::set_hdr_active(active, bt2020);
+    });
+}
+
+// Windows-only, bounded high-resolution measurements around a real resume.
+// Outside the first eight seconds we use a sparse five-second health sample.
+// Numeric/boolean properties and fixed enums only: no playback URLs or devices.
+#[cfg(windows)]
+const RESUME_TRACE_WINDOW: Duration = Duration::from_secs(8);
+#[cfg(windows)]
+const RESUME_TRACE_INTERVAL: Duration = Duration::from_millis(250);
+#[cfg(windows)]
+const RESUME_DETAIL_INTERVAL: Duration = Duration::from_secs(1);
+#[cfg(windows)]
+const RESUME_HEALTH_INTERVAL: Duration = Duration::from_secs(5);
+#[cfg(windows)]
+const RESUME_POSITION_STALL: Duration = Duration::from_secs(3);
+#[cfg(windows)]
+const RESUME_EVENT_LOOP_STALL: Duration = Duration::from_secs(3);
+
+#[cfg(windows)]
+struct ResumeTrace {
+    began: std::time::Instant,
+    next_sample: std::time::Instant,
+    next_detail: std::time::Instant,
+}
+
+#[cfg(windows)]
+#[derive(Default)]
+struct ResumePosition {
+    last: Option<(std::time::Instant, f64)>,
+    reported: bool,
+}
+
+#[cfg(windows)]
+impl ResumePosition {
+    // Never flag intentional pauses, seeking, buffering or idle playback as a
+    // freeze; arm again after the media clock makes forward progress.
+    fn observe(
+        &mut self,
+        now: std::time::Instant,
+        position: Option<f64>,
+        playing: bool,
+    ) -> Option<Duration> {
+        if !playing {
+            self.last = None;
+            self.reported = false;
+            return None;
+        }
+        let Some(position) = position.filter(|v| v.is_finite()) else {
+            self.clear();
+            return None;
+        };
+        match self.last {
+            Some((_since, last)) if position >= last + 0.05 || position < last - 0.5 => {
+                self.last = Some((now, position));
+                self.reported = false;
+            }
+            Some((since, _))
+                if !self.reported
+                    && now.saturating_duration_since(since) >= RESUME_POSITION_STALL =>
+            {
+                self.reported = true;
+                return Some(now.saturating_duration_since(since));
+            }
+            None => {
+                self.last = Some((now, position));
+                self.reported = false;
+            }
+            _ => {}
+        }
+        None
+    }
+    fn clear(&mut self) {
+        self.last = None;
+        self.reported = false;
+    }
+}
+
+#[cfg(windows)]
+struct ResumeTraceState {
+    paused_at: Option<std::time::Instant>,
+    last_resumed_at: Option<std::time::Instant>,
+    active: Option<ResumeTrace>,
+    last_health: std::time::Instant,
+    position: ResumePosition,
+}
+
+#[cfg(windows)]
+impl Default for ResumeTraceState {
+    fn default() -> Self {
+        Self {
+            paused_at: None,
+            last_resumed_at: None,
+            active: None,
+            last_health: std::time::Instant::now(),
+            position: ResumePosition::default(),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl ResumeTraceState {
+    fn clear(&mut self) {
+        self.paused_at = None;
+        self.last_resumed_at = None;
+        self.active = None;
+        self.position.clear();
+    }
+
+    // Only capture a real paused -> playing transition, not initial playback.
+    fn on_pause_change(&mut self, paused: bool, now: std::time::Instant) -> Option<Duration> {
+        if paused {
+            self.paused_at.get_or_insert(now);
+            self.active = None;
+            self.position.clear();
+            return None;
+        }
+        let paused_at = self.paused_at.take()?;
+        self.last_resumed_at = Some(now);
+        self.active = Some(ResumeTrace {
+            began: now,
+            next_sample: now,
+            next_detail: now,
+        });
+        self.last_health = now;
+        self.position.clear();
+        Some(now.saturating_duration_since(paused_at))
+    }
+
+    fn sample_age(&mut self, now: std::time::Instant) -> Option<Duration> {
+        let active = self.active.as_mut()?;
+        let age = now.saturating_duration_since(active.began);
+        if age > RESUME_TRACE_WINDOW {
+            self.active = None;
+            return None;
+        }
+        if now < active.next_sample {
+            return None;
+        }
+        active.next_sample = now + RESUME_TRACE_INTERVAL;
+        Some(age)
+    }
+
+    fn detail_due(&mut self, now: std::time::Instant) -> bool {
+        let Some(active) = self.active.as_mut() else {
+            return false;
+        };
+        if now < active.next_detail {
+            return false;
+        }
+        active.next_detail = now + RESUME_DETAIL_INTERVAL;
+        true
+    }
+
+    fn health_due(&mut self, now: std::time::Instant) -> bool {
+        if self.last_resumed_at.is_none()
+            || self.paused_at.is_some()
+            || self.active.is_some()
+            || now.saturating_duration_since(self.last_health) < RESUME_HEALTH_INTERVAL
+        {
+            return false;
+        }
+        self.last_health = now;
+        true
+    }
+}
+
+// Record only warning classes relevant to a stream/audio freeze. The existing
+// raw mpv lines still remain, after redaction by log_privacy.
+#[cfg(windows)]
+fn resume_warning_kind(prefix: &str, text: &str) -> Option<&'static str> {
+    if prefix == "cplayer" && text.contains("Audio device underrun detected") {
+        Some("audio-underrun")
+    } else if prefix == "cplayer" && text.contains("Audio/Video desynchronisation detected") {
+        Some("av-desync")
+    } else if prefix == "curl" && text.contains("Failure when receiving data") {
+        Some("network-retry")
+    } else if prefix == "ao/wasapi" && (text.contains("underflow") || text.contains("underrun")) {
+        Some("wasapi-underrun")
+    } else if prefix == "ffmpeg" && (text.contains("error") || text.contains("Invalid")) {
+        Some("decoder-error")
+    } else {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn resume_wall_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+// All resume diagnostics are event-fed. A synchronous mpv_get_property call
+// inside the event dispatcher blocked for 14.2 seconds in Static's log. Reading
+// cached event data avoids introducing another synchronous read during freezes.
+#[cfg(windows)]
+#[derive(Default)]
+struct ResumeObserved {
+    values: HashMap<&'static str, String>,
+    time_pos: Option<f64>,
+    last_time_pos_change: Option<std::time::Instant>,
+    audio_pts: Option<f64>,
+    last_audio_pts_change: Option<std::time::Instant>,
+}
+
+#[cfg(windows)]
+impl ResumeObserved {
+    fn update(&mut self, name: &str, change: &PropertyData<'_>, now: std::time::Instant) {
+        let observed_name = OBSERVED_PROPS
+            .iter()
+            .chain(RESUME_DIAG_PROPS.iter())
+            .find(|(known, _, _)| *known == name)
+            .map(|(known, _, kind)| (*known, *kind));
+        let Some((name, kind)) = observed_name else {
+            return;
+        };
+        let value = match (kind, change) {
+            (PropertyKind::Double, PropertyData::Double(n)) if n.is_finite() => {
+                if name == "time-pos" {
+                    if self.time_pos.is_none_or(|prev| (prev - n).abs() > 0.01) {
+                        self.last_time_pos_change = Some(now);
+                    }
+                    self.time_pos = Some(*n);
+                } else if name == "audio-pts" {
+                    if self.audio_pts.is_none_or(|prev| (prev - n).abs() > 0.01) {
+                        self.last_audio_pts_change = Some(now);
+                    }
+                    self.audio_pts = Some(*n);
+                }
+                format!("{n:.4}")
+            }
+            (PropertyKind::Int64, PropertyData::Int64(n)) => n.to_string(),
+            (PropertyKind::Flag, PropertyData::Flag(value)) => u8::from(*value).to_string(),
+            (PropertyKind::String, PropertyData::Str(s)) if name == "current-ao" => match *s {
+                "wasapi" => "wasapi",
+                "" | "null" => "none",
+                _ => "other",
+            }
+            .to_string(),
+            (PropertyKind::String, PropertyData::Str(s)) if name == "hwdec-current" => match *s {
+                "no" | "" => "0",
+                _ => "1",
+            }
+            .to_string(),
+            _ => {
+                self.values.remove(name);
+                if name == "time-pos" {
+                    self.time_pos = None;
+                    self.last_time_pos_change = None;
+                } else if name == "audio-pts" {
+                    self.audio_pts = None;
+                    self.last_audio_pts_change = None;
+                }
+                return;
+            }
+        };
+        self.values.insert(name, value);
+    }
+
+    fn value(&self, name: &str) -> &str {
+        self.values.get(name).map(String::as_str).unwrap_or("?")
+    }
+
+    fn flag(&self, name: &str) -> Option<bool> {
+        match self.value(name) {
+            "0" => Some(false),
+            "1" => Some(true),
+            _ => None,
+        }
+    }
+
+    fn position_age_ms(&self, now: std::time::Instant) -> String {
+        self.last_time_pos_change
+            .map(|last| now.saturating_duration_since(last).as_millis().to_string())
+            .unwrap_or_else(|| "na".into())
+    }
+
+    fn audio_position_age_ms(&self, now: std::time::Instant) -> String {
+        self.last_audio_pts_change
+            .map(|last| now.saturating_duration_since(last).as_millis().to_string())
+            .unwrap_or_else(|| "na".into())
+    }
+
+    fn counter(&self, name: &str) -> Option<i64> {
+        self.value(name).parse::<i64>().ok()
+    }
+}
+
+// Windows-only bounded recovery for the post-pause WASAPI stalls observed
+// in Static's logs. Use event-fed properties, never synchronous reads.
+#[cfg(windows)]
+const RESUME_RECOVERY_MIN_PAUSE: Duration = Duration::from_secs(10);
+#[cfg(windows)]
+const RESUME_RECOVERY_WINDOW: Duration = Duration::from_secs(90);
+#[cfg(windows)]
+const RESUME_RECOVERY_STALL: Duration = Duration::from_secs(6);
+#[cfg(windows)]
+const RESUME_RECOVERY_SETTLE: Duration = Duration::from_secs(2);
+#[cfg(windows)]
+const RESUME_RECOVERY_GIVE_UP: Duration = Duration::from_secs(24);
+#[cfg(windows)]
+const RESUME_RECOVERY_AUDIO_REPLY: u64 = 0x4842_5200_0000_0001;
+#[cfg(windows)]
+const RESUME_RECOVERY_SEEK_REPLY: u64 = 0x4842_5200_0000_0002;
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ResumeRecoveryAction {
+    AudioReload,
+    ResyncSeek(f64),
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ResumeRecoveryDecision {
+    Attempt(ResumeRecoveryAction),
+    Recovered(u8),
+    Exhausted,
+}
+
+#[cfg(windows)]
+#[derive(Default)]
+struct ResumeStallRecovery {
+    armed_at: Option<std::time::Instant>,
+    attempts: u8,
+    last_attempt_at: Option<std::time::Instant>,
+    samples: std::collections::VecDeque<(std::time::Instant, f64, f64)>,
+    sample_speed: Option<f64>,
+    own_seek_pending: bool,
+}
+
+#[cfg(windows)]
+impl ResumeStallRecovery {
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    fn arm(&mut self, now: std::time::Instant, paused_for: Duration) {
+        self.clear();
+        if paused_for >= RESUME_RECOVERY_MIN_PAUSE {
+            self.armed_at = Some(now);
+        }
+    }
+
+    // Do not mistake our own recovery seek for a user-requested seek.
+    fn consume_recovery_seek(&mut self) -> bool {
+        std::mem::take(&mut self.own_seek_pending)
+    }
+
+    fn mark_recovery_seek_queued(&mut self) {
+        self.own_seek_pending = true;
+    }
+
+    fn assess(
+        &mut self,
+        snapshot: &ResumeObserved,
+        now: std::time::Instant,
+        embedded: bool,
+        playing: bool,
+    ) -> Option<ResumeRecoveryDecision> {
+        let armed_at = self.armed_at?;
+        if now.saturating_duration_since(armed_at) > RESUME_RECOVERY_WINDOW {
+            self.clear();
+            return None;
+        }
+        if !embedded || !playing {
+            self.samples.clear();
+            return None;
+        }
+        let (Some(media), Some(audio)) = (snapshot.time_pos, snapshot.audio_pts) else {
+            self.samples.clear();
+            return None;
+        };
+        let safe = snapshot.value("current-ao") == "wasapi"
+            && snapshot.flag("paused-for-cache") == Some(false)
+            && snapshot.flag("seeking") == Some(false)
+            && snapshot.flag("core-idle") == Some(false)
+            && snapshot.flag("eof-reached") != Some(true)
+            && snapshot
+                .value("demuxer-cache-duration")
+                .parse::<f64>()
+                .is_ok_and(|sec| sec.is_finite() && sec >= 10.0)
+            && snapshot
+                .value("duration")
+                .parse::<f64>()
+                .is_ok_and(|duration| duration.is_finite() && duration > media + 20.0);
+        let speed = snapshot
+            .value("speed")
+            .parse::<f64>()
+            .ok()
+            .filter(|speed| speed.is_finite() && *speed > 0.0);
+        if !safe || speed.is_none() {
+            self.samples.clear();
+            return None;
+        }
+        let speed = speed.unwrap();
+        if self.sample_speed != Some(speed) {
+            self.samples.clear();
+            self.sample_speed = Some(speed);
+        }
+        if let Some(at) = self.last_attempt_at {
+            let elapsed = now.saturating_duration_since(at);
+            if elapsed >= RESUME_RECOVERY_GIVE_UP {
+                self.clear();
+                return Some(ResumeRecoveryDecision::Exhausted);
+            }
+            // Do not charge output teardown/reinitialization to playback progress.
+            if elapsed < RESUME_RECOVERY_SETTLE {
+                self.samples.clear();
+                return None;
+            }
+        }
+        self.samples.push_back((now, media, audio));
+        while self.samples.len() > 1
+            && now.saturating_duration_since(self.samples[1].0) >= RESUME_RECOVERY_STALL
+        {
+            self.samples.pop_front();
+        }
+        // A fresh three-second window can prove recovery even when startup
+        // consumed much of the longer stall-detection window.
+        if self.attempts > 0 {
+            if let Some(&(at, before_media, before_audio)) = self
+                .samples
+                .iter()
+                .rev()
+                .find(|(at, _, _)| now.saturating_duration_since(*at) >= Duration::from_secs(3))
+            {
+                let expected = now.saturating_duration_since(at).as_secs_f64() * speed;
+                if media - before_media >= expected * 0.6 && audio - before_audio >= expected * 0.6
+                {
+                    let stage = self.attempts;
+                    self.clear();
+                    return Some(ResumeRecoveryDecision::Recovered(stage));
+                }
+            }
+        }
+        let &(at, before_media, before_audio) = self.samples.front()?;
+        let elapsed = now.saturating_duration_since(at);
+        if elapsed < RESUME_RECOVERY_STALL {
+            return None;
+        }
+        let expected = elapsed.as_secs_f64() * speed;
+        // Periodic tiny clock jumps (as in Static's logs) must not reset the
+        // detector. Require sustained poor progress, not exact stationarity.
+        if media - before_media >= expected * 0.25 && audio - before_audio >= expected * 0.25 {
+            return None;
+        }
+        let action = match self.attempts {
+            0 => ResumeRecoveryAction::AudioReload,
+            1 => ResumeRecoveryAction::ResyncSeek(media),
+            _ => return None,
+        };
+        self.attempts += 1;
+        self.last_attempt_at = Some(now);
+        self.samples.clear();
+        Some(ResumeRecoveryDecision::Attempt(action))
+    }
+}
+
+#[cfg(windows)]
+fn queue_resume_recovery_command(mpv: &Mpv, args: &[&str], reply_id: u64) -> Result<(), String> {
+    let cstrings: Vec<CString> = args
+        .iter()
+        .map(|arg| CString::new(*arg).map_err(|_| "invalid recovery command".to_string()))
+        .collect::<Result<_, _>>()?;
+    let mut ptrs: Vec<*const std::os::raw::c_char> =
+        cstrings.iter().map(|arg| arg.as_ptr()).collect();
+    ptrs.push(std::ptr::null());
+    // Synchronous mpv operations have previously blocked this event loop.
+    let rc =
+        unsafe { libmpv2_sys::mpv_command_async(mpv.ctx.as_ptr(), reply_id, ptrs.as_mut_ptr()) };
+    if rc < 0 {
+        Err(format!("mpv_command_async rc={rc}"))
+    } else {
+        Ok(())
+    }
+}
+
+// These counters are mpv's *observed* playback/output values, not direct
+// measurements from WASAPI or the GPU driver threads.
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+struct ResumeProgressSample {
+    when: std::time::Instant,
+    media: f64,
+    audio: f64,
+    vo_drops: Option<i64>,
+    decoder_drops: Option<i64>,
+}
+
+#[cfg(windows)]
+#[derive(Default)]
+struct ResumeProgress {
+    last: Option<ResumeProgressSample>,
+}
+
+#[cfg(windows)]
+impl ResumeProgress {
+    fn clear(&mut self) {
+        self.last = None;
+    }
+
+    fn sample(&mut self, snapshot: &ResumeObserved, now: std::time::Instant) -> Option<String> {
+        let (Some(media), Some(audio)) = (snapshot.time_pos, snapshot.audio_pts) else {
+            self.clear();
+            return None;
+        };
+        if !media.is_finite() || !audio.is_finite() {
+            self.clear();
+            return None;
+        }
+        let current = ResumeProgressSample {
+            when: now,
+            media,
+            audio,
+            vo_drops: snapshot.counter("frame-drop-count"),
+            decoder_drops: snapshot.counter("decoder-frame-drop-count"),
+        };
+        let previous = self.last.replace(current)?;
+        let elapsed = now.saturating_duration_since(previous.when).as_secs_f64();
+        if elapsed < 0.25 {
+            return None;
+        }
+        let media_delta = current.media - previous.media;
+        let audio_delta = current.audio - previous.audio;
+        // A seek or stream switch invalidates the clock comparison.
+        if media_delta < -0.5
+            || audio_delta < -0.5
+            || media_delta > elapsed + 4.0
+            || audio_delta > elapsed + 4.0
+        {
+            return None;
+        }
+        let drop_delta = |old: Option<i64>, new: Option<i64>| match (old, new) {
+            (Some(a), Some(b)) if b >= a => (b - a).to_string(),
+            _ => "na".to_string(),
+        };
+        let state = if media_delta < elapsed * 0.2 && audio_delta > elapsed * 0.5 {
+            "media-lagging-audio-clock"
+        } else if media_delta < elapsed * 0.2 && audio_delta < elapsed * 0.2 {
+            "both-clocks-slow"
+        } else if media_delta > elapsed * 0.6 && audio_delta > elapsed * 0.6 {
+            "clocks-advancing"
+        } else {
+            "partial-progress"
+        };
+        Some(format!(
+            "[harbor/resume] info: progress wall_ms={} elapsed_ms={} media_delta_s={media_delta:.3} \
+             audio_delta_s={audio_delta:.3} vo_drop_delta={} decoder_drop_delta={} \
+             avsync={} cache_sec={} cache_pause={} seeking={} state={state} source=observed",
+            resume_wall_ms(), (elapsed * 1000.0).round() as u64,
+            drop_delta(previous.vo_drops, current.vo_drops),
+            drop_delta(previous.decoder_drops, current.decoder_drops),
+            snapshot.value("avsync"),
+            snapshot.value("demuxer-cache-duration"),
+            snapshot.value("paused-for-cache"),
+            snapshot.value("seeking"),
+        ))
+    }
+}
+
+#[cfg(windows)]
+fn trace_resume_fast_sample(
+    snapshot: &ResumeObserved,
+    log: &std::sync::mpsc::SyncSender<String>,
+    age: Duration,
+) {
+    let _ = log.try_send(format!(
+        "[harbor/resume] info: tick wall_ms={} t_ms={} avsync={} audio_pts={} \
+         time_pos={} cache_sec={} cache_rate={} position_age_ms={} audio_position_age_ms={} source=observed",
+        resume_wall_ms(),
+        age.as_millis(),
+        snapshot.value("avsync"),
+        snapshot.value("audio-pts"),
+        snapshot.value("time-pos"),
+        snapshot.value("demuxer-cache-duration"),
+        snapshot.value("cache-speed"),
+        snapshot.position_age_ms(std::time::Instant::now()),
+        snapshot.audio_position_age_ms(std::time::Instant::now()),
+    ));
+}
+
+#[cfg(windows)]
+fn trace_resume_sample(
+    snapshot: &ResumeObserved,
+    log: &std::sync::mpsc::SyncSender<String>,
+    age: Option<Duration>,
+    phase: &str,
+    embedded: bool,
+) {
+    let _ = log.try_send(format!(
+        "[harbor/resume] info: {phase} wall_ms={} t_ms={} embedded={} \
+         avsync={} avsync_total={} audio_pts={} time_pos={} \
+         cache_sec={} cache_end={} cache_rate={} cache_fw_bytes={} buffering_pct={} \
+         cache_pause={} cache_idle={} core_idle={} seeking={} \
+         audio_buffer_cfg={} ao={} audio_hz={} output_hz={} \
+         speed={} vf_fps={} display_fps={} hwdec={} display_sync={} vsync_ratio={} \
+         vo_drops={} decoder_drops={} mistimed={} delayed={} \
+         position_age_ms={} audio_position_age_ms={} source=observed",
+        resume_wall_ms(),
+        age.map(|age| age.as_millis().to_string())
+            .unwrap_or_else(|| "na".into()),
+        u8::from(embedded),
+        snapshot.value("avsync"),
+        snapshot.value("total-avsync-change"),
+        snapshot.value("audio-pts"),
+        snapshot.value("time-pos"),
+        snapshot.value("demuxer-cache-duration"),
+        snapshot.value("demuxer-cache-time"),
+        snapshot.value("cache-speed"),
+        snapshot.value("demuxer-cache-state/fw-bytes"),
+        snapshot.value("cache-buffering-state"),
+        snapshot.value("paused-for-cache"),
+        snapshot.value("demuxer-cache-idle"),
+        snapshot.value("core-idle"),
+        snapshot.value("seeking"),
+        snapshot.value("audio-buffer"),
+        snapshot.value("current-ao"),
+        snapshot.value("audio-params/samplerate"),
+        snapshot.value("audio-out-params/samplerate"),
+        snapshot.value("speed"),
+        snapshot.value("estimated-vf-fps"),
+        snapshot.value("display-fps"),
+        snapshot.value("hwdec-current"),
+        snapshot.value("display-sync-active"),
+        snapshot.value("vsync-ratio"),
+        snapshot.value("frame-drop-count"),
+        snapshot.value("decoder-frame-drop-count"),
+        snapshot.value("mistimed-frame-count"),
+        snapshot.value("vo-delayed-frame-count"),
+        snapshot.position_age_ms(std::time::Instant::now()),
+        snapshot.audio_position_age_ms(std::time::Instant::now()),
+    ));
+}
+
+#[cfg(windows)]
+fn resume_event_loop_phase(code: u8) -> &'static str {
+    match code {
+        1 => "loop-start",
+        2 => "diagnostics",
+        3 => "preload-expire",
+        4 => "wait-event",
+        5 => "handle-event",
+        6 => "emit-event",
+        7 => "hdr-observed-event",
+        _ => "loop-start",
+    }
+}
+
+const MPV_EVENT_MAX_CONSECUTIVE_ERRORS: u32 = 12;
+
+#[derive(Default)]
+struct EventErrorBackoff {
+    consecutive: u32,
+}
+
+impl EventErrorBackoff {
+    fn reset(&mut self) {
+        self.consecutive = 0;
+    }
+
+    fn next_delay(&mut self) -> Option<Duration> {
+        self.consecutive = self.consecutive.saturating_add(1);
+        if self.consecutive >= MPV_EVENT_MAX_CONSECUTIVE_ERRORS {
+            return None;
+        }
+        let shift = self.consecutive.saturating_sub(1).min(5);
+        Some(Duration::from_millis((40_u64 << shift).min(1_000)))
+    }
+}
+
+fn record_event_poll_success(backoff: &mut EventErrorBackoff) {
+    backoff.reset();
+}
+
+fn spawn_event_loop(
+    app: AppHandle,
+    mpv_keepalive: Arc<Mpv>,
+    mut ctx: EventContext,
+    preload: Arc<crate::mpv_preload::PreloadSelection>,
+    embedded: bool,
+    mac_edr: bool,
+    #[cfg(windows)] hdr_monitor: Option<isize>,
+) {
+    std::thread::spawn(move || {
+        let log = app.path().app_data_dir().ok().and_then(|dir| {
+            std::fs::create_dir_all(&dir).ok()?;
+            crate::log_privacy::start_log(&dir.join("harbor-mpv.log")).ok()
+        });
+        let mut last_timepos: Option<std::time::Instant> = None;
+        #[cfg(windows)]
+        let mut resume_trace = ResumeTraceState::default();
+        #[cfg(windows)]
+        let mut resume_observed = ResumeObserved::default();
+        #[cfg(windows)]
+        let mut resume_progress = ResumeProgress::default();
+        #[cfg(windows)]
+        let mut resume_recovery = ResumeStallRecovery::default();
+        #[cfg(windows)]
+        let phase = Arc::new(std::sync::atomic::AtomicU8::new(0));
+        #[cfg(windows)]
+        let clock_start = std::time::Instant::now();
+        #[cfg(windows)]
+        let heartbeat_ms = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        #[cfg(windows)]
+        let watch_running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        #[cfg(windows)]
+        let watch_playing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        #[cfg(windows)]
+        let last_resume_ms = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        #[cfg(windows)]
+        if let Some(log) = log.as_ref() {
+            // Separate from mpv's event thread. A deadlocked mpv property
+            // query or event dispatcher cannot report its own timeout.
+            let beat = heartbeat_ms.clone();
+            let phase = phase.clone();
+            let running = watch_running.clone();
+            let playing = watch_playing.clone();
+            let resumed = last_resume_ms.clone();
+            let log = log.clone();
+            let _ = std::thread::Builder::new()
+                .name("mpv-resume-watchdog".into())
+                .spawn(move || {
+                    let mut last_report: Option<std::time::Instant> = None;
+                    while running.load(std::sync::atomic::Ordering::Relaxed) {
+                        std::thread::sleep(Duration::from_secs(1));
+                        if !playing.load(std::sync::atomic::Ordering::Relaxed) {
+                            last_report = None;
+                            continue;
+                        }
+                        let now = std::time::Instant::now();
+                        let lag_ms = now.saturating_duration_since(clock_start)
+                            .as_millis()
+                            .saturating_sub(beat.load(std::sync::atomic::Ordering::Relaxed) as u128);
+                        if lag_ms < RESUME_EVENT_LOOP_STALL.as_millis() {
+                            last_report = None;
+                            continue;
+                        }
+                        if last_report.is_none_or(|prev| now.saturating_duration_since(prev) >= Duration::from_secs(10)) {
+                            let since_resume_ms = now.saturating_duration_since(clock_start)
+                                .as_millis()
+                                .saturating_sub(resumed.load(std::sync::atomic::Ordering::Relaxed) as u128);
+                            let _ = log.try_send(format!(
+                                "[harbor/resume] warn: event-loop-stall wall_ms={} no_poll_ms={lag_ms} since_resume_ms={since_resume_ms} phase={}",
+                                resume_wall_ms(),
+                                resume_event_loop_phase(phase.load(std::sync::atomic::Ordering::Relaxed))
+                            ));
+                            last_report = Some(now);
+                        }
+                    }
+                });
+        }
+        #[cfg(windows)]
+        let mut last_clock_check = clock_start;
+        #[cfg(windows)]
+        let reassert_gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        #[cfg(not(windows))]
+        let _ = embedded;
+        #[cfg(not(target_os = "macos"))]
+        let _ = mac_edr;
+        let mut error_backoff = EventErrorBackoff::default();
+        #[cfg(windows)]
+        let mut last_hdr_status: Option<String> = None;
+        loop {
+            #[cfg(windows)]
+            phase.store(1, std::sync::atomic::Ordering::Relaxed);
+            #[cfg(windows)]
+            heartbeat_ms.store(
+                clock_start.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            // HDR status changes arrive as observed events below.
+            #[cfg(windows)]
+            {
+                phase.store(2, std::sync::atomic::Ordering::Relaxed);
+                let now = std::time::Instant::now();
+                if let Some(age) = resume_trace.sample_age(now) {
+                    let detail = resume_trace.detail_due(now);
+                    if let Some(log) = &log {
+                        if detail {
+                            trace_resume_sample(
+                                &resume_observed,
+                                log,
+                                Some(age),
+                                "sample",
+                                embedded,
+                            );
+                        } else {
+                            trace_resume_fast_sample(&resume_observed, log, age);
+                        }
+                    }
+                } else if resume_trace.health_due(now) {
+                    if let Some(log) = &log {
+                        trace_resume_sample(&resume_observed, log, None, "health", embedded);
+                        if let Some(progress) = resume_progress.sample(&resume_observed, now) {
+                            let _ = log.try_send(progress);
+                        }
+                    }
+                }
+                if now.saturating_duration_since(last_clock_check) >= Duration::from_secs(1) {
+                    last_clock_check = now;
+                    let playing = resume_trace.last_resumed_at.is_some()
+                        && resume_trace.paused_at.is_none()
+                        && resume_observed.flag("paused-for-cache") == Some(false)
+                        && resume_observed.flag("seeking") == Some(false)
+                        && resume_observed.flag("core-idle") == Some(false);
+                    let position = resume_observed.time_pos;
+                    if let Some(stalled_for) = resume_trace.position.observe(now, position, playing)
+                    {
+                        if let Some(log) = &log {
+                            let _ = log.try_send(format!(
+                                "[harbor/resume] warn: clock-stall wall_ms={} stationary_ms={}                                  cache_paused=0 seeking=0 core_idle=0",
+                                resume_wall_ms(),
+                                stalled_for.as_millis(),
+                            ));
+                            trace_resume_sample(&resume_observed, log, None, "stall", embedded);
+                            if let Some(progress) = resume_progress.sample(&resume_observed, now) {
+                                let _ = log.try_send(progress);
+                            }
+                        }
+                    }
+                    if let Some(decision) =
+                        resume_recovery.assess(&resume_observed, now, embedded, playing)
+                    {
+                        match decision {
+                            ResumeRecoveryDecision::Attempt(action) => {
+                                let (step, result) = match action {
+                                    ResumeRecoveryAction::AudioReload => (
+                                        "audio-reload",
+                                        queue_resume_recovery_command(
+                                            &mpv_keepalive,
+                                            &["ao-reload"],
+                                            RESUME_RECOVERY_AUDIO_REPLY,
+                                        ),
+                                    ),
+                                    ResumeRecoveryAction::ResyncSeek(position) => {
+                                        let position = format!("{position:.3}");
+                                        let result = queue_resume_recovery_command(
+                                            &mpv_keepalive,
+                                            &["seek", &position, "absolute+exact"],
+                                            RESUME_RECOVERY_SEEK_REPLY,
+                                        );
+                                        if result.is_ok() {
+                                            resume_recovery.mark_recovery_seek_queued();
+                                        }
+                                        ("resync-seek", result)
+                                    }
+                                };
+                                if let Some(log) = &log {
+                                    let status = match result {
+                                        Ok(()) => "queued".to_string(),
+                                        Err(err) => format!("failed:{err}"),
+                                    };
+                                    let _ = log.try_send(format!(
+                                        "[harbor/resume] warn: recovery wall_ms={} step={step} status={status} media={} audio={} cache_sec={} since_resume_ms={}",
+                                        resume_wall_ms(),
+                                        resume_observed.value("time-pos"),
+                                        resume_observed.value("audio-pts"),
+                                        resume_observed.value("demuxer-cache-duration"),
+                                        resume_recovery.armed_at
+                                            .map(|at| now.saturating_duration_since(at).as_millis())
+                                            .unwrap_or(0),
+                                    ));
+                                }
+                            }
+                            ResumeRecoveryDecision::Recovered(step) => {
+                                if let Some(log) = &log {
+                                    let _ = log.try_send(format!(
+                                        "[harbor/resume] info: recovery-result wall_ms={} status=recovered step={step} media={} audio={}",
+                                        resume_wall_ms(),
+                                        resume_observed.value("time-pos"),
+                                        resume_observed.value("audio-pts"),
+                                    ));
+                                }
+                            }
+                            ResumeRecoveryDecision::Exhausted => {
+                                if let Some(log) = &log {
+                                    let _ = log.try_send(format!(
+                                        "[harbor/resume] warn: recovery-result wall_ms={} status=exhausted",
+                                        resume_wall_ms(),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Shorten polling only for bounded resume/preload work.
+            #[cfg(windows)]
+            let timeout = if resume_trace.active.is_some() {
+                0.25
+            } else {
+                0.5
+            };
+            #[cfg(not(windows))]
+            let timeout = 0.5;
+            #[cfg(windows)]
+            let poll_started = std::time::Instant::now();
+            #[cfg(windows)]
+            phase.store(3, std::sync::atomic::Ordering::Relaxed);
+            preload.expire(|id| unsafe {
+                libmpv2_sys::mpv_hook_continue(mpv_keepalive.ctx.as_ptr(), id);
+            });
+            #[cfg(windows)]
+            phase.store(4, std::sync::atomic::Ordering::Relaxed);
+            let res = ctx.wait_event(preload.poll_timeout(timeout));
+            #[cfg(windows)]
+            phase.store(5, std::sync::atomic::Ordering::Relaxed);
+            #[cfg(windows)]
+            if poll_started.elapsed() >= Duration::from_secs(2)
+                && resume_trace.last_resumed_at.is_some()
+                && resume_trace.paused_at.is_none()
+            {
+                if let Some(log) = &log {
+                    let _ = log.try_send(format!(
+                        "[harbor/resume] warn: event-poll-delay wall_ms={} wait_ms={}",
+                        resume_wall_ms(),
+                        poll_started.elapsed().as_millis(),
+                    ));
+                }
+            }
+            match res {
+                Some(Ok(event)) => {
+                    record_event_poll_success(&mut error_backoff);
+                    // Track completion of our asynchronous commands without
+                    // forwarding their private reply IDs to the frontend.
+                    #[cfg(windows)]
+                    if let Event::CommandReply(reply_id) = &event {
+                        if matches!(
+                            *reply_id,
+                            RESUME_RECOVERY_AUDIO_REPLY | RESUME_RECOVERY_SEEK_REPLY
+                        ) {
+                            if let Some(log) = &log {
+                                let step = if *reply_id == RESUME_RECOVERY_AUDIO_REPLY {
+                                    "audio-reload"
+                                } else {
+                                    "resync-seek"
+                                };
+                                let _ = log.try_send(format!(
+                                    "[harbor/resume] info: recovery-reply wall_ms={} step={step} status=complete",
+                                    resume_wall_ms(),
+                                ));
+                            }
+                            continue;
+                        }
+                    }
+                    // libmpv2 exposes newer C events through Deprecated(raw).
+                    if let Event::Deprecated(raw) = &event {
+                        if raw.event_id == libmpv2_sys::mpv_event_id_MPV_EVENT_HOOK
+                            && !raw.data.is_null()
+                        {
+                            let hook =
+                                unsafe { &*(raw.data as *const libmpv2_sys::mpv_event_hook) };
+                            let token = preload.begin(hook.id);
+                            let tracks = mpv_keepalive
+                                .get_property::<MpvNode>("track-list")
+                                .map(mpv_node_to_json)
+                                .unwrap_or_else(|_| json!([]));
+                            let path = mpv_keepalive.get_property::<String>("path").ok();
+                            if app.emit("mpv://event", json!({
+                                "event": "preloaded", "token": token, "tracks": tracks, "path": path
+                            })).is_err() {
+                                preload.finish(&token, |id| unsafe {
+                                    libmpv2_sys::mpv_hook_continue(mpv_keepalive.ctx.as_ptr(), id);
+                                });
+                            }
+                            continue;
+                        }
+                    }
+                    if let Event::LogMessage {
+                        prefix,
+                        level,
+                        text,
+                        ..
+                    } = &event
+                    {
+                        if let Some(log) = &log {
+                            let wall_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis();
+                            let _ = log.try_send(format!(
+                                "[wall_ms={wall_ms}] [{prefix}] {level}: {text}"
+                            ));
+                            #[cfg(windows)]
+                            if let (Some(resumed_at), Some(kind)) = (
+                                resume_trace.last_resumed_at,
+                                resume_warning_kind(prefix, text),
+                            ) {
+                                let now = std::time::Instant::now();
+                                let wall_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis();
+                                let _ = log.try_send(format!(
+                                    "[harbor/resume] info: warning wall_ms={wall_ms} since_resume_ms={} kind={kind} paused={}",
+                                    now.saturating_duration_since(resumed_at).as_millis(),
+                                    resume_trace.paused_at.is_some(),
+                                ));
+                                if matches!(
+                                    kind,
+                                    "audio-underrun" | "wasapi-underrun" | "av-desync"
+                                ) {
+                                    let _ = log.try_send(format!(
+                                        "[harbor/resume] info: warning-clocks wall_ms={wall_ms} kind={kind} \
+                                         media={} audio={} avsync={} media_age_ms={} audio_age_ms={} \
+                                         vo_drops={} decoder_drops={} cache_sec={} hwdec={} ao={} source=observed",
+                                        resume_observed.value("time-pos"),
+                                        resume_observed.value("audio-pts"),
+                                        resume_observed.value("avsync"),
+                                        resume_observed.position_age_ms(now),
+                                        resume_observed.audio_position_age_ms(now),
+                                        resume_observed.value("frame-drop-count"),
+                                        resume_observed.value("decoder-frame-drop-count"),
+                                        resume_observed.value("demuxer-cache-duration"),
+                                        resume_observed.value("hwdec-current"),
+                                        resume_observed.value("current-ao"),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    #[cfg(windows)]
+                    if let Event::PropertyChange { name, change, .. } = &event {
+                        resume_observed.update(name, change, std::time::Instant::now());
+                        if *name == HDR_STATUS_OBSERVED_PROP.0 {
+                            phase.store(7, std::sync::atomic::Ordering::Relaxed);
+                            let status = match change {
+                                PropertyData::Str(value) if !value.is_empty() => Some(*value),
+                                _ => None,
+                            };
+                            if status != last_hdr_status.as_deref() {
+                                last_hdr_status = status.map(str::to_owned);
+                                if let Some(status) = status {
+                                    let _ = app.emit("hdr-stage://display-status", status);
+                                }
+                            }
+                            // Internal observation only, not an mpv frontend event.
+                            continue;
+                        }
+                    }
+                    let mut shutdown = false;
+                    if matches!(event, Event::Shutdown) {
+                        shutdown = true;
+                    }
+                    if let Event::EndFile(reason) = &event {
+                        eprintln!("[harbor::mpv] end-file reason={:?}", reason);
+                    }
+                    #[cfg(windows)]
+                    {
+                        let stage = match &event {
+                            Event::Seek => Some("seek"),
+                            Event::PlaybackRestart => Some("playback-restart"),
+                            Event::FileLoaded => Some("file-loaded"),
+                            Event::EndFile(_) => Some("end-file"),
+                            Event::Shutdown => Some("shutdown"),
+                            _ => None,
+                        };
+                        if let Some(stage) = stage {
+                            if let Some(log) = &log {
+                                let _ = log.try_send(format!(
+                                    "[harbor/resume] info: transition wall_ms={} event={stage}",
+                                    resume_wall_ms(),
+                                ));
+                            }
+                            resume_trace.position.clear();
+                            resume_progress.clear();
+                            if matches!(event, Event::Seek)
+                                && !resume_recovery.consume_recovery_seek()
+                            {
+                                // An unrelated seek cancels any pending recovery.
+                                resume_recovery.clear();
+                            }
+                        }
+                        if matches!(
+                            event,
+                            Event::EndFile(_) | Event::FileLoaded | Event::Shutdown
+                        ) {
+                            resume_trace.clear();
+                            resume_recovery.clear();
+                            watch_playing.store(false, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        if let Event::PropertyChange {
+                            name: "pause",
+                            change: PropertyData::Flag(paused),
+                            ..
+                        } = &event
+                        {
+                            let now = std::time::Instant::now();
+                            let paused_for = resume_trace.on_pause_change(*paused, now);
+                            if *paused {
+                                resume_recovery.clear();
+                            } else if let Some(duration) = paused_for {
+                                resume_recovery.arm(now, duration);
+                            }
+                            watch_playing.store(
+                                !paused && resume_trace.last_resumed_at.is_some(),
+                                std::sync::atomic::Ordering::Relaxed,
+                            );
+                            if let Some(log) = &log {
+                                let _ = log.try_send(format!(
+                                    "[harbor/resume] info: pause-state wall_ms={} paused={}",
+                                    resume_wall_ms(),
+                                    u8::from(*paused),
+                                ));
+                                if let Some(paused_for) = paused_for {
+                                    let _ = log.try_send(format!(
+                                        "[harbor/resume] info: begin wall_ms={} paused_ms={}",
+                                        resume_wall_ms(),
+                                        paused_for.as_millis()
+                                    ));
+                                }
+                            }
+                            if paused_for.is_some() {
+                                resume_progress.clear();
+                                let _ = resume_progress.sample(&resume_observed, now);
+                                last_resume_ms.store(
+                                    clock_start.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                );
+                            }
+                        }
+                        if let Event::PropertyChange {
+                            name: "paused-for-cache",
+                            change: PropertyData::Flag(paused_for_cache),
+                            ..
+                        } = &event
+                        {
+                            if *paused_for_cache {
+                                resume_trace.position.clear();
+                                resume_progress.clear();
+                            }
+                            if let Some(log) = &log {
+                                let _ = log.try_send(format!(
+                                    "[harbor/resume] info: cache-pause-change wall_ms={} paused={}",
+                                    resume_wall_ms(),
+                                    u8::from(*paused_for_cache),
+                                ));
+                            }
+                        }
+                    }
+                    if let Event::PropertyChange { name, .. } = &event {
+                        if *name == "time-pos" {
+                            let now = std::time::Instant::now();
+                            if let Some(prev) = last_timepos {
+                                if now.duration_since(prev).as_millis() < 200 {
+                                    continue;
+                                }
+                            }
+                            last_timepos = Some(now);
+                        }
+                    }
+                    #[cfg(windows)]
+                    if embedded {
+                        if let Event::PropertyChange { name, .. } = &event {
+                            if *name == "video-params/gamma" {
+                                let gen = reassert_gen
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                                    + 1;
+                                let gen_arc = reassert_gen.clone();
+                                let mpv2 = mpv_keepalive.clone();
+                                std::thread::spawn(move || {
+                                    std::thread::sleep(Duration::from_millis(250));
+                                    if gen_arc.load(std::sync::atomic::Ordering::Relaxed) != gen {
+                                        return;
+                                    }
+                                    let gamma = mpv2
+                                        .get_property::<String>("video-params/gamma")
+                                        .unwrap_or_default();
+                                    if gamma != "pq" && gamma != "hlg" {
+                                        return;
+                                    }
+                                    let hdr = hdr_monitor
+                                        .map(|raw| {
+                                            monitor_hdr_active(
+                                                windows::Win32::Graphics::Gdi::HMONITOR(
+                                                    raw as *mut _,
+                                                ),
+                                            )
+                                        })
+                                        .unwrap_or(false);
+                                    if hdr {
+                                        reassert_hdr_colorspace(&mpv2);
+                                    }
+                                });
+                            }
+                        }
+                    }
+                    #[cfg(target_os = "macos")]
+                    if mac_edr {
+                        if let Event::PropertyChange { name, .. } = &event {
+                            if *name == "video-params/gamma" {
+                                let gamma = mpv_keepalive
+                                    .get_property::<String>("video-params/gamma")
+                                    .unwrap_or_default();
+                                if !gamma.is_empty() {
+                                    let active = gamma == "pq" || gamma == "hlg";
+                                    apply_mac_edr(&app, &mpv_keepalive, active);
+                                }
+                            }
+                        }
+                    }
+                    if let Event::PropertyChange { name, change, .. } = &event {
+                        if *name == "sub-text" && crate::captions::captions_is_open(&app) {
+                            let text = match change {
+                                PropertyData::Str(s) => s.to_string(),
+                                PropertyData::OsdStr(s) => s.to_string(),
+                                _ => String::new(),
+                            };
+                            let _ = app.emit_to("harbor-captions", "captions://text", text);
+                        }
+                    }
+                    #[cfg(windows)]
+                    if matches!(&event, Event::PropertyChange { name, .. }
+                        if RESUME_DIAG_PROPS.iter().any(|(known, _, _)| known == name))
+                    {
+                        continue;
+                    }
+                    #[cfg(windows)]
+                    phase.store(6, std::sync::atomic::Ordering::Relaxed);
+                    let payload = event_to_payload(event);
+                    if let Some(p) = payload {
+                        let _ = app.emit("mpv://event", p);
+                    }
+                    if shutdown {
+                        break;
+                    }
+                }
+                Some(Err(e)) => {
+                    let delay = error_backoff.next_delay();
+                    #[cfg(windows)]
+                    if let Some(log) = &log {
+                        let _ = log.try_send(format!(
+                            "[harbor/resume] warn: event-error wall_ms={} consecutive={} retry_ms={}",
+                            resume_wall_ms(),
+                            error_backoff.consecutive,
+                            delay.map(|value| value.as_millis()).unwrap_or(0),
+                        ));
+                    }
+                    if error_backoff.consecutive == 1 || error_backoff.consecutive.is_power_of_two()
+                    {
+                        eprintln!(
+                            "[mpv] event error (consecutive={}): {}",
+                            error_backoff.consecutive, e
+                        );
+                    }
+                    if matches!(e, libmpv2::Error::Raw(-13 | -16)) {
+                        let _ = app.emit(
+                            "mpv://event",
+                            json!({ "event": "end-file", "reason": "error" }),
+                        );
+                    }
+                    match delay {
+                        Some(delay) => std::thread::sleep(delay),
+                        None => {
+                            let _ = app.emit(
+                                "mpv://event",
+                                json!({
+                                    "event": "player-failure",
+                                    "reason": "persistent-event-errors",
+                                }),
+                            );
+                            break;
+                        }
+                    }
+                }
+                None => record_event_poll_success(&mut error_backoff),
+            }
+        }
+        #[cfg(windows)]
+        {
+            watch_playing.store(false, std::sync::atomic::Ordering::Relaxed);
+            watch_running.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+        drop(mpv_keepalive);
+    });
+}
+
+fn event_to_payload(event: Event) -> Option<Value> {
+    match event {
+        Event::PropertyChange { name, change, .. } => {
+            let data = match change {
+                PropertyData::Str(s) => Value::String(s.to_string()),
+                PropertyData::OsdStr(s) => Value::String(s.to_string()),
+                PropertyData::Flag(b) => Value::Bool(b),
+                PropertyData::Int64(i) => json!(i),
+                PropertyData::Double(f) => json!(f),
+                PropertyData::Node(n) => mpv_node_to_json(n),
+            };
+            Some(json!({ "event": "property-change", "name": name, "data": data }))
+        }
+        Event::EndFile(reason) => {
+            let reason = match reason {
+                0 => "eof",
+                2 => "stop",
+                3 => "quit",
+                4 => "error",
+                5 => "redirect",
+                _ => "other",
+            };
+            Some(json!({ "event": "end-file", "reason": reason }))
+        }
+        Event::FileLoaded => Some(json!({ "event": "file-loaded" })),
+        Event::PlaybackRestart => Some(json!({ "event": "playback-restart" })),
+        Event::Seek => Some(json!({ "event": "seek" })),
+        Event::Shutdown => Some(json!({ "event": "shutdown" })),
+        Event::LogMessage {
+            prefix,
+            level,
+            text,
+            ..
+        } if matches!(level, "fatal" | "error" | "warn") => Some(
+            json!({ "event": "log", "prefix": crate::log_privacy::scrub(prefix), "level": level, "text": crate::log_privacy::scrub(text) }),
+        ),
+        _ => None,
+    }
+}
+
+fn mpv_node_to_json(node: MpvNode) -> Value {
+    match node {
+        MpvNode::None => Value::Null,
+        MpvNode::String(s) => Value::String(s),
+        MpvNode::Flag(b) => Value::Bool(b),
+        MpvNode::Int64(i) => json!(i),
+        MpvNode::Double(f) => json!(f),
+        MpvNode::ArrayIter(it) => Value::Array(it.map(mpv_node_to_json).collect()),
+        MpvNode::MapIter(it) => {
+            let mut obj = serde_json::Map::new();
+            for (k, v) in it {
+                obj.insert(k, mpv_node_to_json(v));
+            }
+            Value::Object(obj)
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn mpv_select_preloaded_tracks(
+    state: State<'_, MpvState>,
+    token: String,
+    audio_id: Option<String>,
+    subtitle_id: Option<String>,
+) -> Result<bool, String> {
+    let (mpv, preload) = {
+        let g = state.inner.lock().await;
+        let session = g.as_ref().ok_or("mpv not started")?;
+        (session.mpv.clone(), session.preload.clone())
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        preload.finish(&token, |id| {
+            if let Some(aid) = audio_id
+                .as_deref()
+                .filter(|s| s.parse::<u32>().is_ok_and(|n| n > 0))
+            {
+                let _ = mpv.set_property("aid", aid);
+            }
+            if let Some(sid) = subtitle_id
+                .as_deref()
+                .filter(|s| *s == "no" || s.parse::<u32>().is_ok_and(|n| n > 0))
+            {
+                let _ = mpv.set_property("sid", sid);
+            }
+            // The session owns the handle and the matching pending hook.
+            unsafe {
+                libmpv2_sys::mpv_hook_continue(mpv.ctx.as_ptr(), id);
+            }
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn mpv_command(state: State<'_, MpvState>, cmd: Vec<Value>) -> Result<(), String> {
+    let (mpv, is_live) = {
+        let g = state.inner.lock().await;
+        let s = g.as_ref().ok_or_else(|| "mpv not started".to_string())?;
+        (s.mpv.clone(), s.is_live)
+    };
+    if cmd.is_empty() {
+        return Err("empty command".into());
+    }
+    let head = cmd[0]
+        .as_str()
+        .ok_or_else(|| "first arg must be string".to_string())?;
+    if !MPV_ALLOWED_COMMANDS.contains(&head) {
+        return Err(format!("mpv command not allowed: {}", head));
+    }
+    let tail: Vec<String> = cmd[1..].iter().map(value_to_arg).collect();
+    if head == "loadfile" && !is_live {
+        if let Some(url) = tail.first() {
+            let _ = mpv.set_property("network-timeout", network_timeout_for(url));
+        }
+    }
+    let mut argv: Vec<&str> = Vec::with_capacity(tail.len() + 1);
+    argv.push(head);
+    for s in &tail {
+        argv.push(s.as_str());
+    }
+    mpv_argv_command(&mpv, &argv)?;
+    if head == "loadfile" {
+        if let Some(url) = tail.first() {
+            attach_local_sidecars(&mpv, url);
+        }
+    }
+    Ok(())
+}
+
+fn attach_local_sidecars(mpv: &Mpv, url: &str) {
+    if url.contains("://") {
+        return;
+    }
+    for subtitle in crate::local_lib::adjacent_subtitles(std::path::Path::new(url)) {
+        let normalized = subtitle.replace('\\', "/");
+        if let Err(error) = mpv_argv_command(mpv, &["sub-add", &normalized, "auto"]) {
+            eprintln!(
+                "[harbor::mpv] adjacent sub-add failed for {}: {}",
+                normalized, error
+            );
+        }
+    }
+}
+
+const MPV_ALLOWED_COMMANDS: &[&str] = &[
+    "af",
+    "vf",
+    "seek",
+    "stop",
+    "frame-step",
+    "frame-back-step",
+    "loadfile",
+    "ao-reload",
+    // Auto-sync's live tap writes the buffered minute to a temp file.
+    "dump-cache",
+    // Writes a line into mpv's log, which is the only log a release build keeps.
+    // The player uses it to name the control behind each pause/play so a user's
+    // log explains itself.
+    "print-text",
+];
+
+fn mpv_property_blocked(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    let n = n
+        .strip_prefix("options/")
+        .or_else(|| n.strip_prefix("file-local-options/"))
+        .unwrap_or(&n);
+    const BLOCKED: &[&str] = &[
+        "script",
+        "input-",
+        "load-scripts",
+        "ytdl-raw",
+        "screenshot-directory",
+        "screenshot-template",
+        "sub-add",
+        "log-file",
+        "terminal",
+    ];
+    BLOCKED.iter().any(|b| n.starts_with(b))
+}
+
+fn value_to_arg(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Bool(b) => {
+            if *b {
+                "yes".into()
+            } else {
+                "no".into()
+            }
+        }
+        Value::Number(n) => n.to_string(),
+        Value::Null => String::new(),
+        _ => v.to_string(),
+    }
+}
+
+#[tauri::command]
+pub async fn mpv_set_property(
+    state: State<'_, MpvState>,
+    name: String,
+    value: Value,
+) -> Result<(), String> {
+    let (mpv, is_live) = {
+        let g = state.inner.lock().await;
+        let session = g.as_ref().ok_or_else(|| "mpv not started".to_string())?;
+        (session.mpv.clone(), session.is_live)
+    };
+    if mpv_property_blocked(&name) {
+        return Err(format!("mpv property not allowed: {}", name));
+    }
+    let str_val = value_to_arg(&value);
+    let audio_switch = name == "aid"
+        && str_val != "no"
+        && !is_live
+        && mpv.get_property::<String>("aid").ok().as_deref() != Some(str_val.as_str());
+    mpv.set_property(&name, str_val.as_str())
+        .map_err(|e| format!("set {}: {}", name, e))?;
+    // With a large demuxer readahead (Harbor's steady-state buffer), mpv holds
+    // the newly selected audio until the cache drains when its refresh seek
+    // cannot be issued (mpv-player/mpv#18371), leaving minutes of silence. The
+    // same-position seek a viewer uses to recover restarts the demuxer at the
+    // current frame and starts the new track immediately.
+    if audio_switch {
+        resync_audio_after_switch(&mpv);
+    }
+    Ok(())
+}
+
+fn resync_audio_after_switch(mpv: &Mpv) {
+    let Ok(pos) = mpv.get_property::<f64>("time-pos") else {
+        return;
+    };
+    if !pos.is_finite() || pos <= 0.0 {
+        return;
+    }
+    let pos = pos.to_string();
+    let _ = mpv_argv_command(mpv, &["seek", &pos, "absolute+exact"]);
+}
+
+#[tauri::command]
+pub async fn mpv_get_property(state: State<'_, MpvState>, name: String) -> Result<Value, String> {
+    let mpv = {
+        let g = state.inner.lock().await;
+        g.as_ref()
+            .map(|s| s.mpv.clone())
+            .ok_or_else(|| "mpv not started".to_string())?
+    };
+    let s = mpv
+        .get_property::<String>(&name)
+        .map_err(|e| format!("get {}: {}", name, e))?;
+    Ok(match s.parse::<f64>() {
+        Ok(n) if n.is_finite() => serde_json::json!(n),
+        _ => Value::String(s),
+    })
+}
+
+/// Read structured seekable cache ranges from mpv as a real node array.
+/// mpv_get_property reads properties as strings and cannot represent arrays.
+#[tauri::command]
+pub async fn mpv_get_seekable_ranges(state: State<'_, MpvState>) -> Result<Value, String> {
+    let mpv = {
+        let g = state.inner.lock().await;
+        g.as_ref()
+            .map(|s| s.mpv.clone())
+            .ok_or_else(|| "mpv not started".to_string())?
+    };
+    // Some mpv builds expose the ranges only as a field of the cache-state node.
+    let node: MpvNode = mpv
+        .get_property("demuxer-cache-state")
+        .map_err(|_| "seekable-ranges-unavailable".to_string())?;
+    let mut state = mpv_node_to_json(node);
+    state.get_mut("seekable-ranges")
+        .filter(|ranges| ranges.is_array())
+        .map(Value::take)
+        .ok_or_else(|| "seekable-ranges-invalid".to_string())
+}
+
+/// Reads a list option such as `sub-ass-style-overrides` item by item. `mpv_get_property`
+/// returns mpv's text form, which doesn't escape commas inside items, so writing that text
+/// back would split an item like `FontName=Comic, Neue` in two.
+#[tauri::command]
+pub async fn mpv_get_property_list(
+    state: State<'_, MpvState>,
+    name: String,
+) -> Result<Vec<String>, String> {
+    let mpv = {
+        let g = state.inner.lock().await;
+        g.as_ref()
+            .map(|s| s.mpv.clone())
+            .ok_or_else(|| "mpv not started".to_string())?
+    };
+    let node: MpvNode = mpv
+        .get_property(&name)
+        .map_err(|e| format!("get {}: {}", name, e))?;
+    node.array()
+        .and_then(|items| items.map(|item| item.str().map(str::to_string)).collect())
+        .ok_or_else(|| format!("{} is not a list of text", name))
+}
+
+/// Descriptions of the passes mpv's video output is currently running, taken
+/// from `vo-passes`. `glsl-shaders` only echoes back what was requested, so a
+/// chain that failed to compile still reads as active there. This is what the
+/// video output actually resolved, which is the only way to tell them apart.
+///
+/// `vo-passes` is a node map with `fresh` and `redraw` arrays of
+/// `{desc, last, avg, peak, count, samples}`.
+#[tauri::command]
+pub async fn mpv_vo_passes(state: State<'_, MpvState>) -> Result<Vec<String>, String> {
+    let mpv = {
+        let g = state.inner.lock().await;
+        g.as_ref()
+            .map(|s| s.mpv.clone())
+            .ok_or_else(|| "mpv not started".to_string())?
+    };
+    let node: MpvNode = mpv
+        .get_property("vo-passes")
+        .map_err(|e| format!("get vo-passes: {}", e))?;
+    let mut descs = Vec::new();
+    if let Some(top) = node.map() {
+        for (key, value) in top {
+            if key != "fresh" && key != "redraw" {
+                continue;
+            }
+            let Some(entries) = value.array() else {
+                continue;
+            };
+            for entry in entries {
+                let Some(entry) = entry.map() else { continue };
+                for (field, value) in entry {
+                    if field == "desc" {
+                        if let Some(text) = value.str() {
+                            descs.push(text.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    descs.sort();
+    descs.dedup();
+    Ok(descs)
+}
+
+#[tauri::command]
+pub async fn mpv_set_geometry(
+    app: AppHandle,
+    _state: State<'_, MpvState>,
+    geom: MpvGeometry,
+) -> Result<(), String> {
+    // The detached window owns the live surface and resizes it through its own
+    // fit command. Late geometry updates from Harbor must not move that surface.
+    if app
+        .state::<crate::pip_window::PipWindowState>()
+        .active
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return Ok(());
+    }
+    #[cfg(windows)]
+    {
+        let embedded = {
+            let g = _state.inner.lock().await;
+            g.as_ref().map(|s| s.embedded).unwrap_or(false)
+        };
+        if embedded {
+            let result = position_embedded_mpv_child(&app, geom);
+            if let Some(line) = embedded_surface_trace(&app) {
+                let g = _state.inner.lock().await;
+                if let Some(session) = g.as_ref() {
+                    let render_width = session.mpv.get_property::<i64>("osd-width").ok();
+                    let render_height = session.mpv.get_property::<i64>("osd-height").ok();
+                    let line = format!("{line} renderer={render_width:?}x{render_height:?}");
+                    let _ = mpv_argv_command(&session.mpv, &["print-text", &line]);
+                }
+            }
+            return result;
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        app.run_on_main_thread(move || {
+            if let Err(error) = crate::mpv_render_mac::resize_to(geom) {
+                eprintln!("[harbor::mpv] macOS resize rejected: {error}");
+            }
+        })
+        .map_err(|error| format!("failed to schedule macOS mpv resize: {error}"))?;
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let embedded = {
+            let g = _state.inner.lock().await;
+            g.as_ref().map(|s| s.embedded).unwrap_or(false)
+        };
+        if embedded {
+            // GLArea fills the full window via GTK expand flags, so
+            // geometry tracking is redundant. We still dispatch to the
+            // main thread as a rendering tickle for the GLArea.
+            let _ = app.run_on_main_thread(move || {
+                let _ = crate::mpv_render_linux::resize_to(geom);
+            });
+            return Ok(());
+        }
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    let _ = app;
+
+    // Separate window: mpv owns its own placement. The `geom` here is the embed
+    // rect measured inside Harbor's layout, which must never be pushed onto the
+    // standalone VO window (it sized it to a fraction of the chosen monitor).
+    // The window is fixed on its display via the pre-init `screen` option instead.
+    #[cfg(any(windows, target_os = "linux"))]
+    {
+        let separate = {
+            let g = _state.inner.lock().await;
+            g.as_ref().map(|s| !s.embedded).unwrap_or(false)
+        };
+        if separate {
+            return Ok(());
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mpv = {
+            let g = _state.inner.lock().await;
+            g.as_ref()
+                .map(|s| s.mpv.clone())
+                .ok_or_else(|| "mpv not started".to_string())?
+        };
+        let geo = format!(
+            "{}x{}+{}+{}",
+            geom.css_width as i32,
+            geom.css_height as i32,
+            geom.css_left as i32,
+            geom.css_top as i32
+        );
+        mpv.set_property("geometry", geo.as_str())
+            .map_err(|e| format!("geometry: {}", e))
+    }
+}
+
+#[tauri::command]
+pub fn mpv_export_log(app: AppHandle) -> Result<String, String> {
+    use tauri::Manager;
+    let src = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("harbor-mpv.log");
+    if !src.exists() {
+        return Err("No player log yet. Play something first, then export.".into());
+    }
+    let dl = app.path().download_dir().map_err(|e| e.to_string())?;
+    let dst = dl.join("harbor-mpv-log.txt");
+    let raw = std::fs::read(&src).map_err(|e| format!("read: {}", e))?;
+    let scrubbed = crate::log_privacy::scrub(&String::from_utf8_lossy(&raw));
+    std::fs::write(&dst, scrubbed).map_err(|e| format!("write: {}", e))?;
+    Ok(dst.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub async fn mpv_force_below(_app: AppHandle) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        if MPV_HDR_STAGE.load(std::sync::atomic::Ordering::Relaxed)
+            && _app
+                .get_webview_window(crate::hdr_overlay::HDR_OVERLAY_LABEL)
+                .is_some()
+        {
+            return Ok(());
+        }
+        use windows::Win32::Foundation::{HWND, LPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            EnumChildWindows, GetClassNameW, SetWindowPos, HWND_BOTTOM, SWP_NOACTIVATE, SWP_NOMOVE,
+            SWP_NOSIZE,
+        };
+        let window = _app
+            .get_webview_window("main")
+            .ok_or_else(|| "main window missing".to_string())?;
+        let parent_hwnd = window.hwnd().map_err(|e| format!("hwnd: {}", e))?;
+
+        struct EnumState {
+            mpv_hwnds: Vec<isize>,
+        }
+        let mut state = EnumState {
+            mpv_hwnds: Vec::new(),
+        };
+        let state_ptr = &mut state as *mut EnumState;
+
+        unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL {
+            let mut class_buf = [0u16; 256];
+            let class_len = GetClassNameW(hwnd, &mut class_buf);
+            let class_name = String::from_utf16_lossy(&class_buf[..class_len as usize]);
+            let s = lparam.0 as *mut EnumState;
+            if class_name == "mpv" || class_name.starts_with("mpv ") {
+                (*s).mpv_hwnds.push(hwnd.0 as isize);
+            }
+            windows::core::BOOL(1)
+        }
+
+        unsafe {
+            let _ = EnumChildWindows(
+                Some(parent_hwnd),
+                Some(enum_proc),
+                LPARAM(state_ptr as isize),
+            );
+            for h in state.mpv_hwnds {
+                let _ = SetWindowPos(
+                    HWND(h as *mut _),
+                    Some(HWND_BOTTOM),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn mpv_set_hdr_stage(_app: AppHandle, active: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        MPV_HDR_STAGE.store(active, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut guard) = MPV_POS_LAST_RECT.lock() {
+            *guard = None;
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = active;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn display_hdr_active(_app: AppHandle) -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        use tauri::Manager;
+        let window = match _app.get_webview_window("main") {
+            Some(w) => w,
+            None => return Ok(false),
+        };
+        let hwnd = match window.hwnd() {
+            Ok(h) => h,
+            Err(_) => return Ok(false),
+        };
+        return Ok(crate::monitors::resolve_for_hwnd(hwnd.0 as isize)
+            .map(|m| monitor_hdr_active(m.hmon))
+            .unwrap_or(false));
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(false)
+    }
+}
+
+/// Find mpv's top-level VO window (class `mpv`, owned by this process) and set
+/// its rect to the given pixel bounds. Returns None when the window is not up
+/// yet, so the caller can fall back to mpv's own geometry.
+#[cfg(windows)]
+fn size_separate_mpv_window(x: i32, y: i32, w: i32, h: i32) -> Option<()> {
+    use windows::core::BOOL;
+    use windows::Win32::Foundation::{HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetClassNameW, GetWindowThreadProcessId, SetWindowPos, HWND_TOP,
+        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOZORDER,
+    };
+
+    let own_pid = std::process::id();
+
+    struct State {
+        own_pid: u32,
+        found: Option<isize>,
+    }
+    let mut state = State {
+        own_pid,
+        found: None,
+    };
+    let state_ptr = &mut state as *mut State;
+
+    unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let s = &mut *(lparam.0 as *mut State);
+        if s.found.is_some() {
+            return BOOL(0);
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid != s.own_pid {
+            return BOOL(1);
+        }
+        let mut class_buf = [0u16; 256];
+        let class_len = GetClassNameW(hwnd, &mut class_buf);
+        let class_name = String::from_utf16_lossy(&class_buf[..class_len as usize]);
+        if class_name == "mpv" || class_name.starts_with("mpv ") {
+            s.found = Some(hwnd.0 as isize);
+            return BOOL(0);
+        }
+        BOOL(1)
+    }
+
+    unsafe {
+        let _ = EnumWindows(Some(enum_proc), LPARAM(state_ptr as isize));
+    }
+    let target = HWND(state.found? as *mut _);
+    unsafe {
+        SetWindowPos(
+            target,
+            Some(HWND_TOP),
+            x,
+            y,
+            w,
+            h,
+            SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED,
+        )
+        .ok()
+        .map(|_| ())
+    }
+}
+
+#[cfg(windows)]
+fn monitor_hdr_active(hmon: windows::Win32::Graphics::Gdi::HMONITOR) -> bool {
+    use windows::core::Interface;
+    use windows::Win32::Graphics::Dxgi::Common::DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, IDXGIFactory1, IDXGIOutput6, DXGI_ERROR_NOT_FOUND,
+    };
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITORINFOEXW};
+
+    // Fallback rect is the monitor's own desktop rect, not a window rect: GDI and
+    // DXGI HMONITOR handles can differ on multi-GPU, so when the handles do not
+    // compare equal we test the monitor's centre against each output's desktop
+    // rectangle instead.
+    let mut mi = MONITORINFOEXW::default();
+    mi.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+    let have_rect =
+        hmon.0 as isize != 0 && unsafe { GetMonitorInfoW(hmon, &mut mi.monitorInfo) }.as_bool();
+    let mon_rect = mi.monitorInfo.rcMonitor;
+
+    let factory: IDXGIFactory1 = match unsafe { CreateDXGIFactory1() } {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+
+    let mut adapter_idx = 0u32;
+    loop {
+        let adapter = match unsafe { factory.EnumAdapters1(adapter_idx) } {
+            Ok(a) => a,
+            Err(e) if e.code() == DXGI_ERROR_NOT_FOUND => break,
+            Err(_) => break,
+        };
+        adapter_idx += 1;
+
+        let mut output_idx = 0u32;
+        loop {
+            let output = match unsafe { adapter.EnumOutputs(output_idx) } {
+                Ok(o) => o,
+                Err(_) => break,
+            };
+            output_idx += 1;
+
+            let output6: IDXGIOutput6 = match output.cast() {
+                Ok(o) => o,
+                Err(_) => continue,
+            };
+            let desc = match unsafe { output6.GetDesc1() } {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+
+            let monitor_matches =
+                hmon.0 as isize != 0 && desc.Monitor.0 as isize == hmon.0 as isize;
+            let rect_matches = have_rect && {
+                let d = desc.DesktopCoordinates;
+                let cx = (mon_rect.left + mon_rect.right) / 2;
+                let cy = (mon_rect.top + mon_rect.bottom) / 2;
+                cx >= d.left && cx < d.right && cy >= d.top && cy < d.bottom
+            };
+            if monitor_matches || rect_matches {
+                return desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+            }
+        }
+    }
+    false
+}
+
+/// Flips the display that `hwnd` sits on into or out of advanced color (HDR)
+/// mode via the DisplayConfig set-advanced-color state packet. Same mechanism
+/// Windows Settings and display-info.dll use; Harbor calls it as an
+/// authoritative restore after mpv teardown.
+#[cfg(windows)]
+fn set_monitor_advanced_color(hmon: windows::Win32::Graphics::Gdi::HMONITOR, enable: bool) -> bool {
+    use windows::Win32::Devices::Display::{
+        DisplayConfigGetDeviceInfo, DisplayConfigSetDeviceInfo, GetDisplayConfigBufferSizes,
+        QueryDisplayConfig, DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+        DISPLAYCONFIG_DEVICE_INFO_SET_ADVANCED_COLOR_STATE, DISPLAYCONFIG_MODE_INFO,
+        DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE,
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME, QDC_ONLY_ACTIVE_PATHS,
+    };
+    use windows::Win32::Foundation::WIN32_ERROR;
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITORINFOEXW};
+
+    fn wide_to_string(raw: &[u16]) -> String {
+        String::from_utf16_lossy(
+            &raw.iter()
+                .take_while(|&&c| c != 0)
+                .copied()
+                .collect::<Vec<u16>>(),
+        )
+    }
+
+    if hmon.0 as isize == 0 {
+        return false;
+    }
+    let mut mi = MONITORINFOEXW::default();
+    mi.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+    if unsafe { GetMonitorInfoW(hmon, &mut mi.monitorInfo) }.as_bool() == false {
+        return false;
+    }
+    let device = wide_to_string(&mi.szDevice);
+    if device.is_empty() {
+        return false;
+    }
+
+    unsafe {
+        let mut path_count = 0u32;
+        let mut mode_count = 0u32;
+        if GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut path_count, &mut mode_count)
+            != WIN32_ERROR(0)
+            || path_count == 0
+            || path_count > 64
+        {
+            return false;
+        }
+        let mut paths: Vec<DISPLAYCONFIG_PATH_INFO> = Vec::new();
+        paths.resize_with(path_count as usize, DISPLAYCONFIG_PATH_INFO::default);
+        let mut modes: Vec<DISPLAYCONFIG_MODE_INFO> = Vec::new();
+        modes.resize_with(mode_count.max(1) as usize, DISPLAYCONFIG_MODE_INFO::default);
+        if QueryDisplayConfig(
+            QDC_ONLY_ACTIVE_PATHS,
+            &mut path_count,
+            paths.as_mut_ptr(),
+            &mut mode_count,
+            modes.as_mut_ptr(),
+            None,
+        ) != WIN32_ERROR(0)
+        {
+            return false;
+        }
+        for path in paths.iter().take(path_count as usize) {
+            let mut source = DISPLAYCONFIG_SOURCE_DEVICE_NAME::default();
+            source.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+            source.header.size = std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32;
+            source.header.adapterId = path.sourceInfo.adapterId;
+            source.header.id = path.sourceInfo.id;
+            if DisplayConfigGetDeviceInfo(&mut source.header) != 0 {
+                continue;
+            }
+            if wide_to_string(&source.viewGdiDeviceName) != device {
+                continue;
+            }
+            // Bit 0 of the state union is advancedColorEnabled (1 = HDR).
+            let mut set = DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE::default();
+            set.header.r#type = DISPLAYCONFIG_DEVICE_INFO_SET_ADVANCED_COLOR_STATE;
+            set.header.size = std::mem::size_of::<DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE>() as u32;
+            set.header.adapterId = path.targetInfo.adapterId;
+            set.header.id = path.targetInfo.id;
+            set.Anonymous.value = if enable { 1 } else { 0 };
+            return DisplayConfigSetDeviceInfo(&set.header) == 0;
+        }
+    }
+    false
+}
+
+#[tauri::command]
+pub async fn mpv_save_screenshot(
+    state: State<'_, MpvState>,
+    path: String,
+) -> Result<String, String> {
+    let mpv = {
+        let g = state.inner.lock().await;
+        g.as_ref()
+            .map(|s| s.mpv.clone())
+            .ok_or_else(|| "mpv not started".to_string())?
+    };
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = mpv.set_property("screenshot-format", "png");
+    let _ = mpv.set_property("screenshot-png-compression", "3");
+    let _ = mpv.set_property("screenshot-sw", "yes");
+    mpv_argv_command(&mpv, &["screenshot-to-file", path.as_str(), "video"])
+        .map_err(|e| format!("screenshot-to-file: {}", e))?;
+    let target = std::path::Path::new(&path).to_path_buf();
+    let mut waited = 0u64;
+    while waited < 3000 {
+        if target.exists() {
+            if let Ok(meta) = std::fs::metadata(&target) {
+                if meta.len() > 0 {
+                    return Ok(path);
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        waited += 40;
+    }
+    Err("screenshot did not finish writing".to_string())
+}
+
+struct GifSession {
+    dir: PathBuf,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    handle: tokio::task::JoinHandle<()>,
+    captured_ms: Arc<std::sync::atomic::AtomicU64>,
+}
+
+static GIF_SESSION: std::sync::OnceLock<std::sync::Mutex<Option<GifSession>>> =
+    std::sync::OnceLock::new();
+
+fn gif_slot() -> &'static std::sync::Mutex<Option<GifSession>> {
+    GIF_SESSION.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+const GIF_FRAME_INTERVAL_MS: u64 = 50;
+const GIF_MAX_FRAMES: u32 = 600;
+const GIF_FALLBACK_FPS: f64 = 12.0;
+
+#[derive(Serialize)]
+pub struct GifResult {
+    path: String,
+    frames: u32,
+}
+
+#[tauri::command]
+pub async fn mpv_gif_start(state: State<'_, MpvState>) -> Result<(), String> {
+    let mpv = {
+        let g = state.inner.lock().await;
+        g.as_ref()
+            .map(|s| s.mpv.clone())
+            .ok_or_else(|| "mpv not started".to_string())?
+    };
+    {
+        let g = gif_slot().lock().map_err(|e| format!("gif lock: {}", e))?;
+        if g.is_some() {
+            return Err("already recording".into());
+        }
+    }
+    let dir = std::env::temp_dir().join(format!("harbor-gif-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create temp dir: {}", e))?;
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_task = stop.clone();
+    let dir_task = dir.clone();
+    let captured_ms = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let captured_task = captured_ms.clone();
+    let handle = tokio::spawn(async move {
+        let started = std::time::Instant::now();
+        let _ = mpv.set_property("screenshot-format", "jpg");
+        let _ = mpv.set_property("screenshot-jpeg-quality", "92");
+        let _ = mpv.set_property("screenshot-sw", "yes");
+        let mut frame: u32 = 0;
+        while !stop_task.load(std::sync::atomic::Ordering::Relaxed) && frame < GIF_MAX_FRAMES {
+            let path = dir_task.join(format!("f{:05}.jpg", frame));
+            let p = path.to_string_lossy().to_string();
+            if mpv_argv_command(&mpv, &["screenshot-to-file", p.as_str(), "video"]).is_ok() {
+                frame += 1;
+                captured_task.store(
+                    started.elapsed().as_millis() as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(GIF_FRAME_INTERVAL_MS)).await;
+        }
+    });
+    *gif_slot().lock().map_err(|e| format!("gif lock: {}", e))? = Some(GifSession {
+        dir,
+        stop,
+        handle,
+        captured_ms,
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn mpv_gif_abort() -> Result<(), String> {
+    let session = {
+        gif_slot()
+            .lock()
+            .map_err(|e| format!("gif lock: {}", e))?
+            .take()
+    };
+    if let Some(session) = session {
+        session
+            .stop
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = session.handle.await;
+        let _ = std::fs::remove_dir_all(&session.dir);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn mpv_gif_stop(out_path: String) -> Result<GifResult, String> {
+    let session = {
+        gif_slot()
+            .lock()
+            .map_err(|e| format!("gif lock: {}", e))?
+            .take()
+    };
+    let Some(session) = session else {
+        return Err("not recording".into());
+    };
+    session
+        .stop
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = session.handle.await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let mut frames: Vec<PathBuf> = std::fs::read_dir(&session.dir)
+        .map_err(|e| format!("read temp dir: {}", e))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("jpg"))
+        .collect();
+    frames.sort();
+    if frames.is_empty() {
+        let _ = std::fs::remove_dir_all(&session.dir);
+        return Err("no frames captured".into());
+    }
+
+    let window_ms = session
+        .captured_ms
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let n = frames.len() as f64;
+    let fps = if n >= 2.0 && window_ms >= 200 {
+        (n / (window_ms as f64 / 1000.0)).clamp(2.0, 30.0)
+    } else {
+        GIF_FALLBACK_FPS
+    };
+    let dur = 1.0_f64 / fps;
+
+    let ffmpeg = crate::transcode::locate_ffmpeg().ok_or_else(|| "ffmpeg not found".to_string())?;
+
+    let list_path = session.dir.join("frames.txt");
+    let mut list = String::new();
+    for f in &frames {
+        let name = f.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        list.push_str(&format!("file '{}'\nduration {:.4}\n", name, dur));
+    }
+    if let Some(last) = frames.last() {
+        let name = last
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        list.push_str(&format!("file '{}'\n", name));
+    }
+    std::fs::write(&list_path, list).map_err(|e| format!("write list: {}", e))?;
+
+    if let Some(parent) = std::path::Path::new(&out_path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let palette = session.dir.join("palette.png");
+    let list_str = list_path.to_string_lossy().to_string();
+    let palette_str = palette.to_string_lossy().to_string();
+    let vf_pal = format!(
+        "fps={:.3},scale=640:-2:flags=lanczos,palettegen=stats_mode=diff",
+        fps
+    );
+    let lavfi = format!(
+        "fps={:.3},scale=640:-2:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=3",
+        fps
+    );
+
+    let pass1 = run_gif_ffmpeg(
+        &ffmpeg,
+        &[
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            &list_str,
+            "-vf",
+            &vf_pal,
+            &palette_str,
+        ],
+    )
+    .await;
+    if let Err(e) = pass1 {
+        let _ = std::fs::remove_dir_all(&session.dir);
+        return Err(format!("palettegen: {}", e));
+    }
+    let pass2 = run_gif_ffmpeg(
+        &ffmpeg,
+        &[
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            &list_str,
+            "-i",
+            &palette_str,
+            "-lavfi",
+            &lavfi,
+            out_path.as_str(),
+        ],
+    )
+    .await;
+    let _ = std::fs::remove_dir_all(&session.dir);
+    if let Err(e) = pass2 {
+        return Err(format!("paletteuse: {}", e));
+    }
+    Ok(GifResult {
+        path: out_path,
+        frames: frames.len() as u32,
+    })
+}
+
+async fn run_gif_ffmpeg(ffmpeg: &std::path::Path, args: &[&str]) -> Result<(), String> {
+    let mut cmd = tokio::process::Command::new(ffmpeg);
+    cmd.args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    let status = cmd
+        .status()
+        .await
+        .map_err(|e| format!("spawn ffmpeg: {}", e))?;
+    if !status.success() {
+        return Err(format!("ffmpeg exit {:?}", status.code()));
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+pub struct ClipResult {
+    path: String,
+    duration: f64,
+}
+
+#[tauri::command]
+pub async fn mpv_clip_save(
+    state: State<'_, MpvState>,
+    with_subs: bool,
+    before_sec: f64,
+    out_path: String,
+) -> Result<ClipResult, String> {
+    let mpv = {
+        let g = state.inner.lock().await;
+        g.as_ref()
+            .map(|s| s.mpv.clone())
+            .ok_or_else(|| "mpv not started".to_string())?
+    };
+    let src = mpv
+        .get_property::<String>("path")
+        .map_err(|e| format!("no source path: {}", e))?;
+    let pos: f64 = mpv
+        .get_property::<String>("time-pos")
+        .map_err(|e| format!("no position: {}", e))?
+        .trim()
+        .parse()
+        .map_err(|_| "bad position".to_string())?;
+    let start = (pos - before_sec).max(0.0);
+    let dur = pos - start;
+    if dur < 0.5 {
+        return Err("not enough playback to clip yet".into());
+    }
+
+    let sub_external = if with_subs {
+        mpv.get_property::<String>("current-tracks/sub/external-filename")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+    } else {
+        None
+    };
+    let sub_id = if with_subs {
+        mpv.get_property::<String>("sid")
+            .ok()
+            .filter(|s| s.trim() != "no" && !s.trim().is_empty())
+    } else {
+        None
+    };
+    let sub_filter_sdh = with_subs
+        && mpv
+            .get_property::<String>("sub-filter-sdh")
+            .map(|v| v.trim() == "yes")
+            .unwrap_or(false);
+
+    let mpv_bin = crate::thumbs::locate_mpv().ok_or_else(|| "mpv binary not found".to_string())?;
+    if let Some(parent) = std::path::Path::new(&out_path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::remove_file(&out_path);
+
+    let mut cmd = tokio::process::Command::new(&mpv_bin);
+    cmd.arg("--no-terminal")
+        .arg("--really-quiet")
+        .arg("--no-config")
+        .arg("--load-scripts=no")
+        .arg("--cache=yes")
+        .arg("--network-timeout=60")
+        .arg(format!("--start={:.3}", start))
+        .arg(format!("--length={:.3}", dur))
+        .arg(format!("--o={}", out_path))
+        .arg("--of=mp4")
+        .arg("--ovc=libx264")
+        .arg("--ovcopts=preset=veryfast,crf=18")
+        .arg("--oac=aac")
+        .arg("--oacopts=b=192k");
+    if with_subs {
+        if let Some(ext) = &sub_external {
+            cmd.arg(format!("--sub-files={}", ext));
+        } else if let Some(id) = &sub_id {
+            cmd.arg(format!("--sid={}", id));
+        }
+        cmd.arg("--sub-visibility=yes");
+        if sub_filter_sdh {
+            cmd.arg("--sub-filter-sdh=yes");
+        }
+    } else {
+        cmd.arg("--sid=no").arg("--no-sub");
+    }
+    cmd.arg(&src);
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+
+    let status = cmd
+        .status()
+        .await
+        .map_err(|e| format!("spawn mpv encode: {}", e))?;
+    if !status.success() {
+        let _ = std::fs::remove_file(&out_path);
+        return Err(format!("clip encode failed (mpv exit {:?})", status.code()));
+    }
+    match std::fs::metadata(&out_path) {
+        Ok(m) if m.len() > 0 => Ok(ClipResult {
+            path: out_path,
+            duration: dur,
+        }),
+        _ => Err("clip output missing".into()),
+    }
+}
+
+#[tauri::command]
+pub async fn mpv_screenshot_data_url(state: State<'_, MpvState>) -> Result<String, String> {
+    use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+    let mpv = {
+        let g = state.inner.lock().await;
+        g.as_ref()
+            .map(|s| s.mpv.clone())
+            .ok_or_else(|| "mpv not started".to_string())?
+    };
+    let temp = std::env::temp_dir().join(format!("harbor-cw-{}.jpg", Uuid::new_v4()));
+    let path_str = temp.to_string_lossy().to_string();
+    let _ = mpv.set_property("screenshot-format", "jpg");
+    let _ = mpv.set_property("screenshot-jpeg-quality", "72");
+    let _ = mpv.set_property("screenshot-high-bit-depth", "no");
+    // X-Ray samples frequently. Software screenshots avoid reinitializing the
+    // live video renderer for every sample, which can retain large 4K surfaces.
+    let _ = mpv.set_property("screenshot-sw", "yes");
+    mpv_argv_command(&mpv, &["screenshot-to-file", path_str.as_str(), "video"])
+        .map_err(|e| format!("screenshot-to-file: {}", e))?;
+    let mut waited = 0u64;
+    while waited < 1500 {
+        if temp.exists() {
+            if let Ok(meta) = std::fs::metadata(&temp) {
+                if meta.len() > 0 {
+                    break;
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        waited += 40;
+    }
+    if !temp.exists() {
+        return Err("screenshot file missing".to_string());
+    }
+    let bytes = std::fs::read(&temp).map_err(|e| format!("read: {}", e))?;
+    let _ = std::fs::remove_file(&temp);
+    if bytes.is_empty() {
+        return Err("screenshot empty".to_string());
+    }
+    let encoded = B64.encode(&bytes);
+    Ok(format!("data:image/jpeg;base64,{}", encoded))
+}
+
+#[tauri::command]
+pub async fn mpv_on_pip_changed(
+    _app: AppHandle,
+    state: State<'_, MpvState>,
+    entering: bool,
+) -> Result<(), String> {
+    let mpv = {
+        let g = state.inner.lock().await;
+        g.as_ref().map(|s| s.mpv.clone())
+    };
+    if let Some(m) = mpv {
+        let _ = m.set_property("ontop", if entering { "yes" } else { "no" });
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn mpv_sub_add(
+    state: State<'_, MpvState>,
+    url: String,
+    lang: Option<String>,
+    title: Option<String>,
+    select: Option<bool>,
+) -> Result<(), String> {
+    let mpv = {
+        let g = state.inner.lock().await;
+        g.as_ref()
+            .map(|s| s.mpv.clone())
+            .ok_or_else(|| "mpv not started".to_string())?
+    };
+    let url = url.replace('\\', "/");
+    let flag = if select.unwrap_or(true) {
+        "select"
+    } else {
+        "auto"
+    };
+    let title_input = title.filter(|s| !s.is_empty()).unwrap_or_default();
+    let lang_owned = lang.filter(|s| !s.is_empty()).unwrap_or_default();
+    let title_for_mpv = if !title_input.is_empty() {
+        title_input
+    } else if !lang_owned.is_empty() {
+        lang_owned.clone()
+    } else {
+        "Subtitle".to_string()
+    };
+    let cmd_name = std::ffi::CString::new("sub-add").map_err(|e| format!("cstring: {}", e))?;
+    let url_c = std::ffi::CString::new(url.as_str()).map_err(|e| format!("cstring url: {}", e))?;
+    let flag_c = std::ffi::CString::new(flag).map_err(|e| format!("cstring flag: {}", e))?;
+    let title_c = std::ffi::CString::new(title_for_mpv.as_str())
+        .map_err(|e| format!("cstring title: {}", e))?;
+    let lang_c = if lang_owned.is_empty() {
+        None
+    } else {
+        Some(
+            std::ffi::CString::new(lang_owned.as_str())
+                .map_err(|e| format!("cstring lang: {}", e))?,
+        )
+    };
+    let mut ptrs: Vec<*const std::os::raw::c_char> = vec![
+        cmd_name.as_ptr(),
+        url_c.as_ptr(),
+        flag_c.as_ptr(),
+        title_c.as_ptr(),
+    ];
+    if let Some(ref lc) = lang_c {
+        ptrs.push(lc.as_ptr());
+    }
+    ptrs.push(std::ptr::null());
+    let rc = unsafe { libmpv2_sys::mpv_command(mpv.ctx.as_ptr(), ptrs.as_mut_ptr()) };
+    if rc < 0 {
+        return Err(format!("sub-add failed: mpv_command rc={}", rc));
+    }
+    Ok(())
+}
+
+/// Remove an external subtitle track by its mpv track id.
+///
+/// A provider subtitle can be re-fetched (for example a translating addon that only
+/// serves the finished file once it is ready). Removing the previous track first lets
+/// the refreshed subtitle replace it instead of stacking a duplicate. mpv only allows
+/// this for external subtitle files, which is exactly the case here.
+#[tauri::command]
+pub async fn mpv_sub_remove(state: State<'_, MpvState>, id: String) -> Result<(), String> {
+    let mpv = {
+        let g = state.inner.lock().await;
+        g.as_ref()
+            .map(|s| s.mpv.clone())
+            .ok_or_else(|| "mpv not started".to_string())?
+    };
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("sub-remove requires a track id".to_string());
+    }
+    mpv_argv_command(&mpv, &["sub-remove", id])
+}
+
+fn sub_cache_dir() -> PathBuf {
+    let dir = std::env::temp_dir().join("harbor-subs");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+fn subtitle_extension(
+    url: &str,
+    content_type: Option<&str>,
+    format_hint: Option<&str>,
+    bytes: &[u8],
+) -> &'static str {
+    match format_hint
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "ass" | "ssa" => return "ass",
+        "vtt" | "webvtt" => return "vtt",
+        "srt" | "subrip" => return "srt",
+        _ => {}
+    }
+    let head_len = bytes.len().min(1024);
+    let head = String::from_utf8_lossy(&bytes[..head_len]).to_ascii_lowercase();
+    if head.contains("[script info]")
+        || head.contains("[v4+ styles]")
+        || head.contains("[v4 styles]")
+    {
+        return "ass";
+    }
+    if head.trim_start_matches('\u{feff}').starts_with("webvtt") {
+        return "vtt";
+    }
+    let lower = url.to_lowercase();
+    if lower.ends_with(".vtt") || content_type.is_some_and(|c| c.contains("vtt")) {
+        return "vtt";
+    }
+    if lower.ends_with(".ass") || lower.ends_with(".ssa") {
+        return "ass";
+    }
+    "srt"
+}
+
+fn normalize_subtitle_bytes(
+    bytes: &[u8],
+    encoding_hint: Option<&str>,
+    lang: Option<&str>,
+) -> Vec<u8> {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return text.trim_start_matches('\u{feff}').as_bytes().to_vec();
+    }
+
+    let hinted =
+        encoding_hint.and_then(|label| encoding_rs::Encoding::for_label(label.trim().as_bytes()));
+    let language = lang.unwrap_or_default().trim().to_ascii_lowercase();
+    let encoding = hinted.or_else(|| {
+        if matches!(language.as_str(), "ar" | "ara" | "arabic") {
+            encoding_rs::Encoding::for_label(b"windows-1256")
+        } else {
+            encoding_rs::Encoding::for_label(b"windows-1252")
+        }
+    });
+    let Some(encoding) = encoding else {
+        return String::from_utf8_lossy(bytes).into_owned().into_bytes();
+    };
+    let (text, _, _) = encoding.decode(bytes);
+    text.trim_start_matches('\u{feff}').as_bytes().to_vec()
+}
+
+const SUBTITLE_NETWORK_LIMIT: usize = 12 * 1024 * 1024;
+const SUBTITLE_ARCHIVE_LIMIT: u64 = 32 * 1024 * 1024;
+const SUBTITLE_ENTRY_LIMIT: u64 = 4 * 1024 * 1024;
+const SUBTITLE_ARCHIVE_ENTRIES: usize = 100;
+
+fn is_zip_magic(bytes: &[u8]) -> bool {
+    bytes.len() >= 4
+        && (&bytes[..4] == b"PK\x03\x04"
+            || &bytes[..4] == b"PK\x05\x06"
+            || &bytes[..4] == b"PK\x07\x08")
+}
+
+fn extract_subtitle_from_zip(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    const SUB_EXTS: &[&str] = &["srt", "ass", "ssa", "vtt", "sub"];
+    const ARCHIVE_EXTS: &[&str] = &["zip", "rar", "7z", "gz", "tgz", "bz2", "xz", "tar"];
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+        .map_err(|_| "invalid subtitle archive".to_string())?;
+    if archive.len() > SUBTITLE_ARCHIVE_ENTRIES {
+        return Err("subtitle archive has too many entries".to_string());
+    }
+    let mut best: Option<(usize, u64, String)> = None;
+    let mut total_size = 0u64;
+    for i in 0..archive.len() {
+        let entry = archive
+            .by_index(i)
+            .map_err(|_| "invalid subtitle archive entry")?;
+        let safe_path = entry
+            .enclosed_name()
+            .ok_or_else(|| "unsafe subtitle archive path".to_string())?;
+        if safe_path.is_absolute() {
+            return Err("unsafe absolute subtitle archive path".to_string());
+        }
+        if entry.is_dir() {
+            continue;
+        }
+        total_size = total_size.saturating_add(entry.size());
+        if total_size > SUBTITLE_ARCHIVE_LIMIT {
+            return Err("subtitle archive inflated size limit exceeded".to_string());
+        }
+        let name = safe_path.to_string_lossy().to_ascii_lowercase();
+        let ext = name.rsplit('.').next().unwrap_or("");
+        if ARCHIVE_EXTS.contains(&ext) {
+            return Err("nested subtitle archive rejected".to_string());
+        }
+        if SUB_EXTS.contains(&ext) {
+            let size = entry.size();
+            if size > SUBTITLE_ENTRY_LIMIT {
+                return Err("subtitle archive entry size limit exceeded".to_string());
+            }
+            if best.as_ref().is_none_or(|(_, best_size, best_name)| {
+                size > *best_size || (size == *best_size && name < *best_name)
+            }) {
+                best = Some((i, size, name));
+            }
+        }
+    }
+    let (idx, _, _) = best.ok_or_else(|| "subtitle archive is empty".to_string())?;
+    let mut file = archive
+        .by_index(idx)
+        .map_err(|_| "invalid subtitle archive entry")?;
+    let mut out = Vec::with_capacity(file.size() as usize);
+    let mut limited = std::io::Read::take(&mut file, SUBTITLE_ENTRY_LIMIT + 1);
+    std::io::Read::read_to_end(&mut limited, &mut out)
+        .map_err(|_| "subtitle archive extraction failed".to_string())?;
+    if out.len() as u64 > SUBTITLE_ENTRY_LIMIT {
+        return Err("subtitle archive entry size limit exceeded".to_string());
+    }
+    if is_zip_magic(&out) {
+        return Err("nested subtitle archive rejected".to_string());
+    }
+    Ok(out)
+}
+
+fn prepare_subtitle_download(
+    url: &str,
+    content_type: Option<&str>,
+    format_hint: Option<&str>,
+    encoding_hint: Option<&str>,
+    lang: Option<&str>,
+    bytes: &[u8],
+) -> (&'static str, Vec<u8>) {
+    let normalized = normalize_subtitle_bytes(bytes, encoding_hint, lang);
+    let extension = subtitle_extension(url, content_type, format_hint, &normalized);
+    (extension, normalized)
+}
+
+#[cfg(test)]
+mod subtitle_download_tests {
+    use super::{
+        extract_subtitle_from_zip, normalize_subtitle_bytes, prepare_subtitle_download,
+        subtitle_extension, SUBTITLE_ARCHIVE_ENTRIES,
+    };
+    use std::io::{Cursor, Write};
+
+    fn make_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut archive = zip::ZipWriter::new(&mut cursor);
+            let options = zip::write::SimpleFileOptions::default();
+            for (name, body) in entries {
+                archive.start_file(*name, options).unwrap();
+                archive.write_all(body).unwrap();
+            }
+            archive.finish().unwrap();
+        }
+        cursor.into_inner()
+    }
+
+    #[test]
+    fn uses_explicit_ass_format_when_download_url_has_no_extension() {
+        let body = b"[Script Info]\nTitle: Styled\n[V4+ Styles]\n";
+        assert_eq!(
+            subtitle_extension(
+                "https://example.test/download?id=42",
+                Some("application/octet-stream"),
+                Some("ass"),
+                body,
+            ),
+            "ass",
+        );
+    }
+
+    #[test]
+    fn detects_ass_from_content_when_provider_omits_format() {
+        let body = b"[Script Info]\nTitle: Styled\n[V4+ Styles]\n";
+        assert_eq!(
+            subtitle_extension(
+                "https://example.test/download?id=42",
+                Some("text/plain"),
+                None,
+                body,
+            ),
+            "ass",
+        );
+    }
+
+    #[test]
+    fn converts_windows_1256_arabic_to_utf8() {
+        let windows_1256 = [
+            0xe3, 0xd1, 0xcd, 0xc8, 0xc7, 0x20, 0xc8, 0xc7, 0xe1, 0xda, 0xc7, 0xe1, 0xe3,
+        ];
+        let utf8 = normalize_subtitle_bytes(&windows_1256, Some("windows-1256"), Some("ar"));
+        assert_eq!(String::from_utf8(utf8).unwrap(), "مرحبا بالعالم");
+    }
+
+    #[test]
+    fn uses_arabic_language_as_legacy_encoding_fallback() {
+        let windows_1256 = [
+            0xe3, 0xd1, 0xcd, 0xc8, 0xc7, 0x20, 0xc8, 0xc7, 0xe1, 0xda, 0xc7, 0xe1, 0xe3,
+        ];
+        let utf8 = normalize_subtitle_bytes(&windows_1256, None, Some("ara"));
+        assert_eq!(String::from_utf8(utf8).unwrap(), "مرحبا بالعالم");
+    }
+
+    #[test]
+    fn converts_utf16_little_endian_bom_to_utf8() {
+        let utf16 = [0xff, 0xfe, b'H', 0x00, b'i', 0x00];
+        let utf8 = normalize_subtitle_bytes(&utf16, None, None);
+        assert_eq!(String::from_utf8(utf8).unwrap(), "Hi");
+    }
+
+    #[test]
+    fn detects_ass_after_utf16_normalization() {
+        let text = "[Script Info]\nTitle: Styled\n";
+        let mut utf16 = vec![0xff, 0xfe];
+        for unit in text.encode_utf16() {
+            utf16.extend_from_slice(&unit.to_le_bytes());
+        }
+        let normalized = normalize_subtitle_bytes(&utf16, None, None);
+        assert_eq!(
+            subtitle_extension("https://example.test/download", None, None, &normalized),
+            "ass",
+        );
+    }
+
+    #[test]
+    fn download_preparation_detects_utf16_ass_before_writing() {
+        let text = "[Script Info]\nTitle: Styled\n";
+        let mut utf16 = vec![0xff, 0xfe];
+        for unit in text.encode_utf16() {
+            utf16.extend_from_slice(&unit.to_le_bytes());
+        }
+        let (extension, normalized) = prepare_subtitle_download(
+            "https://example.test/download",
+            None,
+            None,
+            None,
+            None,
+            &utf16,
+        );
+        assert_eq!(extension, "ass");
+        assert_eq!(String::from_utf8(normalized).unwrap(), text);
+    }
+
+    #[test]
+    fn safe_zip_rejects_traversal_and_nested_archives() {
+        let traversal = make_zip(&[("../escape.srt", b"subtitle")]);
+        assert!(extract_subtitle_from_zip(&traversal)
+            .unwrap_err()
+            .contains("unsafe subtitle archive path"));
+
+        let nested = make_zip(&[("nested.zip", b"PK\x03\x04")]);
+        assert!(extract_subtitle_from_zip(&nested)
+            .unwrap_err()
+            .contains("nested subtitle archive"));
+
+        let disguised = make_zip(&[("nested.srt", b"PK\x03\x04")]);
+        assert!(extract_subtitle_from_zip(&disguised)
+            .unwrap_err()
+            .contains("nested subtitle archive"));
+    }
+
+    #[test]
+    fn safe_zip_caps_entries_and_requires_a_subtitle() {
+        let names: Vec<String> = (0..=SUBTITLE_ARCHIVE_ENTRIES)
+            .map(|index| format!("file-{index}.txt"))
+            .collect();
+        let entries: Vec<(&str, &[u8])> = names
+            .iter()
+            .map(|name| (name.as_str(), b"x".as_slice()))
+            .collect();
+        assert!(extract_subtitle_from_zip(&make_zip(&entries))
+            .unwrap_err()
+            .contains("too many entries"));
+
+        let empty = make_zip(&[("readme.txt", b"nothing")]);
+        assert!(extract_subtitle_from_zip(&empty)
+            .unwrap_err()
+            .contains("archive is empty"));
+    }
+
+    #[test]
+    fn safe_zip_extracts_a_supported_subtitle_deterministically() {
+        let archive = make_zip(&[("b.srt", b"large subtitle"), ("a.srt", b"large subtitle")]);
+        assert_eq!(
+            extract_subtitle_from_zip(&archive).unwrap(),
+            b"large subtitle"
+        );
+    }
+}
+
+#[tauri::command]
+pub async fn sub_download(
+    url: String,
+    format: Option<String>,
+    encoding: Option<String>,
+    lang: Option<String>,
+) -> Result<String, String> {
+    use std::io::Read;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .gzip(true)
+        .build()
+        .map_err(|e| format!("client: {}", e))?;
+    let mut res = client
+        .get(&url)
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+        )
+        .header("Accept", "*/*")
+        .send()
+        .await
+        .map_err(|e| format!("fetch: {}", e))?;
+    if !res.status().is_success() {
+        return Err(format!("status {}", res.status()));
+    }
+    if res
+        .content_length()
+        .is_some_and(|size| size > SUBTITLE_NETWORK_LIMIT as u64)
+    {
+        return Err("subtitle download size limit exceeded".to_string());
+    }
+    let ct = res
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_lowercase());
+    let mut raw = Vec::new();
+    while let Some(chunk) = res.chunk().await.map_err(|e| format!("read: {}", e))? {
+        if raw.len().saturating_add(chunk.len()) > SUBTITLE_NETWORK_LIMIT {
+            return Err("subtitle download size limit exceeded".to_string());
+        }
+        raw.extend_from_slice(&chunk);
+    }
+    let was_gzip = raw.len() >= 2 && raw[0] == 0x1f && raw[1] == 0x8b;
+    let unpacked: Vec<u8> = if was_gzip {
+        let mut decoder = flate2::read::GzDecoder::new(&raw[..]);
+        let mut decoded = Vec::with_capacity(raw.len() * 4);
+        std::io::Read::take(&mut decoder, SUBTITLE_ARCHIVE_LIMIT + 1)
+            .read_to_end(&mut decoded)
+            .map_err(|e| format!("gunzip: {}", e))?;
+        if decoded.len() as u64 > SUBTITLE_ARCHIVE_LIMIT {
+            return Err("subtitle archive inflated size limit exceeded".to_string());
+        }
+        decoded
+    } else {
+        raw.to_vec()
+    };
+    if was_gzip && is_zip_magic(&unpacked) {
+        return Err("nested subtitle archive rejected".to_string());
+    }
+    let unpacked = if is_zip_magic(&unpacked) {
+        extract_subtitle_from_zip(&unpacked)?
+    } else {
+        unpacked
+    };
+    let (ext, bytes) = prepare_subtitle_download(
+        &url,
+        ct.as_deref(),
+        format.as_deref(),
+        encoding.as_deref(),
+        lang.as_deref(),
+        &unpacked,
+    );
+    let id = Uuid::new_v4();
+    let path = sub_cache_dir().join(format!("{}.{}", id, ext));
+    std::fs::write(&path, &bytes).map_err(|e| format!("write: {}", e))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub async fn mpv_stop(app: AppHandle, state: State<'_, MpvState>) -> Result<(), String> {
+    #[cfg(windows)]
+    let _lifecycle = state.lifecycle.lock().await;
+    let mut g = state.inner.lock().await;
+    if let Some(session) = g.take() {
+        #[cfg(target_os = "macos")]
+        {
+            let (tx, rx) = std::sync::mpsc::sync_channel::<()>(1);
+            let _ = app.run_on_main_thread(move || {
+                let _ = crate::mpv_render_mac::uninstall();
+                let _ = session.mpv.command("quit", &[]);
+                drop(session);
+                let _ = tx.send(());
+            });
+            let _ = rx.recv_timeout(std::time::Duration::from_millis(4000));
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let (tx, rx) = std::sync::mpsc::sync_channel::<()>(1);
+            let _ = app.run_on_main_thread(move || {
+                let _ = crate::mpv_render_linux::uninstall();
+                let _ = session.mpv.command("quit", &[]);
+                drop(session);
+                let _ = tx.send(());
+            });
+            let _ = rx.recv_timeout(std::time::Duration::from_millis(4000));
+        }
+        #[cfg(all(not(target_os = "macos"), not(target_os = "linux"), not(windows)))]
+        {
+            let _ = session.mpv.command("quit", &[]);
+            drop(session);
+        }
+        #[cfg(windows)]
+        {
+            let was_off = !session.hdr_baseline_on;
+            let session_monitor = session.hdr_monitor;
+            let _ = session.mpv.command("quit", &[]);
+            drop(session);
+            drop(g);
+            restore_display_sdr_if_flipped(&app, was_off, session_monitor).await;
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Ok(mut guard) = MPV_POS_LAST_RECT.lock() {
+            *guard = None;
+        }
+        MPV_POS_LAST_COUNT.store(usize::MAX, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut guard) = MPV_SIZE_GUARD_STATE.lock() {
+            *guard = None;
+        }
+    }
+    let _ = app;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn mpv_release_media(app: AppHandle, state: State<'_, MpvState>) -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        let (mpv, embedded) = {
+            let g = state.inner.lock().await;
+            let Some(session) = g.as_ref() else {
+                return Ok(false);
+            };
+            (session.mpv.clone(), session.embedded)
+        };
+        if !embedded {
+            return Ok(false);
+        }
+        mpv.command("stop", &[])
+            .map_err(|e| format!("stop retained mpv media: {e}"))?;
+        set_embedded_mpv_children_visible(&app, false)?;
+        return Ok(true);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        let _ = state;
+        Ok(false)
+    }
+}
+
+#[tauri::command]
+pub async fn mpv_restore_media_surface(
+    app: AppHandle,
+    state: State<'_, MpvState>,
+) -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        let embedded = {
+            let g = state.inner.lock().await;
+            g.as_ref().is_some_and(|session| session.embedded)
+        };
+        if !embedded {
+            return Ok(false);
+        }
+        set_embedded_mpv_children_visible(&app, true)?;
+        return Ok(true);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        let _ = state;
+        Ok(false)
+    }
+}
+
+#[cfg(windows)]
+fn get_main_hwnd_str(app: &AppHandle) -> Option<String> {
+    let window = app.get_webview_window("main")?;
+    let hwnd = window.hwnd().ok()?;
+    let raw: isize = hwnd.0 as isize;
+    Some(raw.to_string())
+}
+
+#[cfg(target_os = "macos")]
+static MAC_NSVIEW_CACHE: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+
+#[cfg(target_os = "macos")]
+fn get_main_hwnd_str(app: &AppHandle) -> Option<String> {
+    if let Some(&v) = MAC_NSVIEW_CACHE.get() {
+        if v == 0 {
+            return None;
+        }
+        return Some(v.to_string());
+    }
+    use std::sync::mpsc;
+    let window = app.get_webview_window("main")?;
+    let (tx, rx) = mpsc::sync_channel::<i64>(1);
+    window
+        .with_webview(move |webview| {
+            let raw = webview.inner() as *mut std::ffi::c_void as i64;
+            let _ = tx.send(raw);
+        })
+        .ok()?;
+    let v = rx.recv_timeout(Duration::from_millis(2000)).ok()?;
+    let _ = MAC_NSVIEW_CACHE.set(v);
+    eprintln!("[harbor::mpv] mac: captured NSView wid={:#x}", v);
+    if v == 0 {
+        return None;
+    }
+    Some(v.to_string())
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
+fn get_main_hwnd_str(_app: &AppHandle) -> Option<String> {
+    None
+}
+
+#[cfg(windows)]
+const HARBOR_MPV_SUBCLASS_ID: usize = 0xA1B2C3D4;
+
+#[cfg(windows)]
+const HARBOR_MPV_SIZE_GUARD_ID: usize = 0xA1B2C3D5;
+#[cfg(windows)]
+const HARBOR_MPV_INSTALL_GUARD: u32 = 0x8000 + 0x374;
+#[cfg(windows)]
+static MPV_BLOCKED_ICONIC_RESIZES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(windows)]
+fn embedded_surface_trace(app: &AppHandle) -> Option<String> {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, IsIconic, IsWindowVisible};
+    static LAST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    let parent = app.get_webview_window("main")?.hwnd().ok()?;
+    let child = MPV_POS_LAST_RECT.lock().ok()?.as_ref().map(|r| r.0)?;
+    let child = windows::Win32::Foundation::HWND(child as *mut _);
+    let mut parent_rect = RECT::default();
+    let mut child_rect = RECT::default();
+    unsafe {
+        GetClientRect(parent, &mut parent_rect).ok()?;
+        GetClientRect(child, &mut child_rect).ok()?;
+    }
+    let line = format!(
+        "harbor: native-surface parent={}x{} child={}x{} minimized={} visible={} blocked-resizes={}",
+        parent_rect.right, parent_rect.bottom, child_rect.right, child_rect.bottom,
+        unsafe { IsIconic(parent).as_bool() }, unsafe { IsWindowVisible(parent).as_bool() },
+        MPV_BLOCKED_ICONIC_RESIZES.load(std::sync::atomic::Ordering::Relaxed),
+    );
+    let mut last = LAST.lock().ok()?;
+    if last.as_ref() == Some(&line) {
+        return None;
+    }
+    *last = Some(line.clone());
+    Some(line)
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn mpv_size_guard_proc(
+    hwnd: windows::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+    _id: usize,
+    _data: usize,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::Foundation::{LRESULT, RECT};
+    use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetClientRect, GetParent, IsIconic, WM_NCDESTROY, WM_SIZE,
+    };
+    if msg == HARBOR_MPV_INSTALL_GUARD {
+        return LRESULT(1);
+    }
+    // mpv's parent hook uses SWP_NOSENDCHANGING, bypassing
+    // WM_WINDOWPOSCHANGING. Let Windows resize the hidden HWND, but do not
+    // deliver its iconic dimensions to mpv's VO. Restore sends a usable size.
+    if msg == WM_SIZE {
+        if let Ok(parent) = GetParent(hwnd) {
+            let mut rc = RECT::default();
+            if GetClientRect(parent, &mut rc).is_ok()
+                && surface_is_hidden(IsIconic(parent).as_bool(), rc.right, rc.bottom)
+            {
+                MPV_BLOCKED_ICONIC_RESIZES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return LRESULT(0);
+            }
+        }
+    }
+    if msg == WM_NCDESTROY {
+        let _ = RemoveWindowSubclass(hwnd, Some(mpv_size_guard_proc), HARBOR_MPV_SIZE_GUARD_ID);
+    }
+    DefSubclassProc(hwnd, msg, wparam, lparam)
+}
+
+// SetWindowSubclass must run on the child window's owning (mpv) thread.
+// A thread-local call-window hook installs it while SendMessage is dispatched
+// there. The temporary hook is removed before returning; no mpv calls run in
+// either callback, which would deadlock against the video-output thread.
+#[cfg(windows)]
+static MPV_SIZE_GUARD_STATE: std::sync::Mutex<Option<(isize, bool)>> = std::sync::Mutex::new(None);
+
+/// Installs the guard at most once per video window. SendMessage crosses to
+/// mpv's video-output thread, so this must never run on every resize frame.
+#[cfg(windows)]
+fn ensure_mpv_size_guard(hwnd: windows::Win32::Foundation::HWND) {
+    let key = hwnd.0 as isize;
+    if let Ok(state) = MPV_SIZE_GUARD_STATE.lock() {
+        if state.map(|(target, _)| target) == Some(key) {
+            return;
+        }
+    }
+    let installed = install_mpv_size_guard(hwnd);
+    if let Err(error) = &installed {
+        eprintln!("[harbor::mpv] {error}");
+    }
+    if let Ok(mut state) = MPV_SIZE_GUARD_STATE.lock() {
+        *state = Some((key, installed.is_ok()));
+    }
+}
+
+#[cfg(windows)]
+fn install_mpv_size_guard(hwnd: windows::Win32::Foundation::HWND) -> Result<(), String> {
+    use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+    use windows::Win32::UI::Shell::SetWindowSubclass;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, GetWindowThreadProcessId, SendMessageW, SetWindowsHookExW,
+        UnhookWindowsHookEx, CWPSTRUCT, WH_CALLWNDPROC,
+    };
+    unsafe extern "system" fn install_hook(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
+        if code >= 0 {
+            let message = &*(l.0 as *const CWPSTRUCT);
+            if message.message == HARBOR_MPV_INSTALL_GUARD {
+                let _ = SetWindowSubclass(
+                    message.hwnd,
+                    Some(mpv_size_guard_proc),
+                    HARBOR_MPV_SIZE_GUARD_ID,
+                    0,
+                );
+            }
+        }
+        CallNextHookEx(None, code, w, l)
+    }
+    unsafe {
+        if SendMessageW(hwnd, HARBOR_MPV_INSTALL_GUARD, None, None).0 == 1 {
+            return Ok(());
+        }
+        let thread = GetWindowThreadProcessId(hwnd, None);
+        let hook = SetWindowsHookExW(WH_CALLWNDPROC, Some(install_hook), None, thread)
+            .map_err(|e| format!("mpv size guard hook: {e}"))?;
+        let installed = SendMessageW(hwnd, HARBOR_MPV_INSTALL_GUARD, None, None).0 == 1;
+        let _ = UnhookWindowsHookEx(hook);
+        if !installed {
+            return Err("mpv size guard installation failed".to_string());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn mpv_subclass_proc(
+    hwnd: windows::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+    _id: usize,
+    _data: usize,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::Foundation::LRESULT;
+    use windows::Win32::UI::Shell::DefSubclassProc;
+    use windows::Win32::UI::WindowsAndMessaging::{HTTRANSPARENT, WM_APPCOMMAND, WM_NCHITTEST};
+    if msg == WM_NCHITTEST {
+        return LRESULT(HTTRANSPARENT as isize);
+    }
+    if msg == WM_APPCOMMAND {
+        return LRESULT(1);
+    }
+    DefSubclassProc(hwnd, msg, wparam, lparam)
+}
+
+#[cfg(windows)]
+static MPV_POS_LAST_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(usize::MAX);
+
+#[cfg(windows)]
+static MPV_POS_LAST_RECT: std::sync::Mutex<Option<(isize, i32, i32, u32, u32)>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(windows)]
+static MPV_HDR_STAGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(windows)]
+fn set_embedded_mpv_children_visible(app: &AppHandle, visible: bool) -> Result<(), String> {
+    use windows::core::BOOL;
+    use windows::Win32::Foundation::{HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumChildWindows, GetClassNameW, GetWindowTextW, SetWindowPos, HWND_BOTTOM, SWP_HIDEWINDOW,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+    };
+
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window missing".to_string())?;
+    let parent_hwnd = window.hwnd().map_err(|e| format!("hwnd: {e}"))?;
+    let mut children: Vec<isize> = Vec::new();
+    let children_ptr = &mut children as *mut Vec<isize>;
+
+    unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let mut class_buf = [0u16; 256];
+        let class_len = GetClassNameW(hwnd, &mut class_buf);
+        let class_name = String::from_utf16_lossy(&class_buf[..class_len as usize]);
+        let mut title_buf = [0u16; 256];
+        let title_len = GetWindowTextW(hwnd, &mut title_buf);
+        let title = String::from_utf16_lossy(&title_buf[..title_len as usize]);
+        let is_mpv = class_name == "mpv"
+            || class_name.starts_with("mpv ")
+            || (class_name.is_empty() && title.starts_with("Harbor"));
+        if is_mpv {
+            (*(lparam.0 as *mut Vec<isize>)).push(hwnd.0 as isize);
+        }
+        BOOL(1)
+    }
+
+    unsafe {
+        let _ = EnumChildWindows(
+            Some(parent_hwnd),
+            Some(enum_proc),
+            LPARAM(children_ptr as isize),
+        );
+        let flags = if visible {
+            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
+        } else {
+            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_HIDEWINDOW
+        };
+        for child in children {
+            let _ = SetWindowPos(HWND(child as *mut _), Some(HWND_BOTTOM), 0, 0, 0, 0, flags);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn position_embedded_mpv_child(app: &AppHandle, css: MpvGeometry) -> Result<(), String> {
+    use windows::core::BOOL;
+    use windows::Win32::Foundation::{HWND, LPARAM};
+    use windows::Win32::Graphics::Gdi::{
+        RedrawWindow, RDW_ALLCHILDREN, RDW_INVALIDATE, RDW_UPDATENOW,
+    };
+    use windows::Win32::UI::Shell::{RemoveWindowSubclass, SetWindowSubclass};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumChildWindows, GetClassNameW, GetWindowLongW, GetWindowTextW, SetWindowLongW,
+        SetWindowPos, GWL_EXSTYLE, HWND_BOTTOM, HWND_TOP, SWP_HIDEWINDOW, SWP_NOACTIVATE,
+        SWP_SHOWWINDOW, WS_EX_TRANSPARENT,
+    };
+    let hdr_stage = MPV_HDR_STAGE.load(std::sync::atomic::Ordering::Relaxed)
+        && app
+            .get_webview_window(crate::hdr_overlay::HDR_OVERLAY_LABEL)
+            .is_some();
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window missing".to_string())?;
+    let parent_hwnd = window.hwnd().map_err(|e| format!("hwnd: {}", e))?;
+
+    let (x, y, w, h) = {
+        use windows::Win32::Foundation::RECT;
+        use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, IsIconic};
+        let minimized = unsafe { IsIconic(parent_hwnd).as_bool() };
+        let mut rc = RECT::default();
+        let ok = unsafe { GetClientRect(parent_hwnd, &mut rc).is_ok() };
+        let (cw, ch) = if ok { (rc.right, rc.bottom) } else { (0, 0) };
+        // Keep iconic/transient dimensions out of Harbor's positioning path.
+        // The child subclass separately guards mpv's own parent-window hook.
+        if surface_is_hidden(minimized, cw, ch) {
+            return Ok(());
+        }
+        let native = map_css_geometry(&css, cw as f64, ch as f64);
+        (
+            native.x.round() as i32,
+            native.y.round() as i32,
+            native.width.round().max(1.0) as u32,
+            native.height.round().max(1.0) as u32,
+        )
+    };
+
+    struct EnumState {
+        mpv_hwnds: Vec<isize>,
+        all_classes: Vec<(isize, String, String)>,
+    }
+    let mut state = EnumState {
+        mpv_hwnds: Vec::new(),
+        all_classes: Vec::new(),
+    };
+    let state_ptr = &mut state as *mut EnumState;
+
+    unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let mut class_buf = [0u16; 256];
+        let class_len = GetClassNameW(hwnd, &mut class_buf);
+        let class_name = String::from_utf16_lossy(&class_buf[..class_len as usize]);
+        let mut title_buf = [0u16; 256];
+        let title_len = GetWindowTextW(hwnd, &mut title_buf);
+        let title = String::from_utf16_lossy(&title_buf[..title_len as usize]);
+        let s = lparam.0 as *mut EnumState;
+        (*s).all_classes
+            .push((hwnd.0 as isize, class_name.clone(), title.clone()));
+        let is_mpv = class_name == "mpv"
+            || class_name.starts_with("mpv ")
+            || (class_name.is_empty() && title.starts_with("Harbor"));
+        if is_mpv {
+            (*s).mpv_hwnds.push(hwnd.0 as isize);
+        }
+        BOOL(1)
+    }
+
+    unsafe {
+        let _ = EnumChildWindows(
+            Some(parent_hwnd),
+            Some(enum_proc),
+            LPARAM(state_ptr as isize),
+        );
+    }
+
+    let prev_count =
+        MPV_POS_LAST_COUNT.swap(state.mpv_hwnds.len(), std::sync::atomic::Ordering::Relaxed);
+    if prev_count != state.mpv_hwnds.len() {
+        eprintln!(
+            "[harbor::mpv] enumerated {} children of main hwnd:",
+            state.all_classes.len()
+        );
+        for (h, cls, title) in &state.all_classes {
+            eprintln!("  hwnd={:#x} class={:?} title={:?}", h, cls, title);
+        }
+        eprintln!(
+            "[harbor::mpv] mpv child matches found: {} (was {})",
+            state.mpv_hwnds.len(),
+            prev_count
+        );
+        eprintln!(
+            "[harbor::mpv] requested rect x={} y={} w={} h={}",
+            x, y, w, h
+        );
+    }
+
+    let found = state.mpv_hwnds;
+    // A silent no-op here looks identical to a video that is playing but hidden, so say when
+    // there was nothing to position at all.
+    if found.is_empty() {
+        eprintln!("[harbor::mpv] no mpv child window to position");
+        return Err("Native video window is not ready".to_string());
+    }
+    if let Some(&first) = found.first() {
+        for &leftover in found.iter().skip(1) {
+            let target = HWND(leftover as *mut _);
+            unsafe {
+                let _ = SetWindowPos(
+                    target,
+                    Some(HWND_BOTTOM),
+                    -32000,
+                    -32000,
+                    1,
+                    1,
+                    SWP_NOACTIVATE | SWP_HIDEWINDOW,
+                );
+            }
+        }
+        let new_rect = (first, x, y, w, h);
+        let prev_rect = match MPV_POS_LAST_RECT.lock() {
+            Ok(mut guard) => {
+                let prev = *guard;
+                *guard = Some(new_rect);
+                prev
+            }
+            Err(_) => None,
+        };
+        let first_position = prev_rect.map(|r| r.0) != Some(first);
+        let target = HWND(first as *mut _);
+        ensure_mpv_size_guard(target);
+        let z = if hdr_stage { HWND_TOP } else { HWND_BOTTOM };
+        unsafe {
+            if first_position {
+                let cur_ex = GetWindowLongW(target, GWL_EXSTYLE);
+                let want_ex = if hdr_stage {
+                    cur_ex & !(WS_EX_TRANSPARENT.0 as i32)
+                } else {
+                    cur_ex | WS_EX_TRANSPARENT.0 as i32
+                };
+                if cur_ex != want_ex {
+                    SetWindowLongW(target, GWL_EXSTYLE, want_ex);
+                }
+                if hdr_stage {
+                    let _ = RemoveWindowSubclass(
+                        target,
+                        Some(mpv_subclass_proc),
+                        HARBOR_MPV_SUBCLASS_ID,
+                    );
+                } else {
+                    let _ = SetWindowSubclass(
+                        target,
+                        Some(mpv_subclass_proc),
+                        HARBOR_MPV_SUBCLASS_ID,
+                        0,
+                    );
+                }
+                let _ = SetWindowPos(
+                    target,
+                    Some(z),
+                    x,
+                    y,
+                    w as i32,
+                    h as i32,
+                    SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                );
+            } else {
+                // mpv can resize its child to the parent during a window resize.
+                // Reapply the requested viewport even if our last request was identical.
+                let _ = SetWindowPos(
+                    target,
+                    Some(z),
+                    x,
+                    y,
+                    w as i32,
+                    h as i32,
+                    SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                );
+            }
+            let _ = RedrawWindow(
+                Some(target),
+                None,
+                None,
+                RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN,
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod geometry_tests {
+    use super::{map_css_geometry, surface_is_hidden, MpvGeometry, NativeMpvRect};
+
+    #[test]
+    fn mpv_geometry_maps_a_zoomed_full_viewport_to_the_full_native_surface() {
+        let css = MpvGeometry {
+            css_left: 0.0,
+            css_top: 0.0,
+            css_width: 1221.428571,
+            css_height: 742.857143,
+            css_view_w: 1221.428571,
+            css_view_h: 742.857143,
+        };
+
+        assert_eq!(
+            map_css_geometry(&css, 1710.0, 1040.0),
+            NativeMpvRect {
+                x: 0.0,
+                y: 0.0,
+                width: 1710.0,
+                height: 1040.0
+            }
+        );
+    }
+
+    #[test]
+    fn mpv_geometry_scales_partial_rectangles_on_each_axis() {
+        let css = MpvGeometry {
+            css_left: 10.0,
+            css_top: 20.0,
+            css_width: 500.0,
+            css_height: 300.0,
+            css_view_w: 1000.0,
+            css_view_h: 800.0,
+        };
+
+        assert_eq!(
+            map_css_geometry(&css, 2000.0, 1200.0),
+            NativeMpvRect {
+                x: 20.0,
+                y: 30.0,
+                width: 1000.0,
+                height: 450.0
+            }
+        );
+    }
+
+    #[test]
+    fn mpv_geometry_falls_back_to_the_native_surface_for_invalid_viewports() {
+        let css = MpvGeometry {
+            css_left: 40.0,
+            css_top: 30.0,
+            css_width: 500.0,
+            css_height: 300.0,
+            css_view_w: 0.0,
+            css_view_h: f64::NAN,
+        };
+
+        assert_eq!(
+            map_css_geometry(&css, 1920.0, 1080.0),
+            NativeMpvRect {
+                x: 0.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1080.0
+            }
+        );
+    }
+
+    #[test]
+    fn minimized_and_zero_client_rects_keep_the_last_surface() {
+        // Iconic dimensions differ across Windows configurations.
+        assert!(surface_is_hidden(true, 1920, 1032));
+        assert!(surface_is_hidden(false, 144, 19));
+        assert!(surface_is_hidden(false, 0, 0));
+        assert!(!surface_is_hidden(false, 1920, 1032));
+        assert!(!surface_is_hidden(false, 960, 600));
+    }
+
+    // Requires a Windows desktop and the bundled libmpv. Exercises mpv's own
+    // parent hook, not just Harbor's geometry predicate.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "opens a native window and plays a generated test pattern"]
+    fn native_mpv_keeps_surface_through_minimize_and_restores() {
+        use windows::core::w;
+        use windows::Win32::Foundation::RECT;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, DispatchMessageW, FindWindowExW, GetClientRect,
+            PeekMessageW, ShowWindow, TranslateMessage, MSG, PM_REMOVE, SW_MINIMIZE, SW_RESTORE,
+            SW_SHOW, WS_OVERLAPPEDWINDOW,
+        };
+        fn pump(ms: u64) {
+            let until = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+            while std::time::Instant::now() < until {
+                unsafe {
+                    let mut msg = MSG::default();
+                    while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                        let _ = TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        unsafe {
+            let parent = CreateWindowExW(
+                Default::default(),
+                w!("STATIC"),
+                w!("Harbor mpv minimize regression"),
+                WS_OVERLAPPEDWINDOW,
+                100,
+                100,
+                960,
+                600,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let _ = ShowWindow(parent, SW_SHOW);
+            let mpv = libmpv2::Mpv::with_initializer(|init| {
+                init.set_property("wid", (parent.0 as isize).to_string())?;
+                init.set_property("vo", "gpu-next")?;
+                init.set_property("gpu-api", "d3d11")?;
+                init.set_property("ao", "null")?;
+                init.set_property("idle", "yes")?;
+                init.set_property("force-window", "yes")
+            })
+            .unwrap();
+            let result = (|| -> Result<(), String> {
+                mpv.command("loadfile", &["av://lavfi:testsrc=size=320x180:rate=24"])
+                    .map_err(|e| e.to_string())?;
+                pump(1500);
+                let child = FindWindowExW(Some(parent), None, w!("mpv"), None)
+                    .map_err(|e| e.to_string())?;
+                let size = || -> Result<(i32, i32), String> {
+                    let mut rc = RECT::default();
+                    GetClientRect(child, &mut rc).map_err(|e| e.to_string())?;
+                    Ok((rc.right, rc.bottom))
+                };
+                let full = size()?;
+                // Establish that the bundled mpv really takes the bypass path.
+                let _ = ShowWindow(parent, SW_MINIMIZE);
+                pump(500);
+                let unguarded = size()?;
+                if unguarded == full {
+                    return Err("control did not reproduce mpv's parent resize".into());
+                }
+                let _ = ShowWindow(parent, SW_RESTORE);
+                pump(500);
+                super::install_mpv_size_guard(child)?;
+                let restored = size()?;
+                let render_size = || -> Result<(i64, i64), String> {
+                    Ok((
+                        mpv.get_property::<i64>("osd-width")
+                            .map_err(|e| e.to_string())?,
+                        mpv.get_property::<i64>("osd-height")
+                            .map_err(|e| e.to_string())?,
+                    ))
+                };
+                let render_restored = render_size()?;
+                let before = mpv
+                    .get_property::<f64>("time-pos")
+                    .map_err(|e| e.to_string())?;
+                for _ in 0..3 {
+                    let _ = ShowWindow(parent, SW_MINIMIZE);
+                    pump(500);
+                    if render_size()? != render_restored {
+                        return Err(format!(
+                            "guarded renderer resize: {:?} != {render_restored:?}",
+                            render_size()?
+                        ));
+                    }
+                    let _ = ShowWindow(parent, SW_RESTORE);
+                    pump(500);
+                    if size()? != restored {
+                        return Err("surface did not restore".into());
+                    }
+                }
+                let after = mpv
+                    .get_property::<f64>("time-pos")
+                    .map_err(|e| e.to_string())?;
+                if after <= before + 1.0 {
+                    return Err("playback clock stopped".into());
+                }
+                println!("native mpv: unguarded={unguarded:?}, guarded={restored:?}, playback advanced {:.2}s", after - before);
+                Ok(())
+            })();
+            let _ = mpv.command("quit", &[]);
+            drop(mpv);
+            let _ = DestroyWindow(parent);
+            result.unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+mod event_backoff_tests {
+    use super::{record_event_poll_success, EventErrorBackoff, MPV_EVENT_MAX_CONSECUTIVE_ERRORS};
+    use std::time::Duration;
+
+    #[test]
+    fn http_headers_preserve_commas_and_backslashes_in_mpv_string_lists() {
+        assert_eq!(
+            super::mpv_header_field("Accept-Language", "en-US,en;q=0.9"),
+            "Accept-Language: en-US\\,en;q=0.9"
+        );
+        assert_eq!(
+            super::mpv_header_field("X-Path", r"one\two,three"),
+            r"X-Path: one\\two\,three"
+        );
+        assert_eq!(super::mpv_header_field("Accept", "*/*"), "Accept: */*");
+    }
+
+    #[test]
+    fn event_error_backoff_grows_caps_and_resets() {
+        let mut backoff = EventErrorBackoff::default();
+        assert_eq!(backoff.next_delay(), Some(Duration::from_millis(40)));
+        assert_eq!(backoff.next_delay(), Some(Duration::from_millis(80)));
+        assert_eq!(backoff.next_delay(), Some(Duration::from_millis(160)));
+        backoff.reset();
+        assert_eq!(backoff.next_delay(), Some(Duration::from_millis(40)));
+        for _ in 1..MPV_EVENT_MAX_CONSECUTIVE_ERRORS {
+            let _ = backoff.next_delay();
+        }
+        assert_eq!(backoff.next_delay(), None);
+    }
+
+    #[test]
+    fn successful_empty_poll_resets_consecutive_errors() {
+        let mut backoff = EventErrorBackoff::default();
+        assert_eq!(backoff.next_delay(), Some(Duration::from_millis(40)));
+
+        record_event_poll_success(&mut backoff);
+
+        assert_eq!(backoff.next_delay(), Some(Duration::from_millis(40)));
+    }
+}
+
+#[cfg(test)]
+mod extra_option_parser_tests {
+    use super::parse_extra_option_lines;
+
+    #[test]
+    fn blocks_disk_cache_overrides_case_insensitively() {
+        use super::is_disk_cache_option;
+        assert!(is_disk_cache_option("cache-on-disk"));
+        assert!(is_disk_cache_option("Cache-Dir"));
+        assert!(is_disk_cache_option("demuxer-cache-dir"));
+        assert!(!is_disk_cache_option("cache"));
+        assert!(!is_disk_cache_option("cache-secs"));
+    }
+
+    #[test]
+    fn parses_key_equals_value() {
+        assert_eq!(
+            parse_extra_option_lines("hwdec=auto"),
+            vec![("hwdec".to_string(), "auto".to_string())]
+        );
+    }
+
+    #[test]
+    fn parses_key_space_value() {
+        assert_eq!(
+            parse_extra_option_lines("hwdec auto"),
+            vec![("hwdec".to_string(), "auto".to_string())]
+        );
+    }
+
+    #[test]
+    fn parses_bare_key_as_yes() {
+        assert_eq!(
+            parse_extra_option_lines("keep-open"),
+            vec![("keep-open".to_string(), "yes".to_string())]
+        );
+    }
+
+    #[test]
+    fn strips_leading_double_dashes() {
+        assert_eq!(
+            parse_extra_option_lines("--hwdec=auto"),
+            vec![("hwdec".to_string(), "auto".to_string())]
+        );
+    }
+
+    #[test]
+    fn skips_blank_lines_and_comments() {
+        assert_eq!(
+            parse_extra_option_lines("\n  \n# comment\n// also comment\nhwdec=auto\n"),
+            vec![("hwdec".to_string(), "auto".to_string())]
+        );
+    }
+
+    #[test]
+    fn trims_whitespace_around_key_and_value() {
+        assert_eq!(
+            parse_extra_option_lines("  hwdec  =  auto  "),
+            vec![("hwdec".to_string(), "auto".to_string())]
+        );
+    }
+
+    #[test]
+    fn drops_empty_keys() {
+        assert_eq!(
+            parse_extra_option_lines("--=auto\n=auto\n  =  "),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn preserves_duplicates_and_order() {
+        assert_eq!(
+            parse_extra_option_lines("hwdec=auto\nvolume=50\nhwdec=no"),
+            vec![
+                ("hwdec".to_string(), "auto".to_string()),
+                ("volume".to_string(), "50".to_string()),
+                ("hwdec".to_string(), "no".to_string()),
+            ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod script_pre_init_tests {
+    use super::{join_init_only_pairs, split_extra_option_pairs};
+
+    #[test]
+    fn split_partitions_init_only_keys_and_preserves_order() {
+        let (init_only, rest) = split_extra_option_pairs(
+            "scripts=C:\\scripts\\hdr-mode.lua\nscript-opts=hdr-mode=peak=1000\nvo=gpu\nload-scripts=yes\n",
+        );
+        assert_eq!(
+            init_only,
+            vec![
+                (
+                    "scripts".to_string(),
+                    "C:\\scripts\\hdr-mode.lua".to_string()
+                ),
+                ("script-opts".to_string(), "hdr-mode=peak=1000".to_string()),
+                ("load-scripts".to_string(), "yes".to_string()),
+            ]
+        );
+        assert_eq!(rest, vec![("vo".to_string(), "gpu".to_string())]);
+    }
+
+    #[test]
+    fn split_is_case_insensitive_and_folds_load_script_into_scripts() {
+        let (init_only, rest) = split_extra_option_pairs(
+            "Scripts=a.lua\nLOAD-SCRIPT=b.lua\nload-script=c.lua\nscale=bilinear\n",
+        );
+        assert_eq!(
+            init_only,
+            vec![
+                ("scripts".to_string(), "a.lua".to_string()),
+                ("scripts".to_string(), "b.lua".to_string()),
+                ("scripts".to_string(), "c.lua".to_string()),
+            ]
+        );
+        assert_eq!(rest, vec![("scale".to_string(), "bilinear".to_string())]);
+    }
+
+    #[test]
+    fn join_scripts_uses_platform_separator_and_rejects_empty_entries() {
+        let (init_only, _) =
+            split_extra_option_pairs("scripts=a.lua\nscripts=\nload-script=b.lua\n");
+        let joined = join_init_only_pairs(&init_only);
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        assert_eq!(
+            joined,
+            vec![("scripts".to_string(), format!("a.lua{}b.lua", sep))]
+        );
+    }
+
+    #[test]
+    fn join_script_opts_uses_comma() {
+        let (init_only, _) = split_extra_option_pairs("script-opts=a=1\nscript-opts=b=2\n");
+        assert_eq!(
+            join_init_only_pairs(&init_only),
+            vec![("script-opts".to_string(), "a=1,b=2".to_string())]
+        );
+    }
+
+    #[test]
+    fn join_load_scripts_keeps_last_non_empty_value() {
+        let (init_only, _) =
+            split_extra_option_pairs("load-scripts=yes\nload-scripts=\nload-scripts=no\n");
+        assert_eq!(
+            join_init_only_pairs(&init_only),
+            vec![("load-scripts".to_string(), "no".to_string())]
+        );
+    }
+}
+
+#[cfg(test)]
+mod audio_device_fallback_tests {
+    use super::{audio_device_unavailable, AudioDevice};
+
+    fn device(name: &str) -> AudioDevice {
+        AudioDevice {
+            name: name.to_string(),
+            description: "Test output".to_string(),
+        }
+    }
+
+    #[test]
+    fn missing_explicit_output_uses_default() {
+        let available = [device("wasapi/new"), device("wasapi/other")];
+        assert!(audio_device_unavailable("wasapi/removed", &available));
+    }
+
+    #[test]
+    fn connected_explicit_output_is_preserved() {
+        let available = [device("wasapi/preferred")];
+        assert!(!audio_device_unavailable("wasapi/preferred", &available));
+    }
+
+    #[test]
+    fn default_output_is_never_overridden() {
+        let available = [device("wasapi/preferred")];
+        assert!(!audio_device_unavailable("auto", &available));
+        assert!(!audio_device_unavailable("", &available));
+    }
+
+    #[test]
+    fn enumeration_failure_does_not_clobber_a_valid_preference() {
+        assert!(!audio_device_unavailable("wasapi/preferred", &[]));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod resume_trace_tests {
+    use super::{
+        resume_event_loop_phase, resume_warning_kind, ResumeObserved, ResumePosition,
+        ResumeProgress, ResumeRecoveryAction, ResumeRecoveryDecision, ResumeStallRecovery,
+        ResumeTraceState, HDR_STATUS_OBSERVED_PROP, OBSERVED_PROPS, RESUME_DIAG_PROPS,
+        RESUME_HEALTH_INTERVAL, RESUME_POSITION_STALL, RESUME_TRACE_WINDOW,
+    };
+    use libmpv2::events::PropertyData;
+    use std::time::{Duration, Instant};
+
+    fn recovery_snapshot(now: Instant) -> ResumeObserved {
+        let mut snapshot = ResumeObserved::default();
+        snapshot.update("time-pos", &PropertyData::Double(500.0), now);
+        snapshot.update("audio-pts", &PropertyData::Double(500.0), now);
+        snapshot.update("duration", &PropertyData::Double(2000.0), now);
+        snapshot.update("speed", &PropertyData::Double(1.0), now);
+        snapshot.update("demuxer-cache-duration", &PropertyData::Double(300.0), now);
+        snapshot.update("current-ao", &PropertyData::Str("wasapi"), now);
+        snapshot.update("paused-for-cache", &PropertyData::Flag(false), now);
+        snapshot.update("seeking", &PropertyData::Flag(false), now);
+        snapshot.update("core-idle", &PropertyData::Flag(false), now);
+        snapshot
+    }
+
+    #[test]
+    fn long_pause_is_not_mistaken_for_a_stall_immediately_after_resume() {
+        let now = Instant::now();
+        let mut snapshot = recovery_snapshot(now);
+        let mut recovery = ResumeStallRecovery::default();
+        let resumed = now + Duration::from_secs(77);
+        recovery.arm(resumed, Duration::from_secs(77));
+        assert_eq!(
+            recovery.assess(&snapshot, resumed + Duration::from_secs(1), true, true),
+            None
+        );
+        assert_eq!(
+            recovery.assess(&snapshot, resumed + Duration::from_secs(3), true, true),
+            None
+        );
+        snapshot.update(
+            "time-pos",
+            &PropertyData::Double(500.5),
+            resumed + Duration::from_secs(3),
+        );
+        snapshot.update(
+            "audio-pts",
+            &PropertyData::Double(500.5),
+            resumed + Duration::from_secs(3),
+        );
+        assert_eq!(
+            recovery.assess(&snapshot, resumed + Duration::from_secs(5), true, true),
+            None
+        );
+    }
+
+    fn recovery_tick(
+        recovery: &mut ResumeStallRecovery,
+        snapshot: &mut ResumeObserved,
+        start: Instant,
+        second: u64,
+        position: f64,
+    ) -> Option<ResumeRecoveryDecision> {
+        let now = start + Duration::from_secs(second);
+        snapshot.update("time-pos", &PropertyData::Double(position), now);
+        snapshot.update("audio-pts", &PropertyData::Double(position), now);
+        recovery.assess(snapshot, now, true, true)
+    }
+
+    #[test]
+    fn trickle_progress_triggers_bounded_recovery() {
+        let now = Instant::now();
+        let mut snapshot = recovery_snapshot(now);
+        let mut recovery = ResumeStallRecovery::default();
+        recovery.arm(now, Duration::from_secs(77));
+        let mut actions = Vec::new();
+        for second in 0..=90 {
+            if let Some(decision) = recovery_tick(
+                &mut recovery,
+                &mut snapshot,
+                now,
+                second,
+                500.0 + (second / 3) as f64 * 0.1,
+            ) {
+                actions.push((second, decision));
+            }
+        }
+        assert_eq!(actions.len(), 3);
+        assert_eq!(
+            actions[0],
+            (
+                6,
+                ResumeRecoveryDecision::Attempt(ResumeRecoveryAction::AudioReload)
+            )
+        );
+        assert_eq!(
+            actions[1],
+            (
+                14,
+                ResumeRecoveryDecision::Attempt(ResumeRecoveryAction::ResyncSeek(500.4))
+            )
+        );
+        assert_eq!(actions[2], (38, ResumeRecoveryDecision::Exhausted));
+    }
+
+    #[test]
+    fn delayed_successful_reload_does_not_seek() {
+        let now = Instant::now();
+        let mut snapshot = recovery_snapshot(now);
+        let mut recovery = ResumeStallRecovery::default();
+        recovery.arm(now, Duration::from_secs(77));
+        let mut actions = Vec::new();
+        for second in 0..=40 {
+            // Reload at 6s, normal playback only resumes at 11s.
+            if let Some(decision) = recovery_tick(
+                &mut recovery,
+                &mut snapshot,
+                now,
+                second,
+                500.0 + second.saturating_sub(11) as f64,
+            ) {
+                actions.push(decision);
+            }
+        }
+        assert_eq!(
+            actions,
+            vec![
+                ResumeRecoveryDecision::Attempt(ResumeRecoveryAction::AudioReload),
+                ResumeRecoveryDecision::Recovered(1)
+            ]
+        );
+    }
+
+    #[test]
+    fn recovery_respects_playback_speed_and_speed_changes() {
+        for speed in [0.25, 0.5, 1.0, 2.0] {
+            let now = Instant::now();
+            let mut snapshot = recovery_snapshot(now);
+            let mut recovery = ResumeStallRecovery::default();
+            recovery.arm(now, Duration::from_secs(77));
+            snapshot.update("speed", &PropertyData::Double(speed), now);
+            for second in 0..=20 {
+                assert_eq!(
+                    recovery_tick(
+                        &mut recovery,
+                        &mut snapshot,
+                        now,
+                        second,
+                        500.0 + second as f64 * speed
+                    ),
+                    None
+                );
+            }
+        }
+        let now = Instant::now();
+        let mut snapshot = recovery_snapshot(now);
+        let mut recovery = ResumeStallRecovery::default();
+        recovery.arm(now, Duration::from_secs(77));
+        for second in 0..6 {
+            assert_eq!(
+                recovery_tick(&mut recovery, &mut snapshot, now, second, 500.0),
+                None
+            );
+        }
+        snapshot.update(
+            "speed",
+            &PropertyData::Double(0.5),
+            now + Duration::from_secs(6),
+        );
+        assert_eq!(
+            recovery_tick(&mut recovery, &mut snapshot, now, 6, 500.0),
+            None
+        );
+    }
+
+    #[test]
+    fn buffering_discards_stall_history_and_cancellation_discards_attempts() {
+        let now = Instant::now();
+        let mut snapshot = recovery_snapshot(now);
+        let mut recovery = ResumeStallRecovery::default();
+        recovery.arm(now, Duration::from_secs(77));
+        for second in 0..6 {
+            assert_eq!(
+                recovery_tick(&mut recovery, &mut snapshot, now, second, 500.0),
+                None
+            );
+        }
+        snapshot.update("paused-for-cache", &PropertyData::Flag(true), now);
+        assert_eq!(
+            recovery_tick(&mut recovery, &mut snapshot, now, 6, 500.0),
+            None
+        );
+        snapshot.update("paused-for-cache", &PropertyData::Flag(false), now);
+        for second in 7..13 {
+            assert_eq!(
+                recovery_tick(&mut recovery, &mut snapshot, now, second, 500.0),
+                None
+            );
+        }
+        assert_eq!(
+            recovery_tick(&mut recovery, &mut snapshot, now, 13, 500.0),
+            Some(ResumeRecoveryDecision::Attempt(
+                ResumeRecoveryAction::AudioReload
+            ))
+        );
+        // The event loop clears recovery on pause, user seek, and file changes.
+        recovery.clear();
+        for second in 14..40 {
+            assert_eq!(
+                recovery_tick(&mut recovery, &mut snapshot, now, second, 500.0),
+                None
+            );
+        }
+        recovery.mark_recovery_seek_queued();
+        assert!(recovery.consume_recovery_seek());
+        assert!(!recovery.consume_recovery_seek());
+    }
+
+    #[test]
+    fn no_recovery_for_short_pauses_buffering_seeks_or_non_wasapi() {
+        for case in 0..10 {
+            let now = Instant::now();
+            let mut snapshot = recovery_snapshot(now);
+            let mut recovery = ResumeStallRecovery::default();
+            recovery.arm(now, Duration::from_secs(if case == 0 { 3 } else { 30 }));
+            match case {
+                3 => snapshot.update("paused-for-cache", &PropertyData::Flag(true), now),
+                4 => snapshot.update("seeking", &PropertyData::Flag(true), now),
+                5 => snapshot.update("current-ao", &PropertyData::Str("other"), now),
+                6 => snapshot.update("demuxer-cache-duration", &PropertyData::Double(2.0), now),
+                7 => snapshot.update("duration", &PropertyData::Double(510.0), now),
+                8 => snapshot.update("eof-reached", &PropertyData::Flag(true), now),
+                9 => snapshot.update("core-idle", &PropertyData::Flag(true), now),
+                _ => {}
+            }
+            for second in 0..=30 {
+                assert_eq!(
+                    recovery.assess(
+                        &snapshot,
+                        now + Duration::from_secs(second),
+                        case != 1,
+                        case != 2
+                    ),
+                    None,
+                    "guard {case}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn slow_speed_playback_recovers_after_the_second_action() {
+        let now = Instant::now();
+        let mut snapshot = recovery_snapshot(now);
+        snapshot.update("speed", &PropertyData::Double(0.25), now);
+        let mut recovery = ResumeStallRecovery::default();
+        recovery.arm(now, Duration::from_secs(77));
+        let mut actions = Vec::new();
+        for second in 0..=40 {
+            if let Some(decision) = recovery_tick(
+                &mut recovery,
+                &mut snapshot,
+                now,
+                second,
+                500.0 + second.saturating_sub(16) as f64 * 0.25,
+            ) {
+                actions.push(decision);
+            }
+        }
+        assert_eq!(
+            actions,
+            vec![
+                ResumeRecoveryDecision::Attempt(ResumeRecoveryAction::AudioReload),
+                ResumeRecoveryDecision::Attempt(ResumeRecoveryAction::ResyncSeek(500.0)),
+                ResumeRecoveryDecision::Recovered(2)
+            ]
+        );
+    }
+
+    #[test]
+    fn resume_diagnostics_are_observed_without_property_reads() {
+        let now = Instant::now();
+        let mut snapshot = ResumeObserved::default();
+        assert_eq!(snapshot.value("time-pos"), "?");
+        assert_eq!(snapshot.flag("core-idle"), None);
+        snapshot.update("time-pos", &PropertyData::Double(90.25), now);
+        snapshot.update("avsync", &PropertyData::Double(0.0625), now);
+        snapshot.update("core-idle", &PropertyData::Flag(false), now);
+        snapshot.update("current-ao", &PropertyData::Str("wasapi"), now);
+        snapshot.update("hwdec-current", &PropertyData::Str("d3d11va"), now);
+        assert_eq!(snapshot.time_pos, Some(90.25));
+        assert_eq!(snapshot.value("avsync"), "0.0625");
+        assert_eq!(snapshot.flag("core-idle"), Some(false));
+        assert_eq!(snapshot.value("current-ao"), "wasapi");
+        assert_eq!(snapshot.value("hwdec-current"), "1");
+        assert_eq!(
+            snapshot.position_age_ms(now + Duration::from_millis(300)),
+            "300"
+        );
+        snapshot.update("audio-pts", &PropertyData::Double(90.23), now);
+        assert_eq!(
+            snapshot.audio_position_age_ms(now + Duration::from_millis(300)),
+            "300"
+        );
+        snapshot.update(
+            "time-pos",
+            &PropertyData::Double(90.5),
+            now + Duration::from_millis(300),
+        );
+        assert_eq!(
+            snapshot.position_age_ms(now + Duration::from_millis(400)),
+            "100"
+        );
+        snapshot.update("time-pos", &PropertyData::Flag(false), now);
+        assert_eq!(snapshot.time_pos, None);
+        snapshot.update("path", &PropertyData::Str("some-sensitive-url"), now);
+        assert_eq!(snapshot.value("path"), "?");
+        snapshot.update("unexpected-field", &PropertyData::Str("bad"), now);
+        assert_eq!(snapshot.value("unexpected-field"), "?");
+    }
+
+    #[test]
+    fn diagnostic_subscriptions_have_disjoint_ids_and_watchdog_phases() {
+        use std::collections::HashSet;
+        let ids = OBSERVED_PROPS
+            .iter()
+            .chain(RESUME_DIAG_PROPS.iter())
+            .map(|(_, id, _)| *id)
+            .chain(std::iter::once(HDR_STATUS_OBSERVED_PROP.1));
+        assert_eq!(ids.clone().count(), ids.collect::<HashSet<_>>().len());
+        assert_eq!(resume_event_loop_phase(1), "loop-start");
+        assert_eq!(resume_event_loop_phase(7), "hdr-observed-event");
+        assert_eq!(resume_event_loop_phase(4), "wait-event");
+        assert_eq!(resume_event_loop_phase(5), "handle-event");
+    }
+
+    #[test]
+    fn observed_progress_identifies_media_lag_and_clocks_stalling() {
+        let mut progress = ResumeProgress::default();
+        let mut snapshot = ResumeObserved::default();
+        let start = Instant::now();
+        snapshot.update("time-pos", &PropertyData::Double(100.0), start);
+        snapshot.update("audio-pts", &PropertyData::Double(100.0), start);
+        snapshot.update("frame-drop-count", &PropertyData::Int64(0), start);
+        snapshot.update("decoder-frame-drop-count", &PropertyData::Int64(0), start);
+        assert!(progress.sample(&snapshot, start).is_none());
+        let later = start + Duration::from_secs(5);
+        snapshot.update("time-pos", &PropertyData::Double(100.3), later);
+        snapshot.update("audio-pts", &PropertyData::Double(104.0), later);
+        snapshot.update("frame-drop-count", &PropertyData::Int64(7), later);
+        let line = progress.sample(&snapshot, later).unwrap();
+        assert!(line.contains("state=media-lagging-audio-clock"));
+        assert!(line.contains("vo_drop_delta=7"));
+        assert!(line.contains("decoder_drop_delta=0"));
+        progress.clear();
+        assert!(progress.sample(&snapshot, later).is_none());
+        let later = later + Duration::from_secs(5);
+        snapshot.update("time-pos", &PropertyData::Double(100.4), later);
+        snapshot.update("audio-pts", &PropertyData::Double(104.1), later);
+        assert!(progress
+            .sample(&snapshot, later)
+            .unwrap()
+            .contains("state=both-clocks-slow"));
+    }
+
+    #[test]
+    fn observed_progress_ignores_missing_clocks_and_seeks() {
+        let mut progress = ResumeProgress::default();
+        let mut snapshot = ResumeObserved::default();
+        let start = Instant::now();
+        snapshot.update("time-pos", &PropertyData::Double(100.0), start);
+        assert!(progress.sample(&snapshot, start).is_none());
+        snapshot.update("audio-pts", &PropertyData::Double(100.0), start);
+        assert!(progress.sample(&snapshot, start).is_none());
+        let later = start + Duration::from_secs(2);
+        snapshot.update("time-pos", &PropertyData::Double(200.0), later);
+        snapshot.update("audio-pts", &PropertyData::Double(200.0), later);
+        assert!(progress.sample(&snapshot, later).is_none());
+    }
+
+    #[test]
+    fn only_samples_after_a_real_pause_resume_transition() {
+        let mut trace = ResumeTraceState::default();
+        let now = Instant::now();
+        assert!(trace.on_pause_change(false, now).is_none());
+        assert!(trace.sample_age(now).is_none());
+        trace.on_pause_change(true, now);
+        assert_eq!(
+            trace.on_pause_change(false, now + Duration::from_secs(65)),
+            Some(Duration::from_secs(65))
+        );
+        assert_eq!(
+            trace.sample_age(now + Duration::from_secs(65)),
+            Some(Duration::ZERO)
+        );
+        assert!(trace.sample_age(now + Duration::from_secs(65)).is_none());
+        assert_eq!(
+            trace.sample_age(now + Duration::from_secs(65) + Duration::from_millis(250)),
+            Some(Duration::from_millis(250))
+        );
+    }
+
+    #[test]
+    fn re_pause_and_media_change_cancel_old_samples() {
+        let mut trace = ResumeTraceState::default();
+        let now = Instant::now();
+        trace.on_pause_change(true, now);
+        trace.on_pause_change(false, now + Duration::from_secs(1));
+        trace.on_pause_change(true, now + Duration::from_secs(2));
+        assert!(trace.sample_age(now + Duration::from_secs(3)).is_none());
+        trace.on_pause_change(false, now + Duration::from_secs(4));
+        trace.clear();
+        assert!(trace.sample_age(now + Duration::from_secs(5)).is_none());
+        assert!(trace
+            .on_pause_change(false, now + Duration::from_secs(6))
+            .is_none());
+    }
+
+    #[test]
+    fn only_marks_relevant_audio_and_stream_warnings() {
+        assert_eq!(
+            resume_warning_kind("cplayer", "Audio device underrun detected."),
+            Some("audio-underrun")
+        );
+        assert_eq!(
+            resume_warning_kind("cplayer", "Audio/Video desynchronisation detected!"),
+            Some("av-desync")
+        );
+        assert_eq!(
+            resume_warning_kind("curl", "Failure when receiving data from the peer"),
+            Some("network-retry")
+        );
+        assert_eq!(resume_warning_kind("cplayer", "Normal playback"), None);
+    }
+
+    #[test]
+    fn deep_samples_are_at_most_once_per_second_during_the_resume_window() {
+        let mut trace = ResumeTraceState::default();
+        let now = Instant::now();
+        trace.on_pause_change(true, now);
+        trace.on_pause_change(false, now + Duration::from_secs(1));
+        assert_eq!(
+            trace.sample_age(now + Duration::from_secs(1)),
+            Some(Duration::ZERO)
+        );
+        assert!(trace.detail_due(now + Duration::from_secs(1)));
+        assert_eq!(
+            trace.sample_age(now + Duration::from_millis(1250)),
+            Some(Duration::from_millis(250))
+        );
+        assert!(!trace.detail_due(now + Duration::from_millis(1250)));
+        assert_eq!(
+            trace.sample_age(now + Duration::from_secs(2)),
+            Some(Duration::from_secs(1))
+        );
+        assert!(trace.detail_due(now + Duration::from_secs(2)));
+        trace.on_pause_change(true, now + Duration::from_secs(3));
+        assert!(!trace.detail_due(now + Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn stalled_clock_needs_three_seconds_of_active_playback() {
+        let mut clock = ResumePosition::default();
+        let now = Instant::now();
+        assert_eq!(clock.observe(now, Some(500.0), true), None);
+        assert_eq!(
+            clock.observe(now + Duration::from_secs(2), Some(500.0), true),
+            None
+        );
+        assert_eq!(
+            clock.observe(now + RESUME_POSITION_STALL, Some(500.0), true),
+            Some(RESUME_POSITION_STALL)
+        );
+        // Report only once until the playback clock actually moves.
+        assert_eq!(
+            clock.observe(now + Duration::from_secs(4), Some(500.0), true),
+            None
+        );
+        assert_eq!(
+            clock.observe(now + Duration::from_secs(5), Some(501.0), true),
+            None
+        );
+        assert_eq!(
+            clock.observe(now + Duration::from_secs(8), Some(501.0), true),
+            Some(RESUME_POSITION_STALL)
+        );
+    }
+
+    #[test]
+    fn seeking_buffering_and_pause_disarm_stationary_clock() {
+        let mut clock = ResumePosition::default();
+        let now = Instant::now();
+        clock.observe(now, Some(10.0), true);
+        assert_eq!(
+            clock.observe(now + Duration::from_secs(5), Some(10.0), false),
+            None
+        );
+        assert_eq!(
+            clock.observe(now + Duration::from_secs(8), Some(10.0), true),
+            None
+        );
+        clock.clear(); // seek, playback restart, or media change
+        assert_eq!(
+            clock.observe(now + Duration::from_secs(15), Some(100.0), true),
+            None
+        );
+        assert_eq!(
+            clock.observe(now + Duration::from_secs(16), None, true),
+            None
+        );
+        assert_eq!(
+            clock.observe(now + Duration::from_secs(17), Some(101.0), true),
+            None
+        );
+    }
+
+    #[test]
+    fn passive_health_starts_after_high_rate_trace_and_is_interval_bounded() {
+        let now = Instant::now();
+        let mut trace = ResumeTraceState::default();
+        trace.on_pause_change(true, now);
+        trace.on_pause_change(false, now + Duration::from_secs(1));
+        assert!(!trace.health_due(now + Duration::from_secs(2)));
+        assert!(!trace.health_due(now + Duration::from_secs(8)));
+        assert!(trace.sample_age(now + Duration::from_secs(10)).is_none());
+        assert!(trace.health_due(now + Duration::from_secs(10)));
+        assert!(!trace.health_due(now + Duration::from_secs(11)));
+        assert!(trace.health_due(now + Duration::from_secs(10) + RESUME_HEALTH_INTERVAL));
+        trace.on_pause_change(true, now + Duration::from_secs(16));
+        assert!(!trace.health_due(now + Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn probe_expires_without_polling_indefinitely() {
+        let mut trace = ResumeTraceState::default();
+        let now = Instant::now();
+        trace.on_pause_change(true, now);
+        trace.on_pause_change(false, now + Duration::from_secs(1));
+        assert!(trace
+            .sample_age(
+                now + Duration::from_secs(1) + RESUME_TRACE_WINDOW + Duration::from_millis(1)
+            )
+            .is_none());
+        assert!(trace.active.is_none());
+    }
+}

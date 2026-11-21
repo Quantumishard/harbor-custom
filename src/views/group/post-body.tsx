@@ -1,0 +1,204 @@
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
+import { createPortal } from "react-dom";
+import { useT } from "@/lib/i18n";
+import { parseQuotedBody } from "@/lib/ratings/quote";
+import { renderBbcode } from "@/lib/social/bbcode";
+import { handleLinkOutActivation } from "@/lib/social/link-out-activation";
+import { scanMentions } from "@/lib/social/mentions";
+import { openLinkOut } from "@/lib/social/link-out";
+import { requestOpenProfile } from "@/lib/social/open-profile";
+import { useView } from "@/lib/view";
+import { useRenderedContentContext } from "@/components/context-menu/rendered-content-context";
+import { YouTubeEmbedFrame } from "@/components/youtube-embed-frame";
+import { QuotedRating } from "@/views/profile/quoted-rating";
+import {
+  HOVER_CARD_CLOSE_MS,
+  HOVER_CARD_OPEN_MS,
+  ProfileHoverCard,
+} from "@/views/profile/user-hover-card";
+
+function mentionAt(target: EventTarget | null): { el: HTMLElement; handle: string } | null {
+  const el = (target as HTMLElement | null)?.closest?.(
+    "[data-harbor-mention]",
+  ) as HTMLElement | null;
+  const handle = el?.getAttribute("data-harbor-mention");
+  return el && handle ? { el, handle } : null;
+}
+
+export function PostBody({
+  body,
+  onOpenProfile,
+}: {
+  body: string;
+  onOpenProfile?: (handle: string) => void;
+}) {
+  const { openMeta, openManga } = useView();
+  const t = useT();
+  const onContextMenu = useRenderedContentContext();
+  const [card, setCard] = useState<{ handle: string; anchor: DOMRect } | null>(null);
+  const [video, setVideo] = useState<{ id: string; target: HTMLElement } | null>(null);
+  const openTimer = useRef<number | null>(null);
+  const closeTimer = useRef<number | null>(null);
+
+  const quoted = useMemo(() => parseQuotedBody(body), [body]);
+  const html = useMemo(
+    () => renderBbcode(quoted.text, new Set(scanMentions(quoted.text).notified)),
+    [quoted.text],
+  );
+  const markup = useMemo(() => ({ __html: html }), [html]);
+
+  useEffect(() => {
+    setVideo(null);
+  }, [quoted.text]);
+
+  const clearOpen = () => {
+    if (openTimer.current) window.clearTimeout(openTimer.current);
+    openTimer.current = null;
+  };
+  const clearClose = () => {
+    if (closeTimer.current) window.clearTimeout(closeTimer.current);
+    closeTimer.current = null;
+  };
+  const scheduleClose = () => {
+    clearOpen();
+    if (closeTimer.current) return;
+    closeTimer.current = window.setTimeout(() => {
+      closeTimer.current = null;
+      setCard(null);
+    }, HOVER_CARD_CLOSE_MS);
+  };
+
+  useEffect(
+    () => () => {
+      clearOpen();
+      clearClose();
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!card) return;
+    const close = () => setCard(null);
+    window.addEventListener("scroll", close, true);
+    return () => window.removeEventListener("scroll", close, true);
+  }, [card]);
+
+  const openProfile = (handle: string) => {
+    clearOpen();
+    clearClose();
+    setCard(null);
+    if (onOpenProfile) onOpenProfile(handle);
+    else requestOpenProfile(handle);
+  };
+
+  const onClick = (e: ReactMouseEvent) => {
+    const mention = mentionAt(e.target);
+    if (mention) {
+      e.preventDefault();
+      openProfile(mention.handle);
+      return;
+    }
+    const el = e.target as HTMLElement;
+    const embedEl = el.closest?.("[data-harbor-youtube]");
+    const embedId = embedEl?.getAttribute("data-harbor-youtube");
+    const embedFrame = embedEl?.closest("[data-harbor-youtube-frame]");
+    if (embedId && embedFrame instanceof HTMLElement) {
+      e.preventDefault();
+      setVideo({ id: embedId, target: embedFrame });
+      return;
+    }
+    const cardEl = el.closest?.("[data-harbor-media]");
+    const mediaId = cardEl?.getAttribute("data-harbor-media");
+    if (mediaId) {
+      e.preventDefault();
+      const kind = cardEl?.getAttribute("data-harbor-media-kind") ?? "movie";
+      const name = cardEl?.getAttribute("data-harbor-media-title") ?? "";
+      const poster = cardEl?.getAttribute("data-harbor-media-poster") || undefined;
+      if (kind === "manga") openManga(mediaId);
+      else
+        openMeta({
+          id: mediaId,
+          type: kind === "series" || kind === "anime" ? "series" : "movie",
+          name,
+          poster,
+        });
+      return;
+    }
+    handleLinkOutActivation(e, openLinkOut);
+  };
+
+  const onKeyDown = (e: ReactKeyboardEvent) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const mention = mentionAt(e.target);
+    if (!mention) return;
+    e.preventDefault();
+    openProfile(mention.handle);
+  };
+
+  const onMouseOver = (e: ReactMouseEvent) => {
+    const mention = mentionAt(e.target);
+    if (!mention) return;
+    clearClose();
+    if (card?.handle === mention.handle) return;
+    clearOpen();
+    openTimer.current = window.setTimeout(() => {
+      openTimer.current = null;
+      setCard({ handle: mention.handle, anchor: mention.el.getBoundingClientRect() });
+    }, HOVER_CARD_OPEN_MS);
+  };
+
+  const onMouseOut = (e: ReactMouseEvent) => {
+    if (mentionAt(e.target)) scheduleClose();
+  };
+
+  return (
+    <>
+      {quoted.quote && (
+        <QuotedRating
+          quote={quoted.quote}
+          onOpenMeta={(id, kind, hint) =>
+            kind === "manga"
+              ? openManga(id)
+              : openMeta({
+                  id,
+                  type: kind === "series" || kind === "anime" ? "series" : "movie",
+                  name: hint?.name ?? "",
+                  poster: hint?.poster,
+                })
+          }
+          onOpenAuthor={onOpenProfile ?? requestOpenProfile}
+        />
+      )}
+      <div
+        className="max-w-none select-text break-words text-[14px] leading-relaxed text-ink-muted [&_a]:break-words"
+        onContextMenu={onContextMenu}
+        onClick={onClick}
+        onAuxClick={(e) => handleLinkOutActivation(e, openLinkOut)}
+        onKeyDown={onKeyDown}
+        onMouseOver={onMouseOver}
+        onMouseOut={onMouseOut}
+        dangerouslySetInnerHTML={markup}
+      />
+      {card && (
+        <ProfileHoverCard
+          handle={card.handle}
+          anchor={card.anchor}
+          onEnter={clearClose}
+          onLeave={scheduleClose}
+        />
+      )}
+      {video &&
+        createPortal(
+          <YouTubeEmbedFrame id={video.id} title={t("YouTube")} onClose={() => setVideo(null)} />,
+          video.target,
+        )}
+    </>
+  );
+}

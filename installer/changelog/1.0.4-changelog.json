@@ -1,0 +1,173 @@
+{
+  "channel": "beta",
+  "notes": {
+    "1.0.4": {
+      "title": "Harbor v1.0.4 Beta",
+      "intro": "Harbor 1.0.4 introduces Refract tracking, IMDb Content Advisory on detail pages, customizable playback controls, stream sorting, improved PDF reading, and a custom Harbor cursor. This update also improves P2P streaming, adds Spotify Soloist and signed-in YouTube Music support, and introduces optional offline anime identity mapping. Continue Watching, anime navigation, library management, subtitles, reader features, browsing performance, and desktop reliability receive major refinements across Windows, macOS, and Linux.",
+      "sections": [
+        {
+          "heading": "🎬 Playback & Player Controls",
+          "items": [
+            "Remembered Stream Priority: Playback prioritizes the previously used stream and addon instead of automatically selecting whichever addon responds first. Exact episode files are preferred, with fallback to related releases. Remembered sources are also prioritized in the source picker and Big Picture mode. This behavior is now always enabled, with no separate Remember last stream setting.",
+            "Automatic Source Continuity: When automatically playing the next episode, Harbor keeps the previous stream source when possible. Source continuity is now always enabled instead of controlled by a separate Keep same source on next episode setting.",
+            "Player Shortcuts Overlay: Press Shift + ? during playback to open a panel displaying all available player shortcuts, including customized key bindings. The panel supports keyboard, remote, and gamepad navigation without interfering with playback controls. Customize the overlay shortcut in Settings → Playback → Hotkeys → Shortcuts → Player → Panels → Show keyboard shortcuts.",
+            "New Track Shortcuts: Added configurable hotkeys for cycling audio tracks (D), decreasing subtitle size (Shift + {), and increasing subtitle size (Shift + }). Audio changes preserve language preferences, and adjustments display a player notification. Find them in Settings → Playback → Hotkeys → Shortcuts → Player → Tracks → Cycle audio tracks / Smaller subtitles / Larger subtitles.",
+            "Custom Seek & Speed Steps: Seek distances can now be customized from 0.1 to 600 seconds. Long-seek distances, playback speed increments, and a new slow-speed toggle are also configurable. Find them in Settings → Playback → Hotkeys → Behaviour → Behavior → Seek step / Long seek / Slow speed / Speed step.",
+            "Skip Progress Indicators: Intro and credits skip buttons now display progress directly inside the button, making it easier to see how much time remains in the skippable segment.",
+            "Anime4K Restrictions: The Only on anime setting now applies consistently to manually selected shaders, saved overrides, and automatic playback initialization, preventing Anime4K from being unintentionally applied to non-anime content. Find it in Settings → Playback → Shaders → Anime Shaders → Only on anime (shown when Anime4K is enabled).",
+            "Windows Audio Recovery: Improved WASAPI stall detection after long pauses by monitoring actual playback progress. Recovery now handles small clock movements more reliably and avoids false restoration warnings when an episode ends.",
+            "Player Title Display: Title artwork no longer causes the movie or series name to appear twice. Episode information and movie release years remain visible, and content advisory notifications no longer overlap the title area.",
+            "Faster Player Startup: mpv now reuses compiled GPU shader caches, avoids unnecessary rendering resets, and begins fetching cloud resume progress during player preparation. This reduces delays before playback starts without letting late progress results unexpectedly change the playing position.",
+            "Audio Track Recovery: Playback more reliably restores a preferred audio track even when the stream has missing or incomplete language metadata."
+          ]
+        },
+        {
+          "heading": "🧲 P2P Streaming & Cache",
+          "items": [
+            "Faster Torrent Playback: P2P playback starts peer discovery and initial file prefetching before the player finishes loading. Urgent pieces can be requested from multiple peers, while shorter timeouts and smarter peer selection reduce unnecessary stalls and slow starts.",
+            "Source Prewarming: Harbor can prepare a P2P source when it is selected or focused in the source picker, including when the consent prompt is disabled. Hover prewarming requires a short pause and keeps only the current source warm; abandoned torrents and their temporary files are cleaned up.",
+            "More Reliable Torrent Caching: The local engine retains useful stream cache data across restarts, favors peers that have the needed pieces, and avoids leaving a stream request hanging indefinitely when no peer sends data.",
+            "Interactive P2P Cache Indicator: The cache dot beside the player clock shows orange while a P2P file is still downloading and green when the selected file is fully cached. Hover over the dot to see Caching or Cached, or click it to show or hide detailed P2P status. Non-P2P streams retain the normal indicator."
+          ]
+        },
+        {
+          "heading": "🔎 Stream Picker, Addons & Subtitles",
+          "items": [
+            "Played Last Stream Badge: The source picker now marks the exact stream used most recently for the selected title or episode with a Played last badge and accent highlight. The marker appears in both the standard stream list and alternate picker layouts, making it easier to recognize the previous source.",
+            "Stream Sorting: Added sorting across all addon sources by Largest first, Smallest first, or Most seeders. Sorting is available in both the source picker and the in-player stream switcher, with a shared preference. Default ordering remains unchanged unless selected otherwise. Find it in the Source picker → Sort, or during playback in the Stream switcher → Filters → Sort. This is different from the result-order setting in Streaming sources.",
+            "Improved Stream Size Detection: Stream sizes now correctly handle comma decimals, thousands separators, and European number formats. Sizes explicitly reported by addons take priority over approximate sizes embedded in release names.",
+            "Stream Filter Badges: Resolution, codec, HDR, audio, and source badges now display without being clipped inside filter menus.",
+            "AIOStreams Timeouts: Increased the AIOStreams fetch budget to 60 seconds and extended the native request bridge accordingly, preventing larger responses from being prematurely aborted.",
+            "Addon Manifest Reliability: Manifest requests are now shared when multiple parts of Harbor request the same addon, reducing unnecessary network traffic. HTTP 429 rate limits are respected, and manifest URL query parameters are preserved.",
+            "Plugin Addon Compatibility: Fixed plugin addon handling that could interfere with stream retrieval.",
+            "Automatic Moonshine Language Selection: Subtitle autosync can now select the appropriate Moonshine model based on the active audio track, with a manual override when language metadata is incorrect. Missing language packs require confirmation before downloading. Windows releases include the Moonshine runtime, while Silero remains the primary synchronization matcher. Find the language override in Settings → Playback → Subtitles → Sync → Moonshine language.",
+            "ASS Subtitle Improvements: Embedded ASS subtitle sizing now reads mpv's parsed subtitle headers for faster sizing. Custom fonts remain available for styled subtitles, and Match my size continues working when header normalization fails.",
+            "Automatic Stream Redirects: Automatic and instant playback now resolve supported addon stream redirects before opening the player, including redirects from configured personal or self-hosted addon instances. Redirect requests retain public-network safety checks.",
+            "Moonshine Autosync Reliability: Improved speech matching with verified playback audio timelines, retries for failed scene captures, and better lexical alignment. Manual language overrides are respected throughout matching, and changing a model language during installation no longer leaves an outdated status on screen.",
+            "Simplified Automatic Speech Sync: Removed the experimental direct Moonshine engine selection. Playback subtitle synchronization continues to use the automatic Silero-first flow, with Moonshine available when needed.",
+            "Improved Moonshine Model Controls: Language preferences and model management now use Harbor’s dropdown controls. Language selection is disabled during active model operations, with clearer installation, removal, and error statuses.",
+            "Manual Subtitle Search: Opening a manual subtitle search now preserves the episode the user selected, instead of unexpectedly changing the subtitle target."
+          ]
+        },
+        {
+          "heading": "📺 Continue Watching & Watch Tracking",
+          "items": [
+            "Duplicate Continue Watching Cards: Improved grouping and deduplication across tracking services, seasons, and anime entries. When multiple sources report progress for the same series, Harbor now prioritizes the most relevant and recently watched episode instead of showing stale duplicates.",
+            "More Reliable Dismissals: Dismissed Continue Watching cards remain hidden across library updates and provider timestamp differences. Cards from filtered or hidden sources no longer incorrectly remove the only visible entry.",
+            "Clear Tracker Progress on Dismiss: Added an optional setting to remove saved playback positions from connected Trakt, Simkl, and PublicMetaDB accounts when dismissing a Continue Watching card. Failed requests are queued for retry without affecting watch history, ratings, or watchlists. Find it in Settings → Account → Library & metadata → Home → Continue Watching sources → Also clear provider playback progress.",
+            "Safer Progress Removal: Provider progress clearing now verifies the exact title, season, episode, account, and session before deleting anything. This prevents unrelated titles, newer playback sessions, or episodes with similar names from losing their saved positions.",
+            "PublicMetaDB Duplicate Tracking: Fixed an issue where PublicMetaDB could mark the same episode as watched multiple times during playback.",
+            "Safer Next-Episode Advancement: Finished episodes now advance only when the next episode can be verified. When lookup data is incomplete, Harbor preserves the last reliable Continue Watching state rather than displaying an incorrect episode or reviving a finished resume position.",
+            "More Accurate Resume Positions: Continue Watching reconciles shared and profile-specific progress by playback time, protects newer local checkpoints from older cloud data, and refreshes provider progress after a confirmed completion. Tracker caches are kept separate between accounts.",
+            "Accurate Airing & Caught-Up States: Upcoming-episode cards use verified air dates rather than guessed countdowns. A series with no confirmed next air date can display a neutral caught-up state instead of a misleading timer.",
+            "Correct Show & Episode Identity: Continue Watching uses verified source identities to group related anime entries and avoid mixing up seasons, movies, and tracker progress. Verified completion and ownership evidence is preserved when sources disagree or a card is refreshed.",
+            "Paused-Episode Recovery: Saved Continue Watching snapshots no longer advance or remove a partially watched episode without fresh watched-state evidence. Reopening Harbor keeps paused episodes intact until their actual progress can be verified.",
+            "Copy CW Diagnostics: Right-click the Continue Watching heading and choose Copy CW to copy a diagnostic snapshot for troubleshooting. The action is also accessible from the heading's keyboard context menu."
+          ]
+        },
+        {
+          "heading": "📚 Library, Profiles & Trackers",
+          "items": [
+            "Refract Integration: Added native support for Refract, including personal API key authentication, manual watched-history logging, automatic playback tracking, and configurable viewing thresholds. Refract operates independently of other tracking services. Find the integration and Automatic watch threshold in Settings → Account → Trackers → Refract.",
+            "Refract Watchlist Synchronization: Library watchlist additions and removals can now synchronize with Refract's Plan to Watch. Watched-history updates use a persistent queue with automatic retries, duplicate protection, and safeguards against account changes or outdated requests. Synchronization is outbound from Harbor. Find the toggle in Settings → Account → Trackers → Refract → Sync watched history and watchlist.",
+            "Refract Localization: Added translated Refract settings, synchronization statuses, and error messages across Harbor's supported languages.",
+            "Automatic Download Folder Cleanup: Removing the last downloaded file for a title now also removes its automatically created folder if it is empty. Other downloads, remaining files, manually selected folders, and the main download directory are left untouched.",
+            "Customizable Library Tabs: Added a Tabs menu to My Library, allowing unused tabs to be hidden. Choices persist across restarts, connected service tabs remain available when applicable, and the main Library tab cannot be hidden. Find it in My Library → Tabs.",
+            "Cleaner Watchlist: Fully watched movies and completed series are now hidden from the Watchlist while remaining accessible in Library. Partially watched series continue to appear until completed.",
+            "Library Actions & Safer Removal: Watchlist actions now use clearer Save to library and In library labels. Added an improved library action menu, and removing Simkl watchlist entries no longer unintentionally deletes watched history or ratings.",
+            "Tracker Button Refreshes: AniList, MyAnimeList, and Simkl library buttons now update correctly after bulk tracker changes.",
+            "Featured Rewatching Lists: AniList and MyAnimeList entries marked as being rewatched can now appear as separate selectable lists in the profile's Featured lists picker rather than being grouped into Watching.",
+            "Tracker Sync Indicators: AniList and MyAnimeList now have separate synchronization indicators for clearer status reporting.",
+            "MDBList Compatibility: Custom list URLs now support usernames containing dots and tildes, fixing valid MDBList URLs that were previously rejected.",
+            "Harbor Account Session Persistence: Improved session refresh and recovery so Harbor accounts are less likely to be unexpectedly signed out after restarting the application."
+          ]
+        },
+        {
+          "heading": "🍥 Anime, Episodes & Metadata",
+          "items": [
+            "Anime Cour Navigation: The in-player episode panel now supports browsing related anime cours and specials. The franchise picker can navigate between entries, fall back to adjacent cours, and include season-zero specials when available.",
+            "Accurate Anime Watched State: Watched badges and episode progress now use entry-specific Kitsu and IMDb identities, preventing progress from unrelated cours or seasons from appearing on the wrong episodes.",
+            "Split-Cour Anime Fixes: Improved identification and navigation for anime with separate cours, including Bleach: Thousand-Year Blood War. Continue Watching, detail pages, and stream searches now resolve the appropriate anime entry instead of incorrectly falling back to the original series.",
+            "TMDB Anime Recognition: Improved AniZip and Kitsu mapping for TMDB-based anime entries. Anime-only room restrictions, hidden-anime filters, and episode metadata now handle these entries more consistently.",
+            "TVDB Episode Ordering: Episode cards, lists, and grids now display the correct season and episode numbers for selected TVDB orderings, including DVD, Absolute, and alternate orders. Playback, navigation, and tracking continue using the original episode identities.",
+            "Episode Pagination & Navigation: Episode lists now include more useful page navigation and direct page-number input. Returning from an episode, source picker, or player preserves the selected season and pagination state. Episode previews also show clearer season and filler information.",
+            "Native Addon Anime Episodes: Anime supplied directly by metadata addons can now display their own episode and season lists even without a corresponding Kitsu identity.",
+            "Anime Metadata Refinements: Improved entry-specific IMDb episode ratings, anime title matching, franchise naming, and Trakt comment links.",
+            "Optional Offline Anime Identity Database: Added an experimental, opt-in local anime mapping database to relate entries across metadata and tracker providers. It verifies downloaded data, updates periodically, and provides controls to check for updates or delete local data. Find it in Settings → Account → Library & metadata → Home → Anime identity (experimental). The feature is off by default.",
+            "Opt-In Anime Tracker Verification: With anime identity enabled, separate options allow Harbor to repair verified Continue Watching identities and use the database to validate targets for live tracker scrobbling. These changes are opt-in to avoid altering existing tracking behavior unexpectedly.",
+            "Canonical Anime Season Mapping: Selected seasons, related cours, and native sequel entries are resolved against their correct episode lists, preventing the wrong series or season from appearing in detail pages and playback. Season selection also better preserves the current detail-page scroll position.",
+            "Improved Anime Air Dates: AniList episode schedules are used where available for detail-page dates, current-season next-airing indicators, and Continue Watching timers. Mapped specials retain their known airing dates, and tracker statuses are checked against the selected season.",
+            "My Library Anime Calendar Dates: The Library calendar now corrects eligible anime episode dates using the matching AniList schedule, including entries whose release dates differ between providers. The calendar also avoids duplicate parent-season entries when a verified sequel episode is available.",
+            "Anime Sub-Calendar Reliability: AniList monthly airing results now load additional pages for busy months, use a connected AniList session when available, and fall back to anonymous access if authentication has expired. Rate limits and request failures are reported instead of incorrectly showing that nothing is airing, and failed responses are not cached as empty months."
+          ]
+        },
+        {
+          "heading": "📖 eBook & Manga Readers",
+          "items": [
+            "Improved PDF Reading: PDF support now handles scanned and image-based documents more reliably, with bounded page rendering, document caching, bundled PDF.js resources, better error handling, and support for mixed-content volumes.",
+            "Selectable PDF Text: Text-based PDFs now provide a selectable text layer over rendered pages. Extracted text can be used for in-page searching and narration, while scanned pages continue to work as images.",
+            "PDF Book Mode: PDFs can now be read in Book mode with page-turning across the entire document, including both text-based and scanned PDFs.",
+            "Manga Upscaling: Manga chapter upscaling now prepares the opening page earlier and allows a higher GPU usage limit.",
+            "Flipbook Stability: Improved manga flipbook page handling to prevent late callbacks and disposed reader instances from causing problems during navigation.",
+            "Reader Narration Recovery: Restored Edge text-to-speech narration in the eBook reader, including voice discovery and chapter audio playback after changes to the speech service's authentication requirements.",
+            "Manga Source Navigation: Manga details now let readers choose which installed source to open and navigate to that source extension's browse page. The manga shortcut layout has also been reorganized for easier navigation.",
+            "Manga Extension & Image Reliability: Improved recovery of protected chapter images, shared image caching between reader modes, and persistence of plugin source changes. Suwayomi extensions no longer disappear unexpectedly, and the chapter image verification window is hidden by default."
+          ]
+        },
+        {
+          "heading": "🎨 Content Advisory, Appearance & Customization",
+          "items": [
+            "IMDb Content Advisory: Added a collapsible Content Advisory section to movie, series, and anime detail pages. It displays IMDb parental guide categories, severity levels, community ratings, and detailed advisory notes, with expandable categories and spoiler handling. Find it on a movie, series, or anime detail page → Content Advisory.",
+            "Advisory Customization & Reliability: The Content Advisory section supports customizable detail-page ordering, a persistent expanded-state preference, and the existing advisory theme settings. Data loads when needed, with improved IMDb matching, caching, retry handling, and protection against stale results. Find Keep expanded inside a title’s Content Advisory section. Change the advisory colors in Settings → Playback → Player layout → While you watch → Content advisory theme.",
+            "Theme Submission Screenshots: Theme uploads now allow up to six optional screenshots, with the same limit enforced in the submission form and during upload.",
+            "Harbor Mouse Cursor: Added an optional gold Harbor-themed cursor. Cursor size is adjustable from 75% to 200%, and preferences follow the active profile across supported companion windows. Find it in Settings → Appearance → Theme & appearance → Interface → Harbor cursor.",
+            "TV Card Score Badges: Improved the readability of multiple rating badges on TV cards, with a new setting to control badge scaling. Service grids also respect the configured poster size more consistently. Find the toggle in Settings → Account → Library & metadata → Cards → TV → Scores → Scale TV score badges.",
+            "Right-to-Left Layouts: Improved spacing, alignment, and icon placement for right-to-left languages such as Arabic across search fields, settings, profiles, manga views, and other interface elements.",
+            "Settings Improvements: Fixed dialog layering and dismissal behavior, corrected settings search entries, removed obsolete options, and ensured SVP frame-rate preferences are applied during startup.",
+            "ElegantFin Games Sidebar: Fixed a theme interaction that could interfere with collapsing the Games sidebar when ElegantFin is active."
+          ]
+        },
+        {
+          "heading": "⚡ Performance, Navigation & Search",
+          "items": [
+            "Smoother Home & Discover: Reduced unnecessary work during scrolling by deferring off-screen metadata requests, lazy-loading rows and artwork, and limiting concurrent updates. Poster animations, loading effects, and hover previews are managed more efficiently during active scrolling.",
+            "Faster Catalog & Anime Browsing: Improved route preloading, anime row loading, metadata caching, and episode calculations. Unnecessary artwork requests are reduced when another provider already supplies suitable images.",
+            "Improved Search: Search cancellation now propagates through requests, preventing outdated results from appearing after a new search. Addon catalog requests are shared where possible, and anime movie artwork and person-name matching are handled more accurately.",
+            "Scroll Position Restoration: Home, Discover, search, and detail pages now preserve scroll positions more reliably across navigation. Detail pages use stable section anchors to reduce unwanted jumps while content loads.",
+            "Poster Cache Retention: Frequently viewed posters now refresh their cache access timestamps, preventing actively used artwork from being incorrectly treated as unused and downloaded again after cache cleanup.",
+            "Quicker Application Startup: Harbor can reveal Home once its essential content is ready instead of waiting through a fixed splash delay. Startup tasks now have better limits and recovery when a dependency hangs."
+          ]
+        },
+        {
+          "heading": "🎵 Music & Desktop Stability",
+          "items": [
+            "Spotify Soloist Playback Engine: Added Spotify Soloist as an optional local playback engine alongside Librespot, with setup and engine-selection controls in music connections. Soloist requires a separately installed executable, a personal API key, and initial Spotify Premium pairing. Playback is coordinated with Harbor's queue to prevent unintended track advancement.",
+            "Signed-In YouTube Music: An optional YouTube Music sign-in can personalize the music catalog through its embedded webview session. The connection can restore on restart and provides account status and sign-out controls. Anonymous browsing remains available.",
+            "YouTube Music Library & Playlists: Connected listeners can browse liked songs, playlists, and artists in Harbor's music library, with playlist shelves and navigation from the music home page.",
+            "Music Videos & Queue Playback: Improved opening official music videos from tracks, playing video entries in the video player, selecting video quality, and retaining the music queue when changing playback views. Spotify Soloist queue handoffs and paused playback are also more reliable.",
+            "Faster Music Playback: Harbor starts with the preferred music source before looking for alternatives and tries anonymous YouTube audio extraction before using account credentials when needed. Reduced unnecessary Now Playing updates and audio processing overhead.",
+            "Music Stream Validation: YouTube-based music streams now reject responses without playable content before they enter the playback cache, preventing invalid stream URLs from reaching the player.",
+            "Linux X-Ray Face Detection: Fixed on-screen cast identification on Linux by handling environments where background workers cannot access WebGL. Face detection can fall back to the main thread while retaining background processing for more expensive recognition work.",
+            "X-Ray Cache Reliability: Face gallery caching now chooses an accessible application cache location across operating systems and treats unreadable caches as rebuildable rather than failing the entire gallery.",
+            "macOS Scrolling Crash: Fixed a WebKit WebContent crash that could cause Harbor to reload or appear to close while rapidly scrolling Home and other horizontal content rows on macOS.",
+            "Window Position Restoration: Improved saving and restoring window sizes, positions, maximized states, and monitor placement. Harbor now handles monitor changes and fullscreen transitions without incorrectly restoring windows off-screen.",
+            "Reliable Application Shutdown: Native playback, torrent, and other services now shut down without blocking the main window thread. This reduces the chance of Harbor remaining stuck as a hidden process after closing the app on Windows.",
+            "Open Game Folder: Added an Open game folder action to supported game context menus in the desktop app, including the game library and personal collections. Harbor uses the appropriate launcher or local file location when available.",
+            "Game Library Matching: Fixed locale-dependent game matching, including cases involving Turkish capitalization rules that could prevent installed games or executables from being recognized. Also corrected a macOS game bundling compilation issue."
+          ]
+        },
+        {
+          "heading": "🔄 Release & Maintenance",
+          "items": [
+            "Safer Browser Transfers: Browser-based file transfers now validate that file hosts belong to the expected provider for supported services, preventing incorrect cross-provider file links.",
+            "Release Packaging: Windows Shipyard installers now use an explicit -windows.exe filename suffix. macOS publishing correctly locates generated DMG files and fails when expected platform-specific installers are missing.",
+            "Build & CI Improvements: Improved CI coverage for the beta branch and multi-commit pull requests, stabilized formatting checks and regression tests, and reduced unnecessary Rust rebuilds during development.",
+            "Native Fetch Build Fixes: Fixed a Rust compilation error in the Cloudflare image-fetch response and cleaned up unused fetch and anime identity database code warnings.",
+            "Anime Data Credits: Updated Licenses and attribution to credit the maintainers and sources behind the optional offline anime identity database.",
+            "Version: Harbor 1.0.4 Beta."
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,93 @@
+import { readFileSync } from "node:fs";
+import ts from "typescript";
+
+export function hookHarness(
+  file: string,
+  exportName: string,
+  mocks: Record<string, any>,
+  globals: Record<string, any> = {},
+) {
+  const refs: any[] = [],
+    states: any[] = [],
+    memos: any[] = [],
+    effects: any[] = [];
+  let ri = 0,
+    si = 0,
+    mi = 0,
+    ei = 0;
+  let pending: any[] = [];
+  const same = (a: any[], b: any[]) =>
+    !!a && !!b && a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
+  const react = {
+    useRef(value: any) {
+      const i = ri++;
+      return (refs[i] ??= { current: value });
+    },
+    useState(value: any) {
+      const i = si++;
+      if (!(i in states)) states[i] = typeof value === "function" ? value() : value;
+      return [
+        states[i],
+        (next: any) => {
+          states[i] = typeof next === "function" ? next(states[i]) : next;
+        },
+      ];
+    },
+    useMemo(create: () => any, deps: any[]) {
+      const i = mi++;
+      if (!memos[i] || !same(memos[i].deps, deps)) memos[i] = { deps, value: create() };
+      return memos[i].value;
+    },
+    useEffect(run: () => any, deps: any[]) {
+      const i = ei++;
+      if (!effects[i] || !same(effects[i].deps, deps)) pending.push({ i, run, deps });
+    },
+    useLayoutEffect(run: () => any, deps: any[]) {
+      const i = ei++;
+      if (!effects[i] || !same(effects[i].deps, deps)) pending.push({ i, run, deps, layout: true });
+    },
+    useSyncExternalStore(_subscribe: any, snapshot: () => any) {
+      return snapshot();
+    },
+  };
+  const output = ts.transpileModule(readFileSync(file, "utf8"), {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+      jsx: ts.JsxEmit.ReactJSX,
+    },
+  }).outputText;
+  const api: any = {};
+  new Function("require", "exports", ...Object.keys(globals), output)(
+    (name: string) => {
+      if (name === "react") return react;
+      // Final ordering is exercised directly in cw-order.test.ts; hook suites
+      // only need the module to exist so they can keep asserting source gating.
+      if (name === "@/lib/cw-order") return { sortCwFinal: (items: any[]) => items };
+      if (!(name in mocks)) throw new Error(`Unexpected dependency ${name}`);
+      return mocks[name];
+    },
+    api,
+    ...Object.values(globals),
+  );
+  return {
+    render(args?: any) {
+      ri = si = mi = ei = 0;
+      pending = [];
+      const result = api[exportName](args);
+      pending.sort((a, b) => Number(!!b.layout) - Number(!!a.layout));
+      for (const { i } of pending) effects[i]?.cleanup?.();
+      for (const { i, run, deps, layout } of pending) effects[i] = { deps, cleanup: run(), layout };
+      return result;
+    },
+    unmount() {
+      for (const layout of [true, false]) {
+        for (const effect of effects) if (!!effect?.layout === layout) effect?.cleanup?.();
+      }
+    },
+  };
+}
+
+export const flushPromises = async () => {
+  for (let i = 0; i < 12; i++) await Promise.resolve();
+};

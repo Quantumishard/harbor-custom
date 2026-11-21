@@ -1,0 +1,85 @@
+import { useMemo } from "react";
+import { getEpisodeProgress, createEpisodeProgressSnapshot } from "@/lib/episode-progress";
+import { episodeSpoilerMasks, spoilerMaskFor, type SpoilerMask } from "@/lib/spoilers";
+import type { Episode } from "@/lib/providers/tmdb";
+import { airedOnly } from "../helpers";
+
+export function useEpisodeProgressMap({
+  episodes,
+  metaId,
+  traktKey,
+  traktWatched,
+  stremioWatched,
+  simklWatched,
+  pmdbWatched,
+  mwVersion,
+  settings,
+}: {
+  episodes: Episode[];
+  metaId: string;
+  traktKey: string;
+  traktWatched: Set<string>;
+  stremioWatched?: Set<string>;
+  simklWatched?: Set<string>;
+  pmdbWatched?: Set<string>;
+  mwVersion: number;
+  settings: Parameters<typeof spoilerMaskFor>[0];
+}) {
+  const progressByEp = useMemo(() => {
+    const local = createEpisodeProgressSnapshot();
+    const m = new Map<number, ReturnType<typeof getEpisodeProgress>>();
+    for (const ep of episodes) {
+      m.set(
+        ep.episodeNumber,
+        getEpisodeProgress(
+          metaId,
+          ep.seasonNumber,
+          ep.episodeNumber,
+          ep.runtime,
+          traktKey,
+          traktWatched,
+          stremioWatched,
+          undefined,
+          simklWatched,
+          undefined,
+          undefined,
+          undefined,
+          pmdbWatched,
+          undefined,
+          local,
+        ),
+      );
+    }
+    return m;
+  }, [
+    episodes,
+    metaId,
+    traktKey,
+    traktWatched,
+    stremioWatched,
+    simklWatched,
+    pmdbWatched,
+    mwVersion,
+  ]);
+
+  const nextUpEp = useMemo(() => {
+    for (const ep of episodes) {
+      if (!progressByEp.get(ep.episodeNumber)?.watched) return ep.episodeNumber;
+    }
+    return null;
+  }, [episodes, progressByEp]);
+
+  const masks = episodeSpoilerMasks(
+    settings,
+    episodes.map((ep) => ep.episodeNumber),
+    (epNumber) => progressByEp.get(epNumber)?.watched ?? false,
+  );
+  const spoilerFor = (epNumber: number): SpoilerMask =>
+    masks.get(epNumber) ?? spoilerMaskFor(settings, { watched: false, isNextUp: false });
+
+  const airedEps = airedOnly(episodes, (ep) => ep.airDate);
+  const allWatched =
+    airedEps.length > 0 && airedEps.every((ep) => progressByEp.get(ep.episodeNumber)?.watched);
+
+  return { progressByEp, nextUpEp, spoilerFor, allWatched };
+}

@@ -1,0 +1,271 @@
+import { addonBaseUrl, addonResourceUrl } from "@/lib/addon-url";
+import { addonAccepts, type Addon } from "@/lib/addons";
+import { isLocalNetworkUrl } from "@/lib/local-network";
+import { safeFetch as fetch, safeFetchLocal } from "@/lib/safe-fetch";
+import { dlog } from "@/lib/debug";
+import type { SubResult, SubSearchQuery } from "../types";
+import { isPlausibleLang, normalizeLang } from "../language";
+import { withSubtitleTimeout } from "../autoload";
+import {
+  classifyProviderSubtitleMetadata,
+  type ProviderSubtitleFlags,
+} from "../provider-classification";
+import { isLocalAddonSubtitleUrl, isSafeProviderSubtitleUrl } from "../provider-url";
+import {
+  inferSubtitleUpstreamProvider,
+  subtitleContextTitle,
+  subtitleFpsFromMetadata,
+} from "../provider-label";
+
+type RawAddonSub = ProviderSubtitleFlags & {
+  id?: string;
+  url: string;
+  lang: string;
+  m?: string;
+  SubFormat?: string;
+  fps?: number | string;
+  author?: string;
+  uploader?: string;
+  provider?: string;
+  source?: string;
+  name?: string;
+  label?: string;
+  addon?: string;
+};
+
+function transportBase(transportUrl: string): string {
+  return addonBaseUrl(transportUrl);
+}
+
+function contentId(q: SubSearchQuery): string | null {
+  const base =
+    q.stremioId?.trim() ||
+    (q.imdbId ? (q.imdbId.startsWith("tt") ? q.imdbId : `tt${q.imdbId}`) : "");
+  if (!base) return null;
+  const isEpisode = q.season != null && q.episode != null;
+  if (isEpisode && !/:\d+:\d+$/.test(base)) {
+    return `${base}:${q.season}:${q.episode}`;
+  }
+  return base;
+}
+
+const PREFIX_PRIORITY = ["kitsu", "mal", "anidb", "anilist", "tt", "tmdb"];
+
+function idPriority(id: string): number {
+  for (let i = 0; i < PREFIX_PRIORITY.length; i++) {
+    if (id.startsWith(PREFIX_PRIORITY[i])) return i;
+  }
+  return 999;
+}
+
+function declaresSubtitles(addon: Addon): boolean {
+  const resources = addon.manifest?.resources ?? [];
+  return resources.some((r) =>
+    typeof r === "string" ? r === "subtitles" : r.name === "subtitles",
+  );
+}
+
+function pickAddonId(
+  addon: Addon,
+  type: string,
+  q: SubSearchQuery,
+  fallback: string | null,
+): string | null {
+  const candidates = [...(q.candidateIds ?? [])].sort((a, b) => idPriority(a) - idPriority(b));
+  for (const id of candidates) {
+    if (addonAccepts(addon, "subtitles", type, id)) return id;
+  }
+  if (fallback && addonAccepts(addon, "subtitles", type, fallback)) return fallback;
+  if (!declaresSubtitles(addon)) return null;
+  const best = candidates.find((id) => id.startsWith("tt")) ?? fallback ?? candidates[0] ?? null;
+  if (best) {
+    dlog(
+      `[addons] ${addon.manifest.name} manifest does not advertise ${type}/${best}, asking anyway`,
+    );
+  }
+  return best;
+}
+
+function extraSegment(q: SubSearchQuery): string {
+  const parts: string[] = [];
+  if (q.videoHash) parts.push(`videoHash=${encodeURIComponent(q.videoHash)}`);
+  if (q.videoSize != null) parts.push(`videoSize=${q.videoSize}`);
+  if (q.filename) parts.push(`filename=${encodeURIComponent(q.filename)}`);
+  return parts.length > 0 ? `/${parts.join("&")}` : "";
+}
+
+async function fetchAddonSubtitles(
+  url: string,
+  addonName: string,
+  doFetch: typeof fetch = fetch,
+): Promise<RawAddonSub[]> {
+  dlog(`[addons] Fetching subtitles from ${addonName}`);
+  const res = await doFetch(url, { headers: { Accept: "application/json" } });
+  if (!res.ok) {
+    dlog(`[addons] ${addonName} returned ${res.status}`);
+    return [];
+  }
+  const data = (await res.json()) as { subtitles?: RawAddonSub[] };
+  const subtitles = Array.isArray(data?.subtitles) ? data.subtitles : [];
+  dlog(`[addons] ${addonName} returned ${subtitles.length} subtitles`);
+  return subtitles;
+}
+
+async function callOne(
+  addon: Addon,
+  type: string,
+  id: string,
+  extra: string,
+  timeoutMs: number,
+): Promise<RawAddonSub[]> {
+  const base = transportBase(addon.transportUrl);
+  const url = addonResourceUrl(base, `subtitles/${type}/${id}${extra}.json`);
+  // A self-hosted addon lives on loopback, which the guarded bridge fetch
+  // rejects outright ("blocked internal target"). Only a URL the user installed
+  // themselves opts into local networking, so public addons keep the
+  // DNS-rebinding guard.
+  const doFetch = isLocalNetworkUrl(base) ? safeFetchLocal : fetch;
+  const startedAt = Date.now();
+  try {
+    if (!extra) {
+      return await fetchAddonSubtitles(url, addon.manifest.name, doFetch);
+    }
+
+    const enrichedBudget = Math.min(4_000, Math.max(1_500, Math.floor(timeoutMs / 3)));
+    const enriched = await withSubtitleTimeout(
+      fetchAddonSubtitles(url, addon.manifest.name, doFetch),
+      enrichedBudget,
+      [],
+    );
+    if (enriched.length > 0) return enriched;
+
+    const elapsed = Date.now() - startedAt;
+    const remaining = Math.max(1_000, timeoutMs - elapsed);
+    const bareUrl = addonResourceUrl(base, `subtitles/${type}/${id}.json`);
+    dlog(`[addons] ${addon.manifest.name} retrying without stream hints`);
+    return await withSubtitleTimeout(
+      fetchAddonSubtitles(bareUrl, addon.manifest.name, doFetch),
+      remaining,
+      [],
+    );
+  } catch {
+    dlog(`[addons] ${addon.manifest.name} request failed`);
+    return [];
+  }
+}
+
+export async function searchAddons(
+  addons: Addon[],
+  q: SubSearchQuery,
+  timeoutMs: number,
+): Promise<SubResult[]> {
+  dlog(`[addons] searchAddons called with ${addons.length} addons`);
+
+  const fallbackId = contentId(q);
+  if (!fallbackId && (q.candidateIds ?? []).length === 0) {
+    dlog("[addons] No content ID, returning empty");
+    return [];
+  }
+
+  const type = q.episode != null ? "series" : (q.type ?? "movie");
+  dlog(
+    `[addons] Candidate IDs: ${(q.candidateIds ?? []).join(", ") || "(none)"}, fallback: ${fallbackId}, Type: ${type}`,
+  );
+
+  const targets = addons
+    .map((addon) => ({ addon, id: pickAddonId(addon, type, q, fallbackId) }))
+    .filter((t): t is { addon: Addon; id: string } => {
+      if (t.id == null) {
+        dlog(`[addons] ${t.addon.manifest.name} does NOT accept any id for ${type}`);
+      }
+      return t.id != null;
+    });
+  dlog(`[addons] === Filtered subtitle addons: ${targets.length} of ${addons.length} ===`);
+  if (targets.length > 0) {
+    dlog(
+      `[addons] Accepting addons: ${targets.map((t) => `${t.addon.manifest.name}→${t.id}`).join(", ")}`,
+    );
+  }
+  if (targets.length === 0) {
+    dlog("[addons] No subtitle addons accept this content");
+    return [];
+  }
+
+  const extra = extraSegment(q);
+  const settled = await Promise.all(
+    targets.map(async ({ addon, id }) => {
+      // Broad manifests often accept Kitsu even though the server only indexes
+      // IMDb. An empty first response must not hide the mapped episode fallback.
+      const alternatives = [...new Set([id, ...(q.candidateIds ?? [])])]
+        .filter(
+          (candidate) => candidate === id || addonAccepts(addon, "subtitles", type, candidate),
+        )
+        .sort(
+          (a, b) =>
+            (a === id ? -1 : a.startsWith("tt") ? 0 : 1) -
+            (b === id ? -1 : b.startsWith("tt") ? 0 : 1),
+        )
+        .slice(0, 3);
+      const deadline = Date.now() + timeoutMs;
+      const result = await withSubtitleTimeout(
+        (async () => {
+          for (const candidate of alternatives) {
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) break;
+            const subtitles = await callOne(addon, type, candidate, extra, remaining);
+            if (subtitles.length > 0) return subtitles;
+          }
+          return [];
+        })(),
+        timeoutMs,
+        [],
+      );
+      dlog(`[addons] ${addon.manifest.name}: ${result.length} subtitles`);
+      return result;
+    }),
+  );
+
+  const out: SubResult[] = [];
+  const displayTitle = subtitleContextTitle(q);
+  settled.forEach((subs, i) => {
+    const addonName = targets[i].addon.manifest.name;
+    const addonBase = transportBase(targets[i].addon.transportUrl);
+    for (let idx = 0; idx < subs.length; idx++) {
+      const s = subs[idx];
+      if (!s.url || !isPlausibleLang(s.lang)) continue;
+      const localTrusted = isLocalAddonSubtitleUrl(s.url, addonBase);
+      if (!localTrusted && !isSafeProviderSubtitleUrl(s.url)) continue;
+      // Include addon name and index to ensure unique IDs across different addons
+      const uniqueId = s.id
+        ? `${addonName.toLowerCase().replace(/[^a-z0-9]/g, "-")}-${s.id}`
+        : `${addonName.toLowerCase().replace(/[^a-z0-9]/g, "-")}-${idx}`;
+      const classification = classifyProviderSubtitleMetadata(s, [s.m, s.name, s.id, s.url]);
+      out.push({
+        id: uniqueId,
+        url: s.url,
+        lang: normalizeLang(s.lang),
+        title: addonName,
+        displayTitle,
+        label: s.label?.trim() || undefined,
+        source: "addon",
+        format: (s.SubFormat?.toLowerCase() as SubResult["format"]) || undefined,
+        release: s.m || undefined,
+        fps: subtitleFpsFromMetadata(s.fps, s.m),
+        author: s.author?.trim() || s.uploader?.trim() || undefined,
+        ...classification,
+        ...(localTrusted ? { localTrusted: true } : {}),
+        upstreamProvider: inferSubtitleUpstreamProvider(
+          s.provider,
+          s.source,
+          s.name,
+          s.addon,
+          s.id,
+          s.url,
+        ),
+      });
+    }
+  });
+
+  dlog(`[addons] Total addon results: ${out.length}`);
+  return out;
+}

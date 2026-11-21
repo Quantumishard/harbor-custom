@@ -1,0 +1,192 @@
+import type { PlayEpisode } from "@/lib/view";
+import { splitAnimeStreamCoordinates } from "./anime-identity-core";
+
+const ANIME_SCHEME_RX = /^(kitsu|mal|anilist|anidb):/;
+
+export function hasAnimeStreamIds(ids: readonly string[]): boolean {
+  return ids.some((id) => ANIME_SCHEME_RX.test(id));
+}
+
+export function preferredAnimeImdbStreamId(
+  metaId: string,
+  episode: PlayEpisode | undefined,
+  imdbId: string | null,
+  imdbIdVerified: boolean,
+  streamIds: readonly string[],
+): string | undefined {
+  if (!hasAnimeStreamIds(streamIds)) return undefined;
+  const verifiedId = /^tt\d+$/.test(metaId) ? metaId : imdbIdVerified ? imdbId : null;
+  const id = episode ? (episode.imdbId ?? verifiedId) : verifiedId;
+  if (!id || !/^tt\d+$/.test(id)) return undefined;
+  let candidate = id;
+  if (episode) {
+    const { imdbSeason, imdbEpisode } = episode;
+    if (
+      typeof imdbSeason !== "number" ||
+      !Number.isInteger(imdbSeason) ||
+      imdbSeason < 0 ||
+      typeof imdbEpisode !== "number" ||
+      !Number.isInteger(imdbEpisode) ||
+      imdbEpisode < 1
+    )
+      return undefined;
+    candidate = `${id}:${imdbSeason}:${imdbEpisode}`;
+  }
+  // Only prefer identities already emitted by the episode-aware candidate builder.
+  return streamIds.includes(candidate) ? candidate : undefined;
+}
+
+export function unverifiedAnimeSeasonId(
+  metaId: string,
+  episode: PlayEpisode | null | undefined,
+): string | null {
+  if (!episode || episode.kitsuStreamId != null) return null;
+  if (!ANIME_SCHEME_RX.test(metaId)) return null;
+  if (typeof episode.imdbSeason !== "number" || episode.imdbSeason < 2) return null;
+  const [scheme, entry] = metaId.split(":");
+  return `${scheme}:${entry}:${episode.episode}`;
+}
+
+/** A catalog's originating addon must receive episode coordinates, not the series ID. */
+export function catalogEpisodeStreamId(
+  metaId: string,
+  episode: Pick<PlayEpisode, "season" | "episode" | "videoId"> | undefined,
+  streamIds: readonly string[],
+): string {
+  if (!episode) return metaId;
+  // Native addon metadata may give a nonstandard per-video identifier.
+  if (episode.videoId && streamIds.includes(episode.videoId)) return episode.videoId;
+  const scoped = `${metaId}:${episode.season}:${episode.episode}`;
+  return streamIds.find((id) => id === scoped) ?? scoped;
+}
+
+export function buildStreamIds(
+  metaId: string,
+  episode: PlayEpisode | undefined,
+  imdbId: string | null,
+  defaultVideoId?: string | null,
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (s: string | undefined | null) => {
+    if (!s || seen.has(s)) return;
+    seen.add(s);
+    out.push(s);
+  };
+
+  if (episode?.videoId) push(episode.videoId);
+  if (!episode && defaultVideoId) push(defaultVideoId);
+
+  const animeMeta = /^(kitsu|mal|anilist|anidb):/.test(metaId) || episode?.kitsuStreamId != null;
+  const mappedImdb =
+    episode?.imdbSeason != null && episode?.imdbEpisode != null ? (episode.imdbId ?? imdbId) : null;
+  const imdbEpAligned = !animeMeta || episode?.episode === episode?.imdbEpisode;
+  const courOffset =
+    animeMeta &&
+    episode?.imdbEpisode != null &&
+    episode?.episode != null &&
+    episode.episode < episode.imdbEpisode;
+  if (!animeMeta && mappedImdb && mappedImdb.startsWith("tt") && imdbEpAligned) {
+    push(`${mappedImdb}:${episode!.imdbSeason}:${episode!.imdbEpisode}`);
+  }
+
+  const unverifiedAnimeId = unverifiedAnimeSeasonId(metaId, episode);
+
+  if (episode?.kitsuStreamId) {
+    push(episode.kitsuStreamId);
+  } else if (/^(kitsu|mal|anilist|anidb):/.test(metaId) && episode) {
+    if (episode.imdbSeason !== 0 && unverifiedAnimeId == null) {
+      push(`${metaId.split(":")[0]}:${metaId.split(":")[1]}:${episode.episode}`);
+    }
+  } else if ((metaId.startsWith("kitsu:") || metaId.startsWith("mal:")) && !episode) {
+    push(metaId);
+  } else if (metaId.startsWith("tt") && episode) {
+    if (!animeMeta) push(`${metaId}:${episode.season}:${episode.episode}`);
+  } else if (metaId.startsWith("tt") && !episode) {
+    push(metaId);
+  } else if (metaId.startsWith("tmdb:")) {
+    // Some stream addons (and AIOMetadata) use the bare `tmdb:{id}` scheme
+    // without the movie/tv segment. Emit it first so addons that match the bare
+    // prefix (they also match the scoped form) are queried with it; they index
+    // by the bare id and return nothing for the scoped form.
+    const bareBase = metaId.replace(/^tmdb:(movie|tv):/, "tmdb:");
+    if (episode) {
+      if (!animeMeta) {
+        if (bareBase !== metaId) push(`${bareBase}:${episode.season}:${episode.episode}`);
+        push(`${metaId}:${episode.season}:${episode.episode}`);
+      }
+    } else {
+      if (bareBase !== metaId) push(bareBase);
+      push(metaId);
+    }
+  } else {
+    if (episode) push(`${metaId}:${episode.season}:${episode.episode}`);
+    else push(metaId);
+  }
+
+  if (imdbId && imdbId.startsWith("tt")) {
+    if (!episode) push(imdbId);
+    else if (!animeMeta) push(`${imdbId}:${episode.season}:${episode.episode}`);
+  }
+
+  if (mappedImdb && mappedImdb.startsWith("tt") && !imdbEpAligned && courOffset) {
+    push(`${mappedImdb}:${episode!.imdbSeason}:${episode!.imdbEpisode}`);
+  }
+
+  const isSpecialWithImdb = animeMeta && episode?.imdbSeason === 0 && episode?.imdbEpisode != null;
+  if (isSpecialWithImdb && mappedImdb && mappedImdb.startsWith("tt")) {
+    push(`${mappedImdb}:0:${episode!.imdbEpisode}`);
+  }
+
+  const synthSeason =
+    animeMeta &&
+    episode?.kitsuStreamId == null &&
+    episode?.imdbSeason != null &&
+    episode.imdbSeason >= 2 &&
+    episode.season === episode.imdbSeason;
+  if (synthSeason && mappedImdb && mappedImdb.startsWith("tt")) {
+    push(`${mappedImdb}:${episode!.imdbSeason}:${episode!.imdbEpisode}`);
+  }
+
+  // Split-franchise children (e.g. Bleach TYBW) have entry-relative numbering
+  // that runs ahead of the provider's within-cour numbering and a kitsu season
+  // (1) that differs from the provider season — neither courOffset nor
+  // synthSeason catches them, so emit the provider pair explicitly.
+  if (
+    animeMeta &&
+    episode != null &&
+    episode.kitsuStreamId == null &&
+    mappedImdb != null &&
+    mappedImdb.startsWith("tt") &&
+    episode.imdbSeason != null &&
+    episode.imdbSeason >= 1 &&
+    episode.imdbEpisode != null &&
+    episode.imdbEpisode >= 1 &&
+    (episode.season !== episode.imdbSeason || episode.episode !== episode.imdbEpisode)
+  ) {
+    push(`${mappedImdb}:${episode.imdbSeason}:${episode.imdbEpisode}`);
+  }
+
+  if (
+    animeMeta &&
+    episode != null &&
+    mappedImdb != null &&
+    mappedImdb.startsWith("tt") &&
+    episode.imdbSeason != null &&
+    episode.imdbSeason >= 1 &&
+    episode.imdbEpisode != null &&
+    episode.imdbEpisode >= 1
+  ) {
+    push(`${mappedImdb}:${episode.imdbSeason}:${episode.imdbEpisode}`);
+  }
+
+  if (unverifiedAnimeId) push(unverifiedAnimeId);
+
+  // A split-franchise child (e.g. TYBW) shares its provider id with the base
+  // show. That provider's season/episode numbering belongs to the base entry,
+  // not this cour, so keep it as an alias only and never query it.
+  if (splitAnimeStreamCoordinates(episode?.kitsuStreamId)) {
+    return out.filter((id) => !id.startsWith("tt") && !id.startsWith("tmdb:"));
+  }
+  return out;
+}

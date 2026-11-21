@@ -1,0 +1,255 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  continueActualPlayback,
+  continuationFor,
+  continuationStream,
+  continuationAppliesToSource,
+  type ContinuationServices,
+} from "../src/lib/player/continue-playback";
+import type { ActualPlayback } from "../src/lib/playback-history";
+
+function fixture(): ActualPlayback {
+  return {
+    id: "actual-a",
+    actor: { profileId: "one", storageProfileId: "one", accountId: "account" },
+    playedAt: 1,
+    positionMs: 45000,
+    durationMs: 600000,
+    completed: false,
+    src: { meta: { id: "local:a", type: "movie", name: "A" }, title: "A", url: "C:/fixture/a.mp4" },
+  };
+}
+function services(target: ActualPlayback) {
+  const calls: unknown[] = [];
+  const api: ContinuationServices = {
+    isCurrent: () => true,
+    latest: () => target,
+    active: () => null,
+    localFileExists: async () => true,
+    openPlayer: (src) => calls.push(["play", src]),
+    openPicker: (...args) => calls.push(["pick", ...args]),
+    prepareServer: async (src) => src,
+  };
+  return { calls, api };
+}
+test("continues captured A's exact file and position; opening menus on B is irrelevant", async () => {
+  const target = fixture();
+  const { api, calls } = services(target);
+  assert.equal(await continueActualPlayback(target, {}, api), "player-opened");
+  const [, src] = calls[0] as [string, { url: string; startPositionMs: number }];
+  assert.equal(src.url, target.src.url);
+  assert.equal(src.startPositionMs, 45000);
+});
+test("active target returns through its operation without opening another session", async () => {
+  const target = fixture();
+  const { api, calls } = services(target);
+  api.active = () => ({
+    src: target.src,
+    resume: async () => {
+      calls.push("returned");
+    },
+  });
+  assert.equal(await continueActualPlayback(target, {}, api), "returned");
+  assert.deepEqual(calls, ["returned"]);
+});
+test("completed targets require explicit restart and keep the same item", async () => {
+  const target = { ...fixture(), completed: true };
+  const { api, calls } = services(target);
+  await assert.rejects(continueActualPlayback(target, {}, api), /finished/);
+  assert.equal(calls.length, 0);
+  await continueActualPlayback(target, { restart: true }, api);
+  assert.equal(
+    (calls[0] as [string, { startFromZero: boolean; startPositionMs: number }])[1].startPositionMs,
+    0,
+  );
+});
+
+test("completed active target requires confirmation then restarts through that same player", async () => {
+  const target = { ...fixture(), completed: true };
+  const { api, calls } = services(target);
+  api.active = () => ({
+    src: target.src,
+    resume: async (options) => {
+      calls.push(options);
+    },
+  });
+  await assert.rejects(continueActualPlayback(target, {}, api), /finished/);
+  assert.deepEqual(calls, []);
+  assert.equal(await continueActualPlayback(target, { restart: true }, api), "returned");
+  assert.deepEqual(calls, [{ restart: true }]);
+});
+test("missing unrecognized file fails; recognized source recovery preserves episode and does not autoplay", async () => {
+  const target = fixture();
+  const { api, calls } = services(target);
+  api.localFileExists = async () => false;
+  await assert.rejects(continueActualPlayback(target, {}, api), /missing/);
+  target.src.meta = { id: "ttfixture", name: "A", type: "series" };
+  target.src.episode = { season: 3, episode: 4 };
+  assert.equal(await continueActualPlayback(target, {}, api), "picker-opened");
+  const call = calls[0] as [
+    string,
+    unknown,
+    unknown,
+    { autoPlay: boolean; continuation: { positionMs: number } },
+  ];
+  assert.deepEqual(call[2], { season: 3, episode: 4 });
+  assert.equal(call[3].autoPlay, false);
+  assert.equal(call[3].continuation.positionMs, 45000);
+});
+test("late local check cannot launch after actor or actual last target changes", async () => {
+  const target = fixture();
+  const { api, calls } = services(target);
+  api.localFileExists = async () => {
+    api.isCurrent = () => false;
+    return true;
+  };
+  await assert.rejects(continueActualPlayback(target, {}, api), /profile/);
+  assert.equal(calls.length, 0);
+});
+
+test("continuation remembers the selected torrent file without accepting a different known file", () => {
+  const target = fixture();
+  target.src.streamRef = { infoHash: "abc", fileIdx: 4 };
+  const context = continuationFor(target, target.actor);
+  assert.deepEqual(continuationStream({ infoHash: "abc", fileIdx: undefined }, context), {
+    infoHash: "abc",
+    fileIdx: 4,
+  });
+  assert.equal(continuationStream({ infoHash: "abc", fileIdx: 6 }, context), null);
+  assert.equal(continuationStream({ infoHash: "different", fileIdx: undefined }, context), null);
+});
+
+test("home-server preparation receives actual position and explicit restart zero", async () => {
+  const target = fixture();
+  target.src.url = "https://fixture.invalid/video";
+  target.src.homeServer = {
+    connectionId: "server",
+    itemId: "item",
+    versionId: "version",
+    quality: "original",
+  };
+  const { api } = services(target);
+  const positions: number[] = [];
+  api.prepareServer = async (src, positionMs) => {
+    positions.push(positionMs);
+    return src;
+  };
+  await continueActualPlayback(target, {}, api);
+  await continueActualPlayback(target, { restart: true }, api);
+  assert.deepEqual(positions, [45000, 0]);
+});
+
+test("home-server continuation rebinds a saved subtitle ID to fresh authenticated transport", async () => {
+  const target = fixture();
+  target.src.url = "";
+  target.src.homeServer = {
+    connectionId: "server",
+    itemId: "item",
+    versionId: "version",
+    quality: "original",
+  };
+  target.subtitle = { external: true, homeServerSubtitleId: "arabic", lang: "ara" };
+  target.audioTrack = { lang: "eng", title: "English" };
+  target.subDelaySec = 1.25;
+  target.audioDelaySec = -0.2;
+  const { api, calls } = services(target);
+  const freshSubtitle = "https://server.test/subtitle.srt?api_key=fixture-fresh-token";
+  api.prepareServer = async (src) => ({
+    ...src,
+    url: "https://server.test/fresh-video",
+    headers: { Authorization: "fixture-fresh-authorization" },
+    subtitles: [{ id: "arabic", lang: "ara", url: freshSubtitle }],
+  });
+  await continueActualPlayback(target, {}, api);
+  const restored = (calls[0] as [string, any])[1];
+  assert.equal(restored.continuation.subtitle.source, freshSubtitle);
+  assert.deepEqual(restored.headers, { Authorization: "fixture-fresh-authorization" });
+  assert.equal(restored.startPositionMs, target.positionMs);
+  assert.deepEqual(restored.continuation.audioTrack, target.audioTrack);
+  assert.equal(restored.continuation.subDelaySec, 1.25);
+  assert.equal(restored.continuation.audioDelaySec, -0.2);
+  assert.equal(target.subtitle.source, undefined, "transport renewal never mutates saved history");
+});
+
+test("a missing saved server subtitle is not replaced with another subtitle URL", async () => {
+  const target = fixture();
+  target.src.url = "";
+  target.src.homeServer = {
+    connectionId: "server",
+    itemId: "item",
+    versionId: "version",
+    quality: "original",
+  };
+  target.subtitle = { external: true, homeServerSubtitleId: "missing", lang: "ara" };
+  const { api, calls } = services(target);
+  api.prepareServer = async (src) => ({
+    ...src,
+    url: "https://server.test/fresh-video",
+    subtitles: [{ id: "different", lang: "ara", url: "https://server.test/another.srt" }],
+  });
+  await continueActualPlayback(target, {}, api);
+  const restored = (calls[0] as [string, any])[1];
+  assert.equal(restored.continuation.subtitle.homeServerSubtitleId, "missing");
+  assert.equal(restored.continuation.subtitle.source, undefined);
+});
+
+test("continuation carries scoped subtitle choice and delays through source preparation", async () => {
+  const target: ActualPlayback = {
+    ...fixture(),
+    subtitle: { off: true },
+    subDelaySec: 1.5,
+    audioDelaySec: -0.25,
+  };
+  const { api, calls } = services(target);
+  await continueActualPlayback(target, {}, api);
+  const continued = (calls[0] as [string, { continuation: ReturnType<typeof continuationFor> }])[1]
+    .continuation;
+  assert.deepEqual(continued.subtitle, { off: true });
+  assert.equal(continued.subDelaySec, 1.5);
+  assert.equal(continued.audioDelaySec, -0.25);
+});
+
+test("refreshed URLs restore exact session state only for the same title, episode, and verified file metadata", () => {
+  const target = fixture();
+  target.src.url = "https://fixture.invalid/old-token";
+  target.src.meta.type = "series";
+  target.src.episode = { season: 2, episode: 3 };
+  target.src.streamRef = {
+    addonId: "fixture-addon",
+    parsedTitle: "Series.S02E03.1080p.RELEASE",
+    size: 1234567,
+    resolution: "1080p",
+    source: "WEB",
+    fileIdx: 2,
+  };
+  const context = continuationFor(target, target.actor);
+  const renewed = { ...target.src, url: "https://fixture.invalid/new-token" };
+  assert.equal(continuationAppliesToSource(renewed, context), true);
+  assert.equal(
+    continuationAppliesToSource({ ...renewed, meta: { ...renewed.meta, id: "other" } }, context),
+    false,
+  );
+  assert.equal(
+    continuationAppliesToSource({ ...renewed, episode: { season: 2, episode: 4 } }, context),
+    false,
+  );
+  assert.equal(
+    continuationAppliesToSource(
+      { ...renewed, streamRef: { ...renewed.streamRef, fileIdx: 4 } },
+      context,
+    ),
+    false,
+  );
+  assert.equal(
+    continuationAppliesToSource(
+      { ...renewed, streamRef: { ...renewed.streamRef, size: undefined } },
+      context,
+    ),
+    false,
+  );
+  assert.equal(
+    continuationAppliesToSource({ ...renewed, streamRef: { addonId: "fixture-addon" } }, context),
+    false,
+  );
+});

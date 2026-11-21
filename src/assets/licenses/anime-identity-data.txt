@@ -1,0 +1,38 @@
+Harbor: Offline Anime Identity Database Attribution
+==================================================
+
+Harbor optionally downloads an anime metadata and cross-reference dataset to
+construct a local SQLite identity database for anime and episode mapping.
+The dataset is not included in the Harbor application source code and is
+separately licensed from Harbor's MIT-licensed software.
+
+Current dataset and maintainer
+  anime-offline-database, maintained by cedya77
+  https://github.com/cedya77/anime-offline-database
+  Downloaded from the project's latest GitHub release.
+
+Original dataset and creator
+  anime-offline-database, originally created by manami-project
+  https://github.com/manami-project/anime-offline-database
+  The current dataset is derived from this original work.
+
+Database licences
+  Open Data Commons Open Database License (ODbL) v1.0
+  https://opendatacommons.org/licenses/odbl/1-0/
+
+  Database Contents License (DbCL) v1.0
+  https://opendatacommons.org/licenses/dbcl/1-0/
+
+  Full upstream licence texts:
+  https://github.com/cedya77/anime-offline-database/blob/master/LICENSE
+  https://github.com/manami-project/anime-offline-database/blob/master/LICENSE
+
+Companion episode mappings and contributors
+  Anime-Lists / anime-lists
+  https://github.com/Anime-Lists/anime-lists
+  Harbor separately downloads anime-list-master.xml and uses its community-
+  maintained AniDB to TVDB / TMDB season and episode mappings.
+  This source is acknowledged separately; no licence is assumed for it.
+
+Thanks to cedya77, the original manami-project author and contributors, and
+all Anime-Lists contributors for making anime cross-database mapping possible.

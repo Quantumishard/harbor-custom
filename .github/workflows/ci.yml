@@ -1,0 +1,187 @@
+name: Code Quality
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - beta-branch
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Frontend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          # Pinned: the formatter's output changes between minors, and a silent
+          # "latest" upgrade turns a green PR red without any code change.
+          version: 1.5.1
+          node-version: 24
+          cache: true
+          run-install: |
+            args:
+              - --frozen-lockfile
+
+      - name: Check changed files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            # Compare against the merge base so every commit in a multi-commit PR is checked.
+            BASE_SHA="$(git merge-base "$BASE_SHA" "$GITHUB_SHA" || echo "${GITHUB_SHA}^1")"
+          elif [[ -z "${BASE_SHA:-}" || "$BASE_SHA" == "0000000000000000000000000000000000000000" ]]; then
+            BASE_SHA="$(git rev-list --max-parents=0 "$GITHUB_SHA")"
+          fi
+
+          mapfile -d '' changed_files < <(
+            git diff --name-only --diff-filter=ACMR -z "$BASE_SHA" "$GITHUB_SHA"
+          )
+
+          format_files=()
+          code_files=()
+          for file in "${changed_files[@]}"; do
+            # Generated data, bundled third-party assets, and vendored crates keep
+            # their own layout, so they are not part of the format gate.
+            case "$file" in
+              .coderabbit.yaml | src-tauri/vendor/* | public/* | src/assets/* | android-extension-compat/spec/* | *.json | *.jsonc) ;;
+              *.cjs | *.css | *.html | *.js | *.jsx | *.md | *.mdx | *.mjs | *.scss | *.toml | *.ts | *.tsx | *.yaml | *.yml)
+                format_files+=("$file")
+                ;;
+            esac
+            case "$file" in
+              *.cjs | *.js | *.jsx | *.mjs | *.ts | *.tsx)
+                code_files+=("$file")
+                ;;
+            esac
+          done
+
+          if (( ${#format_files[@]} )); then
+            vp fmt --check "${format_files[@]}"
+          else
+            echo "No changed files require formatting checks."
+          fi
+
+          if (( ${#code_files[@]} )); then
+            check_log="$(mktemp)"
+            if ! vp check --no-fmt "${code_files[@]}" >"$check_log" 2>&1; then
+              cat "$check_log"
+              exit 1
+            fi
+          else
+            echo "No changed JavaScript or TypeScript files require lint checks."
+          fi
+
+      - name: Typecheck
+        run: vp run typecheck
+
+      - name: Test
+        run: vp run test
+
+  native:
+    name: Native
+    runs-on: ubuntu-24.04
+    # A cold cache spends ~8m on cargo check and ~19m more building the test
+    # profile, which cargo check never produces. Running the suite needs room
+    # after that.
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Detect native changes
+        id: native-changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            # Compare against the merge base so every commit in a multi-commit PR is checked.
+            BASE_SHA="$(git merge-base "$BASE_SHA" "$GITHUB_SHA" || echo "${GITHUB_SHA}^1")"
+          elif [[ -z "${BASE_SHA:-}" || "$BASE_SHA" == "0000000000000000000000000000000000000000" ]]; then
+            BASE_SHA="$(git rev-list --max-parents=0 "$GITHUB_SHA")"
+          fi
+
+          if git diff --quiet "$BASE_SHA" "$GITHUB_SHA" -- \
+            src-tauri \
+            harbor-core \
+            .github/workflows/ci.yml; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip native check
+        if: steps.native-changes.outputs.changed != 'true'
+        run: echo "No native build inputs changed; skipping cargo check."
+
+      - name: Install Linux build dependencies
+        if: steps.native-changes.outputs.changed == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libayatana-appindicator3-dev \
+            libgtk-3-dev \
+            libmpv-dev \
+            libpulse-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libudev-dev \
+            libwebkit2gtk-4.1-dev \
+            pkg-config
+
+      - name: Setup Rust
+        if: steps.native-changes.outputs.changed == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        if: steps.native-changes.outputs.changed == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            harbor-core
+            src-tauri
+
+      - name: Check Tauri application
+        if: steps.native-changes.outputs.changed == 'true'
+        env:
+          # Cargo checks do not package sidecars or the staged Java runtime.
+          TAURI_CONFIG: '{"bundle":{"externalBin":[],"resources":[]}}'
+        run: cargo check --manifest-path src-tauri/Cargo.toml
+
+      - name: Test Tauri application
+        if: steps.native-changes.outputs.changed == 'true'
+        env:
+          TAURI_CONFIG: '{"bundle":{"externalBin":[],"resources":[]}}'
+          # The games/ fixtures refuse to guess a root: each one canonicalizes
+          # this path and asserts the directory is a child of it before
+          # remove_dir_all, so a temp_dir fallback would weaken that guard.
+          HARBOR_GAME_TEST_ROOT: ${{ runner.temp }}/harbor-game-tests
+        run: |
+          mkdir -p "$HARBOR_GAME_TEST_ROOT"
+          # games/ serializes on process-global mutexes taken with try_lock,
+          # so concurrent tests fail each other with archive_busy.
+          cargo test --manifest-path src-tauri/Cargo.toml -- --test-threads=1
